@@ -15,6 +15,24 @@ export type PlayerInventory = {
 export type PurchasableResource = "diesel" | "jetFuel"
 export type VehicleType = "air" | "train" | "bus"
 export type FuelBurnUnit = "gallons" | "pounds"
+export type RailTraction = "diesel" | "electric"
+
+export type ChanceDemandBoost = {
+  regions: string[]
+  bonusPerCity: number
+}
+
+export type ChanceCard = {
+  id: string
+  title: string
+  description: string
+  fuelPriceMultiplier?: Partial<Record<PurchasableResource, number>>
+  demandBoost?: ChanceDemandBoost
+  connectionBonus?: {
+    citySize: number
+    bonusPerCity: number
+  }
+}
 
 export type VehicleCard = {
   id: string
@@ -33,8 +51,18 @@ export type VehicleCard = {
 export type OperatingConfig = {
   hoursPerDay: number
   daysPerWeek: number
+  totalWeeks: number
   loadingHours: Record<VehicleType, number>
+  passengersPerDemandPoint: number
+  connectionBonusPerCitySize: number
   railConstructionCostPerMile: number
+  railElectrificationCostPerMile: number
+  operatingCostPerTrip: {
+    bus: number
+    air: number
+    railDiesel: number
+    railElectric: number
+  }
   fuelUnits: Record<PurchasableResource, number>
   fuelPricePerRealUnit: Record<PurchasableResource, number>
   revenuePerPassengerMile: Record<RouteMode, number>
@@ -45,6 +73,8 @@ export type Player = {
   name: string
   color: string
   money: number
+  totalPassengersServed: number
+  startingCityId?: string
   inventory: PlayerInventory
   ownedVehicleCardIds: string[]
   operatingCosts: number
@@ -76,6 +106,7 @@ export type Route = {
   cityA: string
   cityB: string
   mode: RouteMode
+  railTraction?: RailTraction
   ownerId?: string
 }
 
@@ -85,7 +116,12 @@ export type GameState = {
   routes: Route[]
   currentWeek: number
   currentPhase: WeeklyPhase
+  isGameOver: boolean
   operatingConfig: OperatingConfig
+  chanceCatalog: ChanceCard[]
+  activeChanceCardId: string | null
+  chanceDeckCardIds: string[]
+  chanceDiscardCardIds: string[]
   bureaucracyFuelUnitsByRouteId: Record<string, number>
   bureaucracyVehicleCardIdsByRouteId: Record<string, string>
   resourceMarket: ResourceMarket
@@ -95,5 +131,6 @@ export type GameState = {
   hasPurchasedVehicleThisTurn: boolean
 
   players: Player[]
+  leadPlayerIndex: number
   currentPlayerId: string
 }

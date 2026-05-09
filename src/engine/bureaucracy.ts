@@ -1,4 +1,9 @@
 import {
+  getCombinedDemandForRoute,
+  getOperatingCostPerTrip,
+  getPassengersPerTrip,
+} from "./economy"
+import {
   calculateRealFuelFromUnits,
   calculateRouteTripsPerWeek,
 } from "./trips"
@@ -37,7 +42,7 @@ export type BureaucracyRoutePlan = {
   totalFuelBurnReal: number
   totalFuelBurnUnits: number
   revenue: number
-  fuelCost: number
+  operatingCost: number
   netRevenue: number
 }
 
@@ -50,7 +55,7 @@ export type PlayerBureaucracySummary = {
   fuelRemainingReal: Record<PurchasableResource, number>
   totalPassengersServed: number
   totalRevenue: number
-  totalFuelCost: number
+  totalOperatingCost: number
   netRevenue: number
 }
 
@@ -69,13 +74,6 @@ function getCityName(game: GameState, cityId: string) {
   return game.cities.find(city => city.id === cityId)?.name ?? cityId
 }
 
-function getCombinedDemand(game: GameState, route: Route) {
-  const cityA = game.cities.find(city => city.id === route.cityA)
-  const cityB = game.cities.find(city => city.id === route.cityB)
-
-  return (cityA?.size ?? 0) + (cityB?.size ?? 0)
-}
-
 function getOwnedVehicleCards(game: GameState, player: Player) {
   return player.ownedVehicleCardIds
     .map(cardId => game.vehicleCatalog.find(card => card.id === cardId) ?? null)
@@ -83,11 +81,14 @@ function getOwnedVehicleCards(game: GameState, player: Player) {
     .sort((cardA, cardB) => cardA.number - cardB.number)
 }
 
-function assignVehicleCardsToRoutes(game: GameState, player: Player) {
+function assignVehicleCardsToRoutes(
+  game: GameState,
+  player: Player,
+  ownedCards: VehicleCard[],
+) {
   const ownedRoutes = game.routes
     .filter(route => route.ownerId === player.id)
     .sort((routeA, routeB) => routeA.id.localeCompare(routeB.id))
-  const ownedCards = getOwnedVehicleCards(game, player)
   const cardsById = new Map(ownedCards.map(card => [card.id, card]))
   const cardsByType: Record<VehicleType, VehicleCard[]> = {
     air: [],
@@ -144,19 +145,22 @@ export function buildPlayerBureaucracySummary(
     return null
   }
 
+  const ownedCards = getOwnedVehicleCards(game, player)
   const remainingFuelUnits: Record<PurchasableResource, number> = {
     diesel: player.inventory.fuel.diesel,
     jetFuel: player.inventory.fuel.jetFuel,
   }
 
-  const routePlans = assignVehicleCardsToRoutes(game, player).map(({ route, vehicleCard }) => {
+  const routePlans = assignVehicleCardsToRoutes(game, player, ownedCards).map(
+    ({ route, vehicleCard }) => {
       const statsVehicleCard =
         vehicleCard ??
-        getOwnedVehicleCards(game, player).find(
-          card => card.type === getVehicleTypeForRouteMode(route.mode),
-        ) ??
+        ownedCards.find(card => card.type === getVehicleTypeForRouteMode(route.mode)) ??
         null
-      const requestedFuelUnits = Math.max(0, game.bureaucracyFuelUnitsByRouteId[route.id] ?? 0)
+      const requestedFuelUnits = Math.max(
+        0,
+        game.bureaucracyFuelUnitsByRouteId[route.id] ?? 0,
+      )
       const routeTripSummary =
         vehicleCard === null
           ? null
@@ -165,23 +169,35 @@ export function buildPlayerBureaucracySummary(
         statsVehicleCard === null
           ? null
           : calculateRouteTripsPerWeek(game, route, statsVehicleCard)
-      const maxFuelUnitsByTime = routeTripSummary
-        ? Math.ceil(routeTripSummary.tripFuelUnits * routeTripSummary.tripsPerWeek)
-        : 0
+      const maxFuelUnitsByTime =
+        routeTripSummary && routeTripSummary.fuelResource !== null
+          ? Math.ceil(routeTripSummary.tripFuelUnits * routeTripSummary.tripsPerWeek)
+          : 0
       const maxFuelUnitsByInventory = routeTripSummary?.fuelResource
         ? Math.floor(remainingFuelUnits[routeTripSummary.fuelResource])
         : 0
-      const selectedFuelUnits = routeTripSummary
-        ? Math.min(requestedFuelUnits, maxFuelUnitsByTime, maxFuelUnitsByInventory)
-        : 0
-      const selectedTrips = routeTripSummary
-        ? Math.min(
-            routeTripSummary.tripsPerWeek,
-            Math.floor((selectedFuelUnits + 1e-9) / routeTripSummary.tripFuelUnits),
-          )
-        : 0
+      const selectedFuelUnits =
+        routeTripSummary === null || routeTripSummary.fuelResource === null
+          ? 0
+          : Math.min(requestedFuelUnits, maxFuelUnitsByTime, maxFuelUnitsByInventory)
+      const selectedTrips =
+        routeTripSummary === null
+          ? 0
+          : routeTripSummary.fuelResource === null
+            ? routeTripSummary.tripsPerWeek
+            : Math.min(
+                routeTripSummary.tripsPerWeek,
+                Math.floor(
+                  (selectedFuelUnits + 1e-9) /
+                    Math.max(routeTripSummary.tripFuelUnits, 0.000001),
+                ),
+              )
+      const passengersPerTrip =
+        statsVehicleCard === null ? 0 : getPassengersPerTrip(game, route, statsVehicleCard)
       const passengersServed =
-        selectedTrips * (vehicleCard?.totalPassengerCapacity ?? 0)
+        vehicleCard === null
+          ? 0
+          : selectedTrips * getPassengersPerTrip(game, route, vehicleCard)
       const revenue =
         (routeTripSummary?.distanceMiles ?? 0) *
         passengersServed *
@@ -193,6 +209,8 @@ export function buildPlayerBureaucracySummary(
             game,
           )
         : 0
+      const operatingCost =
+        vehicleCard === null ? 0 : selectedTrips * getOperatingCostPerTrip(game, route)
 
       if (routeTripSummary?.fuelResource) {
         remainingFuelUnits[routeTripSummary.fuelResource] = Math.max(
@@ -205,7 +223,7 @@ export function buildPlayerBureaucracySummary(
         route,
         cityAName: getCityName(game, route.cityA),
         cityBName: getCityName(game, route.cityB),
-        combinedDemand: getCombinedDemand(game, route),
+        combinedDemand: getCombinedDemandForRoute(game, route),
         vehicleCard,
         statsFuelResource: statsRouteTripSummary?.fuelResource ?? null,
         statsFuelBurnUnit: statsRouteTripSummary?.fuelBurnUnit ?? null,
@@ -213,12 +231,14 @@ export function buildPlayerBureaucracySummary(
         maxTripsByTime: statsRouteTripSummary?.tripsPerWeek ?? 0,
         maxFuelUnitsByTime,
         weeklyFuelBurnReal: statsRouteTripSummary?.weeklyFuelBurn ?? 0,
-        weeklyFuelBurnUnits: statsRouteTripSummary
-          ? Math.ceil(statsRouteTripSummary.tripFuelUnits * statsRouteTripSummary.tripsPerWeek)
+        weeklyFuelBurnUnits: statsRouteTripSummary?.fuelResource
+          ? Math.ceil(
+              statsRouteTripSummary.tripFuelUnits * statsRouteTripSummary.tripsPerWeek,
+            )
           : 0,
         selectedFuelUnits,
         selectedTrips,
-        passengersPerTrip: statsVehicleCard?.totalPassengerCapacity ?? 0,
+        passengersPerTrip,
         passengersServed,
         fuelResource: routeTripSummary?.fuelResource ?? null,
         fuelBurnUnit: routeTripSummary?.fuelBurnUnit ?? null,
@@ -227,10 +247,11 @@ export function buildPlayerBureaucracySummary(
         totalFuelBurnReal,
         totalFuelBurnUnits: selectedFuelUnits,
         revenue,
-        fuelCost: 0,
-        netRevenue: revenue,
+        operatingCost,
+        netRevenue: revenue - operatingCost,
       }
-    })
+    },
+  )
 
   const fuelUsedUnits: Record<PurchasableResource, number> = {
     diesel: 0,
@@ -270,8 +291,11 @@ export function buildPlayerBureaucracySummary(
       0,
     ),
     totalRevenue: routePlans.reduce((total, plan) => total + plan.revenue, 0),
-    totalFuelCost: 0,
-    netRevenue: routePlans.reduce((total, plan) => total + plan.revenue, 0),
+    totalOperatingCost: routePlans.reduce(
+      (total, plan) => total + plan.operatingCost,
+      0,
+    ),
+    netRevenue: routePlans.reduce((total, plan) => total + plan.netRevenue, 0),
   }
 }
 
@@ -325,8 +349,8 @@ export function getMaxFuelUnitsCapacityForPlayer(
   }
 
   return summary.routePlans
-    .filter(plan => plan.fuelResource === resource)
-    .reduce((total, plan) => total + plan.maxFuelUnitsByTime, 0)
+    .filter(plan => plan.statsFuelResource === resource)
+    .reduce((total, plan) => total + plan.weeklyFuelBurnUnits, 0)
 }
 
 export function applyBureaucracyFuelConsumption(game: GameState): GameState {
@@ -335,7 +359,6 @@ export function applyBureaucracyFuelConsumption(game: GameState): GameState {
   return {
     ...game,
     bureaucracyFuelUnitsByRouteId: {},
-    bureaucracyVehicleCardIdsByRouteId: game.bureaucracyVehicleCardIdsByRouteId,
     players: game.players.map(player => {
       const summary = summaries.find(candidate => candidate.player.id === player.id)
 
@@ -345,8 +368,10 @@ export function applyBureaucracyFuelConsumption(game: GameState): GameState {
 
       return {
         ...player,
-        money: player.money + summary.totalRevenue,
-        operatingCosts: 0,
+        money: player.money + summary.netRevenue,
+        totalPassengersServed:
+          player.totalPassengersServed + summary.totalPassengersServed,
+        operatingCosts: summary.totalOperatingCost,
         weeklyPayout: summary.totalRevenue,
         inventory: {
           ...player.inventory,

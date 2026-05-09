@@ -3,6 +3,7 @@ import type {
   FuelBurnUnit,
   GameState,
   PurchasableResource,
+  RailTraction,
   Route,
   VehicleCard,
   VehicleType,
@@ -23,6 +24,10 @@ const FUEL_BURN_UNIT_BY_TYPE: Record<VehicleType, FuelBurnUnit> = {
   air: "pounds",
   train: "gallons",
   bus: "gallons",
+}
+
+function getRouteRailTraction(route: Route): RailTraction {
+  return route.mode === "rail" ? route.railTraction ?? "diesel" : "diesel"
 }
 
 function toRadians(degrees: number) {
@@ -147,23 +152,32 @@ export function calculateRouteTripsPerWeek(
   }
 
   const tripSummary = calculateTripsPerWeek(distanceMiles, vehicleCard, game)
+  const usesElectricRail =
+    route.mode === "rail" &&
+    vehicleCard.type === "train" &&
+    getRouteRailTraction(route) === "electric"
+  const fuelResource = usesElectricRail
+    ? null
+    : FUEL_RESOURCE_BY_TYPE[vehicleCard.type]
+  const fuelBurnUnit = usesElectricRail
+    ? null
+    : FUEL_BURN_UNIT_BY_TYPE[vehicleCard.type]
+  const tripFuelBurn = usesElectricRail
+    ? 0
+    : calculateTripFuelBurn(tripSummary.tripDurationHours, vehicleCard)
+  const weeklyFuelBurn = tripFuelBurn * tripSummary.tripsPerWeek
+  const tripFuelUnits =
+    fuelResource === null
+      ? 0
+      : calculateFuelUnitsFromReal(tripFuelBurn, fuelResource, game)
 
   return {
     distanceMiles,
     ...tripSummary,
-    fuelResource: FUEL_RESOURCE_BY_TYPE[vehicleCard.type],
-    fuelBurnUnit: FUEL_BURN_UNIT_BY_TYPE[vehicleCard.type],
-    tripFuelBurn: calculateTripFuelBurn(
-      tripSummary.tripDurationHours,
-      vehicleCard,
-    ),
-    weeklyFuelBurn:
-      calculateTripFuelBurn(tripSummary.tripDurationHours, vehicleCard) *
-      tripSummary.tripsPerWeek,
-    tripFuelUnits: calculateFuelUnitsFromReal(
-      calculateTripFuelBurn(tripSummary.tripDurationHours, vehicleCard),
-      FUEL_RESOURCE_BY_TYPE[vehicleCard.type],
-      game,
-    ),
+    fuelResource,
+    fuelBurnUnit,
+    tripFuelBurn,
+    weeklyFuelBurn,
+    tripFuelUnits,
   }
 }

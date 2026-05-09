@@ -1,5 +1,6 @@
 import type { GameMap } from "./maps/types"
 import type {
+  ChanceCard,
   GameState,
   OperatingConfig,
   Player,
@@ -8,26 +9,37 @@ import type {
   VehicleCard,
 } from "./types"
 import vehicleCards from "../data/vehicleCards.json"
+import { chanceCards } from "../data/chanceCards"
 
 const INITIAL_RESOURCE_MARKET: ResourceMarket = {
-  diesel: [3, 3, 3, 3, 3, 3, 3, 3],
+  diesel: [5, 5, 5, 5, 4, 4, 4, 4],
   jetFuel: [0, 0, 3, 3, 3, 3, 6, 6],
 }
 
 const INITIAL_RESOURCE_SUPPLY: ResourceSupply = {
-  diesel: 0,
+  diesel: 32,
   jetFuel: 24,
 }
 
 const INITIAL_OPERATING_CONFIG: OperatingConfig = {
   hoursPerDay: 14,
   daysPerWeek: 7,
+  totalWeeks: 10,
   loadingHours: {
     air: 1,
     train: 0.5,
     bus: 0.25,
   },
-  railConstructionCostPerMile: 1_000_000,
+  passengersPerDemandPoint: 45,
+  connectionBonusPerCitySize: 500_000,
+  railConstructionCostPerMile: 60_000,
+  railElectrificationCostPerMile: 8_000,
+  operatingCostPerTrip: {
+    bus: 3_500,
+    air: 24_000,
+    railDiesel: 3_500,
+    railElectric: 1_500,
+  },
   fuelUnits: {
     diesel: 1000,
     jetFuel: 120000,
@@ -42,6 +54,21 @@ const INITIAL_OPERATING_CONFIG: OperatingConfig = {
     bus: 0.15,
   },
 }
+
+export type GameSetupPlayer = {
+  id: string
+  name: string
+  color: string
+}
+
+export type CreateGameStateOptions = {
+  players?: GameSetupPlayer[]
+}
+
+const DEFAULT_PLAYERS: GameSetupPlayer[] = [
+  { id: "p1", name: "Matt", color: "#e63946" },
+  { id: "p2", name: "Bot", color: "#457b9d" },
+]
 
 function isVehicleType(type: string): type is VehicleCard["type"] {
   return type === "bus" || type === "train" || type === "air"
@@ -60,8 +87,8 @@ function getStarterVehicleCards(): VehicleCard[] {
   })
 }
 
-function shuffleVehicleCards() {
-  const shuffledCards = getStarterVehicleCards()
+function shuffleCards<T>(cards: T[]) {
+  const shuffledCards = [...cards]
 
   for (let index = shuffledCards.length - 1; index > 0; index -= 1) {
     const swapIndex = Math.floor(Math.random() * (index + 1))
@@ -73,16 +100,22 @@ function shuffleVehicleCards() {
   return shuffledCards
 }
 
-function createPlayer(
-  id: string,
-  name: string,
-  color: string,
-): Player {
+function shuffleVehicleCards() {
+  return shuffleCards(getStarterVehicleCards())
+}
+
+function shuffleChanceCards() {
+  return shuffleCards(chanceCards as ChanceCard[])
+}
+
+function createPlayer(player: GameSetupPlayer): Player {
   return {
-    id,
-    name,
-    color,
-    money: 100000000,
+    id: player.id,
+    name: player.name,
+    color: player.color,
+    money: 140000000,
+    totalPassengersServed: 0,
+    startingCityId: undefined,
     inventory: {
       vehicles: {
         trains: 0,
@@ -100,17 +133,27 @@ function createPlayer(
   }
 }
 
-export function createGameState(map: GameMap): GameState {
+export function createGameState(
+  map: GameMap,
+  options: CreateGameStateOptions = {},
+): GameState {
   const shuffledVehicleCards = shuffleVehicleCards()
+  const shuffledChanceCards = shuffleChanceCards()
+  const [activeChanceCard, ...chanceDeck] = shuffledChanceCards
+  const players = (options.players ?? DEFAULT_PLAYERS).map(createPlayer)
 
   return {
     map,
-
     cities: map.cities,
     routes: [],
     currentWeek: 1,
     currentPhase: "purchase-equipment",
+    isGameOver: false,
     operatingConfig: INITIAL_OPERATING_CONFIG,
+    chanceCatalog: chanceCards as ChanceCard[],
+    activeChanceCardId: activeChanceCard?.id ?? null,
+    chanceDeckCardIds: chanceDeck.map(card => card.id),
+    chanceDiscardCardIds: [],
     bureaucracyFuelUnitsByRouteId: {},
     bureaucracyVehicleCardIdsByRouteId: {},
     resourceMarket: INITIAL_RESOURCE_MARKET,
@@ -118,12 +161,8 @@ export function createGameState(map: GameMap): GameState {
     vehicleCatalog: shuffledVehicleCards,
     vehicleMarketCardIds: shuffledVehicleCards.map(card => card.id),
     hasPurchasedVehicleThisTurn: false,
-
-    players: [
-      createPlayer("p1", "Matt", "#e63946"),
-      createPlayer("p2", "Bot", "#457b9d"),
-    ],
-
-    currentPlayerId: "p1",
+    players,
+    leadPlayerIndex: 0,
+    currentPlayerId: players[0]?.id ?? "p1",
   }
 }

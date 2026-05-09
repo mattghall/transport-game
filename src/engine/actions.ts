@@ -13,6 +13,12 @@ import {
   getMaxFuelUnitsCapacityForPlayer,
   getMaxFuelUnitsForRoute,
 } from "./bureaucracy"
+import {
+  calculateConnectionBonus,
+  getConnectedCityIds,
+  getFuelPriceMultiplier,
+  getRailUpgradeCost,
+} from "./economy"
 import { calculateDistanceMiles } from "./trips"
 
 export type ConnectionOption = {
@@ -32,6 +38,8 @@ export type ClaimRouteResult =
       game: GameState
       routes: Route[]
       cost: number
+      connectionBonus: number
+      newCityIds: string[]
     }
   | {
       ok: false
@@ -40,7 +48,7 @@ export type ClaimRouteResult =
 
 const CONNECTION_MODES: RouteMode[] = ["rail", "air", "bus"]
 const MARKET_SLOT_CAPACITY: Record<PurchasableResource, number> = {
-  diesel: 3,
+  diesel: 6,
   jetFuel: 6,
 }
 const FUEL_MARKET_PRICES: Record<PurchasableResource, number[]> = {
@@ -49,7 +57,7 @@ const FUEL_MARKET_PRICES: Record<PurchasableResource, number[]> = {
 }
 
 const STEP_ONE_REFILL: Record<PurchasableResource, number> = {
-  diesel: 3,
+  diesel: 6,
   jetFuel: 3,
 }
 
@@ -66,6 +74,7 @@ export type ResourcePurchaseResult =
       ok: true
       game: GameState
       resource: PurchasableResource
+      quantity: number
       cost: number
     }
   | {
@@ -109,11 +118,68 @@ export type BureaucracyVehicleCardResult =
       error: string
     }
 
+export type RailUpgradeResult =
+  | {
+      ok: true
+      game: GameState
+      routeId: string
+      cost: number
+    }
+  | {
+      ok: false
+      error: string
+    }
+
 export function getFuelUnitPrice(
+  game: GameState,
   resource: PurchasableResource,
   marketIndex: number,
 ) {
-  return FUEL_MARKET_PRICES[resource][marketIndex] ?? null
+  const basePrice = FUEL_MARKET_PRICES[resource][marketIndex]
+
+  if (basePrice === undefined) {
+    return null
+  }
+
+  const multiplier = getFuelPriceMultiplier(game, resource)
+  return Math.max(100, Math.round((basePrice * multiplier) / 100) * 100)
+}
+
+export function getFuelPurchaseCost(
+  game: GameState,
+  resource: PurchasableResource,
+  quantity: number,
+) {
+  const requestedQuantity = Math.max(0, Math.floor(quantity))
+
+  if (requestedQuantity < 1) {
+    return null
+  }
+
+  let remainingQuantity = requestedQuantity
+  let totalCost = 0
+
+  for (const [marketIndex, availableUnits] of game.resourceMarket[resource].entries()) {
+    if (remainingQuantity === 0) {
+      break
+    }
+
+    if (availableUnits <= 0) {
+      continue
+    }
+
+    const unitPrice = getFuelUnitPrice(game, resource, marketIndex)
+
+    if (unitPrice === null) {
+      return null
+    }
+
+    const purchasedUnits = Math.min(availableUnits, remainingQuantity)
+    totalCost += unitPrice * purchasedUnits
+    remainingQuantity -= purchasedUnits
+  }
+
+  return remainingQuantity === 0 ? totalCost : null
 }
 
 function getVehicleTypeForMode(mode: RouteMode): VehicleType {
@@ -129,6 +195,10 @@ function getVehicleTypeForMode(mode: RouteMode): VehicleType {
 
 function getFuelResourceForVehicleType(type: VehicleType): PurchasableResource {
   return type === "air" ? "jetFuel" : "diesel"
+}
+
+function isGameLocked(game: GameState) {
+  return game.isGameOver
 }
 
 function getOwnedVehicleCards(game: GameState) {
@@ -233,6 +303,14 @@ export function getConnectionOptions(
   game: GameState,
   cityIds: string[],
 ): ConnectionOption[] {
+  if (isGameLocked(game)) {
+    return CONNECTION_MODES.map(mode => ({
+      mode,
+      valid: false,
+      reason: "The game is over.",
+    }))
+  }
+
   if (game.currentPhase !== "claim-routes") {
     return CONNECTION_MODES.map(mode => ({
       mode,
@@ -255,6 +333,9 @@ export function getConnectionOptions(
     .map(([cityAId, cityBId]) => getSharedConnectionError(game, cityAId, cityBId))
     .find(error => error !== undefined)
   const currentPlayer = getCurrentPlayer(game)
+  const currentNetwork = currentPlayer
+    ? new Set(getConnectedCityIds(game, currentPlayer.id))
+    : new Set<string>()
   const ownedVehicleTypes = new Set(getOwnedVehicleCards(game).map(card => card.type))
 
   return CONNECTION_MODES.map(mode => {
@@ -279,6 +360,14 @@ export function getConnectionOptions(
         mode,
         valid: false,
         reason: `Buy a ${mode === "rail" ? "train" : mode} vehicle card first.`,
+      }
+    }
+
+    if (currentNetwork.size > 0 && !cityIds.some(cityId => currentNetwork.has(cityId))) {
+      return {
+        mode,
+        valid: false,
+        reason: "New routes must attach to your existing network.",
       }
     }
 
@@ -331,14 +420,33 @@ function refillResourceTrack(
 }
 
 export function advancePhase(game: GameState): GameState {
+  if (isGameLocked(game)) {
+    return game
+  }
+
   const currentPhaseIndex = WEEKLY_PHASES.indexOf(game.currentPhase)
   const safePhaseIndex = currentPhaseIndex === -1 ? 0 : currentPhaseIndex
   const nextPhaseIndex = (safePhaseIndex + 1) % WEEKLY_PHASES.length
   const wrappedWeek = nextPhaseIndex === 0 ? game.currentWeek + 1 : game.currentWeek
-  const firstPlayerId = game.players[0]?.id ?? game.currentPlayerId
+  const nextLeadPlayerIndex =
+    nextPhaseIndex === 0
+      ? (game.leadPlayerIndex + 1) % Math.max(game.players.length, 1)
+      : game.leadPlayerIndex
+  const firstPlayerId = game.players[nextLeadPlayerIndex]?.id ?? game.currentPlayerId
 
   if (game.currentPhase === "bureaucracy") {
     const resolvedGame = applyBureaucracyFuelConsumption(game)
+
+    if (game.currentWeek >= game.operatingConfig.totalWeeks) {
+      return {
+        ...resolvedGame,
+        isGameOver: true,
+        leadPlayerIndex: nextLeadPlayerIndex,
+        currentPlayerId: firstPlayerId,
+        hasPurchasedVehicleThisTurn: false,
+      }
+    }
+
     const dieselRefill = refillResourceTrack(
       resolvedGame.resourceMarket.diesel,
       resolvedGame.resourceSupply.diesel,
@@ -351,11 +459,33 @@ export function advancePhase(game: GameState): GameState {
       "jetFuel",
       STEP_ONE_REFILL.jetFuel,
     )
+    let nextDiscard = resolvedGame.activeChanceCardId
+      ? [...resolvedGame.chanceDiscardCardIds, resolvedGame.activeChanceCardId]
+      : [...resolvedGame.chanceDiscardCardIds]
+    let nextDeck = [...resolvedGame.chanceDeckCardIds]
+
+    if (nextDeck.length === 0 && nextDiscard.length > 0) {
+      for (let index = nextDiscard.length - 1; index > 0; index -= 1) {
+        const swapIndex = Math.floor(Math.random() * (index + 1))
+        const currentCardId = nextDiscard[index]
+        nextDiscard[index] = nextDiscard[swapIndex]
+        nextDiscard[swapIndex] = currentCardId
+      }
+
+      nextDeck = nextDiscard
+      nextDiscard = []
+    }
+
+    const activeChanceCardId = nextDeck[0] ?? null
 
     return {
       ...resolvedGame,
       currentWeek: wrappedWeek,
       currentPhase: WEEKLY_PHASES[nextPhaseIndex],
+      activeChanceCardId,
+      chanceDeckCardIds: activeChanceCardId === null ? [] : nextDeck.slice(1),
+      chanceDiscardCardIds: nextDiscard,
+      leadPlayerIndex: nextLeadPlayerIndex,
       currentPlayerId: firstPlayerId,
       hasPurchasedVehicleThisTurn: false,
       resourceMarket: {
@@ -373,6 +503,7 @@ export function advancePhase(game: GameState): GameState {
     ...game,
     currentWeek: wrappedWeek,
     currentPhase: WEEKLY_PHASES[nextPhaseIndex],
+    leadPlayerIndex: nextLeadPlayerIndex,
     currentPlayerId: firstPlayerId,
     hasPurchasedVehicleThisTurn: false,
   }
@@ -381,7 +512,15 @@ export function advancePhase(game: GameState): GameState {
 export function buyResource(
   game: GameState,
   resource: PurchasableResource,
+  quantity = 1,
 ): ResourcePurchaseResult {
+  if (isGameLocked(game)) {
+    return {
+      ok: false,
+      error: "The game is over.",
+    }
+  }
+
   if (game.currentPhase !== "purchase-fuel") {
     return {
       ok: false,
@@ -390,6 +529,7 @@ export function buyResource(
   }
 
   const currentPlayer = getCurrentPlayer(game)
+  const requestedQuantity = Math.max(0, Math.floor(quantity))
 
   if (!currentPlayer) {
     return {
@@ -407,6 +547,27 @@ export function buyResource(
     }
   }
 
+  if (requestedQuantity < 1) {
+    return {
+      ok: false,
+      error: "Choose at least 1 fuel unit to buy.",
+    }
+  }
+
+  if (resource === "diesel" && requestedQuantity !== 1 && requestedQuantity !== 10) {
+    return {
+      ok: false,
+      error: "Diesel can only be bought in packs of 1 or 10.",
+    }
+  }
+
+  if (resource === "jetFuel" && requestedQuantity !== 1) {
+    return {
+      ok: false,
+      error: "Jet fuel can only be bought 1 unit at a time.",
+    }
+  }
+
   const market = game.resourceMarket[resource]
   const cheapestIndex = market.findIndex(units => units > 0)
 
@@ -417,12 +578,12 @@ export function buyResource(
     }
   }
 
-  const cost = getFuelUnitPrice(resource, cheapestIndex)
+  const cost = getFuelPurchaseCost(game, resource, requestedQuantity)
 
   if (cost === null) {
     return {
       ok: false,
-      error: "That fuel price slot is invalid.",
+      error: `There is not enough ${resource === "diesel" ? "diesel" : "jet fuel"} available for that purchase.`,
     }
   }
 
@@ -436,7 +597,7 @@ export function buyResource(
   const maxFuelUnitsCapacity =
     getMaxFuelUnitsCapacityForPlayer(game, currentPlayer.id, resource) * 2
 
-  if (currentPlayer.inventory.fuel[resource] + 1 > maxFuelUnitsCapacity) {
+  if (currentPlayer.inventory.fuel[resource] + requestedQuantity > maxFuelUnitsCapacity) {
     return {
       ok: false,
       error: `You can only hold up to ${Math.floor(maxFuelUnitsCapacity)} ${resource === "diesel" ? "diesel" : "jet fuel"} units right now.`,
@@ -444,11 +605,26 @@ export function buyResource(
   }
 
   const nextMarket = [...market]
-  nextMarket[cheapestIndex] -= 1
+  let remainingQuantity = requestedQuantity
+
+  for (const [marketIndex, availableUnits] of nextMarket.entries()) {
+    if (remainingQuantity === 0) {
+      break
+    }
+
+    if (availableUnits <= 0) {
+      continue
+    }
+
+    const purchasedUnits = Math.min(availableUnits, remainingQuantity)
+    nextMarket[marketIndex] -= purchasedUnits
+    remainingQuantity -= purchasedUnits
+  }
 
   return {
     ok: true,
     resource,
+    quantity: requestedQuantity,
     cost,
     game: {
       ...game,
@@ -458,7 +634,7 @@ export function buyResource(
       },
       resourceSupply: {
         ...game.resourceSupply,
-        [resource]: game.resourceSupply[resource] + 1,
+        [resource]: game.resourceSupply[resource] + requestedQuantity,
       },
       players: game.players.map(player => {
         if (player.id !== currentPlayer.id) {
@@ -472,7 +648,7 @@ export function buyResource(
             ...player.inventory,
             fuel: {
               ...player.inventory.fuel,
-              [resource]: player.inventory.fuel[resource] + 1,
+              [resource]: player.inventory.fuel[resource] + requestedQuantity,
             },
           },
         }
@@ -516,11 +692,17 @@ export function isLastPlayerTurn(game: GameState) {
   const currentPlayerIndex = game.players.findIndex(
     player => player.id === game.currentPlayerId,
   )
+  const lastPlayerIndex =
+    (game.leadPlayerIndex + game.players.length - 1) % game.players.length
 
-  return currentPlayerIndex === -1 || currentPlayerIndex === game.players.length - 1
+  return currentPlayerIndex === -1 || currentPlayerIndex === lastPlayerIndex
 }
 
 export function advanceTurn(game: GameState): GameState {
+  if (isGameLocked(game)) {
+    return game
+  }
+
   if (isLastPlayerTurn(game)) {
     return advancePhase(game)
   }
@@ -536,6 +718,13 @@ export function buyVehicleCard(
   game: GameState,
   cardId: string,
 ): VehiclePurchaseResult {
+  if (isGameLocked(game)) {
+    return {
+      ok: false,
+      error: "The game is over.",
+    }
+  }
+
   if (game.currentPhase !== "purchase-equipment") {
     return {
       ok: false,
@@ -628,6 +817,13 @@ export function setBureaucracyRouteFuelUnits(
   routeId: string,
   requestedFuelUnits: number,
 ): BureaucracyFuelUnitsResult {
+  if (isGameLocked(game)) {
+    return {
+      ok: false,
+      error: "The game is over.",
+    }
+  }
+
   if (game.currentPhase !== "bureaucracy") {
     return {
       ok: false,
@@ -674,6 +870,13 @@ export function setBureaucracyRouteVehicleCard(
   routeId: string,
   requestedVehicleCardId: string | null,
 ): BureaucracyVehicleCardResult {
+  if (isGameLocked(game)) {
+    return {
+      ok: false,
+      error: "The game is over.",
+    }
+  }
+
   if (game.currentPhase !== "bureaucracy") {
     return {
       ok: false,
@@ -761,6 +964,13 @@ export function claimRoute(
   game: GameState,
   input: ClaimRouteInput,
 ): ClaimRouteResult {
+  if (isGameLocked(game)) {
+    return {
+      ok: false,
+      error: "The game is over.",
+    }
+  }
+
   const option = getConnectionOptions(game, input.cityIds)
     .find(connection => connection.mode === input.mode)
 
@@ -781,6 +991,7 @@ export function claimRoute(
   }
 
   const cost = Math.ceil(calculateClaimRouteCost(game, input))
+  const connectionBonus = calculateConnectionBonus(game, currentPlayer.id, input.cityIds)
 
   if (currentPlayer.money < cost) {
     return {
@@ -789,7 +1000,7 @@ export function claimRoute(
     }
   }
 
-  const routes = getRoutePairs(input.cityIds).map(([cityAId, cityBId]) => {
+  const routes: Route[] = getRoutePairs(input.cityIds).map(([cityAId, cityBId]) => {
     const [cityA, cityB] = normalizeRoutePair(cityAId, cityBId)
 
     return {
@@ -797,6 +1008,7 @@ export function claimRoute(
       cityA,
       cityB,
       mode: input.mode,
+      railTraction: input.mode === "rail" ? ("diesel" as const) : undefined,
       ownerId: game.currentPlayerId,
     }
   })
@@ -804,10 +1016,105 @@ export function claimRoute(
   return {
     ok: true,
     cost,
+    connectionBonus: connectionBonus.totalBonus,
+    newCityIds: connectionBonus.newlyConnectedCityIds,
     routes,
     game: {
       ...game,
       routes: [...game.routes, ...routes],
+      players: game.players.map(player =>
+        player.id === currentPlayer.id
+          ? {
+              ...player,
+              money: player.money - cost + connectionBonus.totalBonus,
+              startingCityId: player.startingCityId ?? input.cityIds[0],
+            }
+          : player,
+      ),
+    },
+  }
+}
+
+export function upgradeRailRoute(
+  game: GameState,
+  routeId: string,
+): RailUpgradeResult {
+  if (isGameLocked(game)) {
+    return {
+      ok: false,
+      error: "The game is over.",
+    }
+  }
+
+  if (game.currentPhase !== "claim-routes") {
+    return {
+      ok: false,
+      error: "Rail upgrades can only be purchased during the claim routes phase.",
+    }
+  }
+
+  const route = game.routes.find(candidate => candidate.id === routeId)
+
+  if (!route?.ownerId) {
+    return {
+      ok: false,
+      error: "That route could not be found.",
+    }
+  }
+
+  if (route.ownerId !== game.currentPlayerId) {
+    return {
+      ok: false,
+      error: "You can only upgrade the current player's rail routes.",
+    }
+  }
+
+  if (route.mode !== "rail") {
+    return {
+      ok: false,
+      error: "Only rail routes can be electrified.",
+    }
+  }
+
+  if (route.railTraction === "electric") {
+    return {
+      ok: false,
+      error: "That rail route is already electrified.",
+    }
+  }
+
+  const currentPlayer = getCurrentPlayer(game)
+
+  if (!currentPlayer) {
+    return {
+      ok: false,
+      error: "Current player could not be found.",
+    }
+  }
+
+  const cost = getRailUpgradeCost(game, route)
+
+  if (currentPlayer.money < cost) {
+    return {
+      ok: false,
+      error: "You do not have enough money to electrify that route.",
+    }
+  }
+
+  return {
+    ok: true,
+    routeId,
+    cost,
+    game: {
+      ...game,
+      routes: game.routes.map(candidate =>
+        candidate.id === routeId
+          ? {
+              ...candidate,
+              railTraction: "electric",
+            }
+          : candidate,
+      ),
       players: game.players.map(player =>
         player.id === currentPlayer.id
           ? {
