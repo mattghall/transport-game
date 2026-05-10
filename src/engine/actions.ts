@@ -10,6 +10,7 @@ import type {
 } from "./types"
 import {
   applyBureaucracyFuelConsumption,
+  findPlayerBureaucracyPlan,
   getMaxFuelUnitsCapacityForPlayer,
   getMaxFuelUnitsForRoute,
 } from "./bureaucracy"
@@ -64,7 +65,6 @@ const STEP_ONE_REFILL: Record<PurchasableResource, number> = {
 const WEEKLY_PHASES: WeeklyPhase[] = [
   "purchase-equipment",
   "claim-routes",
-  "purchase-fuel",
   "bureaucracy",
 ]
 const PURCHASABLE_VEHICLE_CARD_COUNT = 4
@@ -112,6 +112,29 @@ export type BureaucracyVehicleCardResult =
       game: GameState
       routeId: string
       vehicleCardId: string | null
+    }
+  | {
+      ok: false
+      error: string
+    }
+
+export type BureaucracyServiceCitiesResult =
+  | {
+      ok: true
+      game: GameState
+      routeId: string
+      cityIds: string[]
+    }
+  | {
+      ok: false
+      error: string
+    }
+
+export type BureaucracyServiceSplitResult =
+  | {
+      ok: true
+      game: GameState
+      corridorId: string
     }
   | {
       ok: false
@@ -419,6 +442,26 @@ function refillResourceTrack(
   }
 }
 
+function getVehicleMarketBurnCardId(game: GameState) {
+  const visibleMarketCards = game.vehicleMarketCardIds
+    .slice(0, PURCHASABLE_VEHICLE_CARD_COUNT)
+    .map(cardId => game.vehicleCatalog.find(card => card.id === cardId) ?? null)
+    .filter((card): card is VehicleCard => card !== null)
+
+  if (visibleMarketCards.length === 0) {
+    return null
+  }
+
+  return [...visibleMarketCards]
+    .sort((cardA, cardB) => {
+      if (cardB.purchasePrice !== cardA.purchasePrice) {
+        return cardB.purchasePrice - cardA.purchasePrice
+      }
+
+      return cardB.number - cardA.number
+    })[0]?.id ?? null
+}
+
 export function advancePhase(game: GameState): GameState {
   if (isGameLocked(game)) {
     return game
@@ -434,6 +477,25 @@ export function advancePhase(game: GameState): GameState {
       : game.leadPlayerIndex
   const firstPlayerId = game.players[nextLeadPlayerIndex]?.id ?? game.currentPlayerId
 
+  if (game.currentPhase === "purchase-equipment") {
+    const burnedCardId = game.hasPurchasedVehicleThisPhase ? null : getVehicleMarketBurnCardId(game)
+    const nextVehicleMarketCardIds =
+      burnedCardId === null
+        ? game.vehicleMarketCardIds
+        : game.vehicleMarketCardIds.filter(cardId => cardId !== burnedCardId)
+
+    return {
+      ...game,
+      currentWeek: wrappedWeek,
+      currentPhase: WEEKLY_PHASES[nextPhaseIndex],
+      leadPlayerIndex: nextLeadPlayerIndex,
+      currentPlayerId: firstPlayerId,
+      hasPurchasedVehicleThisTurn: false,
+      hasPurchasedVehicleThisPhase: false,
+      vehicleMarketCardIds: nextVehicleMarketCardIds,
+    }
+  }
+
   if (game.currentPhase === "bureaucracy") {
     const resolvedGame = applyBureaucracyFuelConsumption(game)
 
@@ -444,6 +506,7 @@ export function advancePhase(game: GameState): GameState {
         leadPlayerIndex: nextLeadPlayerIndex,
         currentPlayerId: firstPlayerId,
         hasPurchasedVehicleThisTurn: false,
+        hasPurchasedVehicleThisPhase: false,
       }
     }
 
@@ -488,6 +551,7 @@ export function advancePhase(game: GameState): GameState {
       leadPlayerIndex: nextLeadPlayerIndex,
       currentPlayerId: firstPlayerId,
       hasPurchasedVehicleThisTurn: false,
+      hasPurchasedVehicleThisPhase: false,
       resourceMarket: {
         diesel: dieselRefill.counts,
         jetFuel: jetFuelRefill.counts,
@@ -506,6 +570,7 @@ export function advancePhase(game: GameState): GameState {
     leadPlayerIndex: nextLeadPlayerIndex,
     currentPlayerId: firstPlayerId,
     hasPurchasedVehicleThisTurn: false,
+    hasPurchasedVehicleThisPhase: false,
   }
 }
 
@@ -790,6 +855,7 @@ export function buyVehicleCard(
       ...game,
       vehicleMarketCardIds: game.vehicleMarketCardIds.filter(id => id !== cardId),
       hasPurchasedVehicleThisTurn: true,
+      hasPurchasedVehicleThisPhase: true,
       players: game.players.map(player => {
         if (player.id !== currentPlayer.id) {
           return player
@@ -831,19 +897,12 @@ export function setBureaucracyRouteFuelUnits(
     }
   }
 
-  const route = game.routes.find(candidate => candidate.id === routeId)
+  const routePlan = findPlayerBureaucracyPlan(game, game.currentPlayerId, routeId)
 
-  if (!route?.ownerId) {
+  if (!routePlan) {
     return {
       ok: false,
-      error: "That route could not be found.",
-    }
-  }
-
-  if (route.ownerId !== game.currentPlayerId) {
-    return {
-      ok: false,
-      error: "You can only plan trips for the current player's routes.",
+      error: "That service line could not be found.",
     }
   }
 
@@ -884,19 +943,12 @@ export function setBureaucracyRouteVehicleCard(
     }
   }
 
-  const route = game.routes.find(candidate => candidate.id === routeId)
+  const routePlan = findPlayerBureaucracyPlan(game, game.currentPlayerId, routeId)
 
-  if (!route?.ownerId) {
+  if (!routePlan) {
     return {
       ok: false,
-      error: "That route could not be found.",
-    }
-  }
-
-  if (route.ownerId !== game.currentPlayerId) {
-    return {
-      ok: false,
-      error: "You can only assign vehicles for the current player's routes.",
+      error: "That service line could not be found.",
     }
   }
 
@@ -933,10 +985,10 @@ export function setBureaucracyRouteVehicleCard(
     }
   }
 
-  if (vehicleCard.type !== getVehicleTypeForMode(route.mode)) {
+  if (vehicleCard.type !== getVehicleTypeForMode(routePlan.route.mode)) {
     return {
       ok: false,
-      error: "That vehicle card cannot operate this route type.",
+      error: "That vehicle card cannot operate this service line.",
     }
   }
 
@@ -957,6 +1009,81 @@ export function setBureaucracyRouteVehicleCard(
     },
     routeId,
     vehicleCardId: vehicleCard.id,
+  }
+}
+
+export function setBureaucracyServiceCities(
+  game: GameState,
+  routeId: string,
+  cityIds: string[],
+): BureaucracyServiceCitiesResult {
+  if (isGameLocked(game)) {
+    return {
+      ok: false,
+      error: "The game is over.",
+    }
+  }
+
+  if (game.currentPhase !== "bureaucracy") {
+    return {
+      ok: false,
+      error: "Service cities can only be updated during the bureaucracy phase.",
+    }
+  }
+
+  const routePlan = findPlayerBureaucracyPlan(game, game.currentPlayerId, routeId)
+
+  if (!routePlan) {
+    return {
+      ok: false,
+      error: "That service line could not be found.",
+    }
+  }
+
+  const normalizedCityIds = routePlan.availableCityIds.filter(cityId => cityIds.includes(cityId))
+
+  return {
+    ok: true,
+    routeId,
+    cityIds: normalizedCityIds,
+    game: {
+      ...game,
+      bureaucracyServiceCityIdsByRouteId: {
+        ...game.bureaucracyServiceCityIdsByRouteId,
+        [routeId]: normalizedCityIds,
+      },
+    },
+  }
+}
+
+export function addBureaucracyServiceSplit(
+  game: GameState,
+  corridorId: string,
+): BureaucracyServiceSplitResult {
+  if (isGameLocked(game)) {
+    return {
+      ok: false,
+      error: "The game is over.",
+    }
+  }
+
+  if (game.currentPhase !== "bureaucracy") {
+    return {
+      ok: false,
+      error: "Service splits can only be added during the bureaucracy phase.",
+    }
+  }
+
+  return {
+    ok: true,
+    corridorId,
+    game: {
+      ...game,
+      bureaucracyServiceSlotCountsByCorridorId: {
+        ...game.bureaucracyServiceSlotCountsByCorridorId,
+        [corridorId]: Math.max(1, game.bureaucracyServiceSlotCountsByCorridorId[corridorId] ?? 1) + 1,
+      },
+    },
   }
 }
 

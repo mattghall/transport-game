@@ -98,7 +98,9 @@ export function calculateTripsPerWeek(
   }
 
   const operatingHoursPerWeek =
-    game.operatingConfig.hoursPerDay * game.operatingConfig.daysPerWeek
+    game.operatingConfig.hoursPerDay *
+    game.operatingConfig.daysPerWeek *
+    game.operatingConfig.weeksPerPeriod
 
   return {
     tripDurationHours,

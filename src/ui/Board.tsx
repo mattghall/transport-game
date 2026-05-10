@@ -2,29 +2,31 @@ import { useEffect, useMemo, useState } from "react"
 import {
   type RailUpgradeResult,
   calculateClaimRouteCost,
+  type BureaucracyServiceCitiesResult,
+  type BureaucracyServiceSplitResult,
   type BureaucracyVehicleCardResult,
   getFuelPurchaseCost,
   getFuelUnitPrice,
   getConnectionOptions,
   getCurrentPlayer,
   isLastPlayerTurn,
-  type BureaucracyFuelUnitsResult,
   type ClaimRouteResult,
   type ResourcePurchaseResult,
-  type VehiclePurchaseResult,
 } from "../engine/actions"
 import {
   buildBureaucracySummaries,
   getMaxFuelUnitsCapacityForPlayer,
-  getMaxFuelUnitsForRoute,
 } from "../engine/bureaucracy"
 import {
   buildVictoryStandings,
   calculateConnectionBonus,
   getActiveChanceCard,
+  getBalanceAdjustmentPerTrip,
   getCombinedDemandForCityIds,
+  getCrewCostPerWeekPerVehicle,
   getConnectedCityIds,
   getFuelPriceMultiplier,
+  getHoursPerWeek,
   getRailTraction,
   getRailUpgradeCost,
 } from "../engine/economy"
@@ -52,16 +54,31 @@ type Props = {
     mode: RouteMode,
   ) => ClaimRouteResult
   onBuyResource: (resource: PurchasableResource, quantity: number) => ResourcePurchaseResult
-  onBuyVehicleCard: (cardId: string) => VehiclePurchaseResult
+  onBuyVehicleCard: (
+    cardId: string,
+  ) =>
+    | {
+        ok: true
+        card: VehicleCard
+        cost: number
+        nextPhase: WeeklyPhase
+        nextPlayerName: string
+        advancedPhase: boolean
+      }
+    | {
+        ok: false
+        error: string
+      }
   onUpgradeRailRoute: (routeId: string) => RailUpgradeResult
   onSetBureaucracyRouteVehicleCard: (
     routeId: string,
     vehicleCardId: string | null,
   ) => BureaucracyVehicleCardResult
-  onSetBureaucracyRouteFuelUnits: (
+  onSetBureaucracyServiceCities: (
     routeId: string,
-    fuelUnits: number,
-  ) => BureaucracyFuelUnitsResult
+    cityIds: string[],
+  ) => BureaucracyServiceCitiesResult
+  onAddBureaucracyServiceSplit: (corridorId: string) => BureaucracyServiceSplitResult
   onAdvanceTurn: () => void
   onUndo: () => void
   canUndo: boolean
@@ -99,6 +116,24 @@ const PLAYER_PANEL_STYLE = {
   display: "flex",
   flexDirection: "column",
   gap: 10,
+  padding: 12,
+  borderRadius: 12,
+  background: "rgba(255, 255, 255, 0.94)",
+  boxShadow: "0 6px 24px rgba(0, 0, 0, 0.12)",
+  zIndex: 1,
+  fontFamily: "system-ui, sans-serif",
+} as const
+
+const ACTION_LOG_PANEL_STYLE = {
+  position: "absolute",
+  right: 16,
+  bottom: 88,
+  width: 320,
+  maxHeight: 260,
+  overflowY: "auto",
+  display: "flex",
+  flexDirection: "column",
+  gap: 8,
   padding: 12,
   borderRadius: 12,
   background: "rgba(255, 255, 255, 0.94)",
@@ -166,7 +201,9 @@ const RESOURCE_MARKET_PANEL_STYLE = {
   position: "absolute",
   left: 16,
   right: 16,
+  top: 88,
   bottom: 88,
+  overflowY: "auto",
   display: "flex",
   flexDirection: "column",
   gap: 10,
@@ -189,6 +226,8 @@ const MODE_LABELS: Record<RouteMode, string> = {
   air: "Air",
   bus: "Bus",
 }
+
+const BUREAUCRACY_MODE_ORDER: RouteMode[] = ["bus", "rail", "air"]
 
 const MODE_LINE_STYLES: Record<
   RouteMode,
@@ -275,7 +314,7 @@ function getNextPhase(phase: WeeklyPhase): WeeklyPhase {
     case "purchase-equipment":
       return "claim-routes"
     case "claim-routes":
-      return "purchase-fuel"
+      return "bureaucracy"
     case "purchase-fuel":
       return "bureaucracy"
     case "bureaucracy":
@@ -296,9 +335,9 @@ function getPhaseStatusMessage(phase: WeeklyPhase) {
     case "claim-routes":
       return "Select cities to create a connection."
     case "purchase-fuel":
-      return "Buy fuel or advance to the next player."
+      return "Fuel purchasing is disabled."
     case "bureaucracy":
-      return "Plan trips for each route, then advance."
+      return "Plan routes and operate the maximum affordable trips, then advance."
   }
 }
 
@@ -358,7 +397,8 @@ export default function Board({
   onBuyVehicleCard,
   onUpgradeRailRoute,
   onSetBureaucracyRouteVehicleCard,
-  onSetBureaucracyRouteFuelUnits,
+  onSetBureaucracyServiceCities,
+  onAddBureaucracyServiceSplit,
   onAdvanceTurn,
   onUndo,
   canUndo,
@@ -366,6 +406,7 @@ export default function Board({
   type RestorablePanel = "resource" | "vehicle" | "bureaucracy" | "economics" | null
 
   const [selectedCityIds, setSelectedCityIds] = useState<string[]>([])
+  const [selectedClaimMode, setSelectedClaimMode] = useState<RouteMode | null>(null)
   const [hoverCityId, setHoverCityId] = useState<string | null>(null)
   const [expandedPlayerId, setExpandedPlayerId] = useState<string | null>(null)
   const [isResourceMarketOpen, setIsResourceMarketOpen] = useState(false)
@@ -373,11 +414,15 @@ export default function Board({
   const [isBureaucracyOpen, setIsBureaucracyOpen] = useState(false)
   const [isEconomicsOpen, setIsEconomicsOpen] = useState(false)
   const [isWikiOpen, setIsWikiOpen] = useState(false)
+  const [isActionLogOpen, setIsActionLogOpen] = useState(false)
   const [wikiPreviousPanel, setWikiPreviousPanel] = useState<RestorablePanel>(null)
   const [zoomScale, setZoomScale] = useState(1)
+  const [isPeriodSummaryOpen, setIsPeriodSummaryOpen] = useState(false)
+  const [lastShownPeriodSummaryKey, setLastShownPeriodSummaryKey] = useState<string | null>(null)
   const [statusMessage, setStatusMessage] = useState<string>(
     getPhaseStatusMessage(game.currentPhase),
   )
+  const [pendingVehiclePurchaseCardId, setPendingVehiclePurchaseCardId] = useState<string | null>(null)
 
   const map = game.map
   const currentPlayer = getCurrentPlayer(game)
@@ -522,33 +567,64 @@ export default function Board({
                 ),
               )
               .filter(summary => summary !== null)
-      const weeklyFuelUnits = routeSummaries.reduce(
-        (total, summary) => total + Math.ceil(summary.tripFuelUnits * summary.tripsPerWeek),
+      const totalTripDurationHours = routeSummaries.reduce(
+        (total, summary) => total + summary.tripDurationHours,
         0,
       )
-      const fuelCostPerWeek =
-        routeSummaries.length === 0
-          ? null
-          : routeSummaries.reduce(
-              (total, summary) => {
-                if (summary.fuelResource === null) {
-                  return total
-                }
-
-                return (
-                  total +
-                  calculateRealFuelFromUnits(
-                    Math.ceil(summary.tripFuelUnits * summary.tripsPerWeek),
-                    summary.fuelResource,
-                    game,
-                  ) * game.operatingConfig.fuelPricePerRealUnit[summary.fuelResource]
-                )
-              },
-              0,
+      const maxTripsPerPeriod =
+        previewCard === null || routeSummaries.length !== routePairs.length || totalTripDurationHours <= 0
+          ? 0
+          : Math.floor(getHoursPerWeek(game) / totalTripDurationHours)
+      const passengersPerTrip =
+        previewCard === null
+          ? 0
+          : Math.min(
+              previewCard.totalPassengerCapacity,
+              combinedDemand * game.operatingConfig.passengersPerDemandPoint,
             )
+      const passengersPerPeriod = passengersPerTrip * maxTripsPerPeriod
+      const revenuePerPeriod =
+        totalDistanceMiles *
+        passengersPerPeriod *
+        game.operatingConfig.revenuePerPassengerMile[option.mode]
+      const tripFuelBurnReal =
+        routeSummaries.length === 0
+          ? 0
+          : routeSummaries.reduce((total, summary) => total + summary.tripFuelBurn, 0)
+      const fuelResource = routeSummaries[0]?.fuelResource ?? null
+      const fuelCostPerPeriod =
+        fuelResource === null
+          ? 0
+          : tripFuelBurnReal *
+            maxTripsPerPeriod *
+            game.operatingConfig.fuelPricePerRealUnit[fuelResource] *
+            getFuelPriceMultiplier(game, fuelResource)
+      const fixedCrewCost =
+        previewCard === null ? 0 : getCrewCostPerWeekPerVehicle(game, previewCard.type) * previewCard.vehicleCount
+      const fixedMaintenanceCost =
+        previewCard === null
+          ? 0
+          : game.operatingConfig.realWorldOperatingCosts.maintenanceCostPerWeekPerVehicle[previewCard.type] *
+            game.operatingConfig.weeksPerPeriod *
+            previewCard.vehicleCount
+      const balanceAdjustmentPerPeriod =
+        previewCard === null
+          ? 0
+          : maxTripsPerPeriod *
+            getBalanceAdjustmentPerTrip(game, {
+              id: `preview:${option.mode}`,
+              cityA: selectedCities[0].id,
+              cityB: selectedCities[selectedCities.length - 1].id,
+              mode: option.mode,
+            })
+      const operatingCostPerPeriod =
+        fixedCrewCost + fixedMaintenanceCost + balanceAdjustmentPerPeriod + fuelCostPerPeriod
 
       return {
         mode: option.mode,
+        valid: option.valid,
+        reason: option.reason,
+        previewCard,
         totalDistanceMiles,
         combinedDemand,
         claimCost: Math.ceil(
@@ -559,11 +635,22 @@ export default function Board({
         ),
         connectionBonus: connectionBonusPreview?.totalBonus ?? 0,
         newCityCount: connectionBonusPreview?.newlyConnectedCityIds.length ?? 0,
-        weeklyFuelUnits,
-        fuelCostPerWeek,
+        passengersPerTrip,
+        maxTripsPerPeriod,
+        passengersPerPeriod,
+        revenuePerPeriod,
+        crewCostPerPeriod: fixedCrewCost,
+        maintenanceCostPerPeriod: fixedMaintenanceCost,
+        fuelCostPerPeriod,
+        balanceCostPerPeriod: balanceAdjustmentPerPeriod,
+        operatingCostPerPeriod,
+        netPerPeriod: revenuePerPeriod - operatingCostPerPeriod,
       }
     })
   }, [connectionBonusPreview, connectionOptions, currentPlayerOwnedVehicleCards, game, selectedCities])
+  const selectedClaimPreview = routePreviewSummaries.find(
+    summary => summary.mode === selectedClaimMode,
+  ) ?? null
   const canBuyFuelByResource = useMemo(
     () => ({
       diesel: currentPlayerOwnedVehicleCards.some(card => card.type !== "air"),
@@ -585,7 +672,8 @@ export default function Board({
   const activeChanceCard = useMemo(() => getActiveChanceCard(game), [game])
   const victoryStandings = useMemo(() => buildVictoryStandings(game), [game])
   const leadingStanding = victoryStandings[0]
-  const weeksRemaining = Math.max(0, game.operatingConfig.totalWeeks - game.currentWeek)
+  const periodsRemaining = Math.max(0, game.operatingConfig.totalWeeks - game.currentWeek)
+  const completedPeriod = game.isGameOver ? game.currentWeek : game.currentWeek - 1
   const effectiveFuelPriceByResource = useMemo(
     () => ({
       diesel:
@@ -602,41 +690,83 @@ export default function Board({
       {
         label: "Bus",
         ticketPricePerMile: game.operatingConfig.revenuePerPassengerMile.bus,
-        operatingCostPerTrip: game.operatingConfig.operatingCostPerTrip.bus,
+        crewHourlyCostPerVehicle:
+          game.operatingConfig.realWorldOperatingCosts.crewHourlyCostPerVehicle.bus,
+        crewCostPerWeekPerVehicle: getCrewCostPerWeekPerVehicle(game, "bus"),
+        maintenanceCostPerWeekPerVehicle:
+          game.operatingConfig.realWorldOperatingCosts.maintenanceCostPerWeekPerVehicle.bus *
+          game.operatingConfig.weeksPerPeriod,
+        balanceAdjustmentPerTrip: getBalanceAdjustmentPerTrip(game, {
+          id: "economics-bus",
+          cityA: "",
+          cityB: "",
+          mode: "bus",
+        }),
         loadingHours: game.operatingConfig.loadingHours.bus,
         fuel: "Diesel",
         fuelPrice: formatUnitRate(effectiveFuelPriceByResource.diesel),
-        fuelUnit: `${formatDecimal(game.operatingConfig.fuelUnits.diesel, 0)} gal/unit`,
       },
       {
         label: "Air",
         ticketPricePerMile: game.operatingConfig.revenuePerPassengerMile.air,
-        operatingCostPerTrip: game.operatingConfig.operatingCostPerTrip.air,
+        crewHourlyCostPerVehicle:
+          game.operatingConfig.realWorldOperatingCosts.crewHourlyCostPerVehicle.air,
+        crewCostPerWeekPerVehicle: getCrewCostPerWeekPerVehicle(game, "air"),
+        maintenanceCostPerWeekPerVehicle:
+          game.operatingConfig.realWorldOperatingCosts.maintenanceCostPerWeekPerVehicle.air *
+          game.operatingConfig.weeksPerPeriod,
+        balanceAdjustmentPerTrip: getBalanceAdjustmentPerTrip(game, {
+          id: "economics-air",
+          cityA: "",
+          cityB: "",
+          mode: "air",
+        }),
         loadingHours: game.operatingConfig.loadingHours.air,
         fuel: "Jet fuel",
         fuelPrice: formatUnitRate(effectiveFuelPriceByResource.jetFuel),
-        fuelUnit: `${formatDecimal(game.operatingConfig.fuelUnits.jetFuel, 0)} lb/unit`,
       },
       {
         label: "Rail (diesel)",
         ticketPricePerMile: game.operatingConfig.revenuePerPassengerMile.rail,
-        operatingCostPerTrip: game.operatingConfig.operatingCostPerTrip.railDiesel,
+        crewHourlyCostPerVehicle:
+          game.operatingConfig.realWorldOperatingCosts.crewHourlyCostPerVehicle.train,
+        crewCostPerWeekPerVehicle: getCrewCostPerWeekPerVehicle(game, "train"),
+        maintenanceCostPerWeekPerVehicle:
+          game.operatingConfig.realWorldOperatingCosts.maintenanceCostPerWeekPerVehicle.train *
+          game.operatingConfig.weeksPerPeriod,
+        balanceAdjustmentPerTrip: getBalanceAdjustmentPerTrip(game, {
+          id: "economics-rail-diesel",
+          cityA: "",
+          cityB: "",
+          mode: "rail",
+          railTraction: "diesel",
+        }),
         loadingHours: game.operatingConfig.loadingHours.train,
         fuel: "Diesel",
         fuelPrice: formatUnitRate(effectiveFuelPriceByResource.diesel),
-        fuelUnit: `${formatDecimal(game.operatingConfig.fuelUnits.diesel, 0)} gal/unit`,
       },
       {
         label: "Rail (electric)",
         ticketPricePerMile: game.operatingConfig.revenuePerPassengerMile.rail,
-        operatingCostPerTrip: game.operatingConfig.operatingCostPerTrip.railElectric,
+        crewHourlyCostPerVehicle:
+          game.operatingConfig.realWorldOperatingCosts.crewHourlyCostPerVehicle.train,
+        crewCostPerWeekPerVehicle: getCrewCostPerWeekPerVehicle(game, "train"),
+        maintenanceCostPerWeekPerVehicle:
+          game.operatingConfig.realWorldOperatingCosts.maintenanceCostPerWeekPerVehicle.train *
+          game.operatingConfig.weeksPerPeriod,
+        balanceAdjustmentPerTrip: getBalanceAdjustmentPerTrip(game, {
+          id: "economics-rail-electric",
+          cityA: "",
+          cityB: "",
+          mode: "rail",
+          railTraction: "electric",
+        }),
         loadingHours: game.operatingConfig.loadingHours.train,
         fuel: "No fuel",
         fuelPrice: "—",
-        fuelUnit: "No fuel units",
       },
     ],
-    [effectiveFuelPriceByResource, game.operatingConfig],
+    [effectiveFuelPriceByResource, game],
   )
 
   const playerSummaries = useMemo(() => {
@@ -705,10 +835,24 @@ export default function Board({
   const currentPlayerBureaucracySummary = bureaucracySummaries.find(
     summary => summary.player.id === game.currentPlayerId,
   )
+  const currentPlayerBureaucracyPlansByMode = useMemo(() => {
+    if (!currentPlayerBureaucracySummary) {
+      return []
+    }
+
+    return BUREAUCRACY_MODE_ORDER.map(mode => ({
+      mode,
+      plans: currentPlayerBureaucracySummary.routePlans.filter(plan => plan.route.mode === mode),
+    }))
+  }, [currentPlayerBureaucracySummary])
   const nextPlayer = currentPlayerIndex === -1
     ? game.players[0]
     : game.players[(currentPlayerIndex + 1) % game.players.length]
+  const pendingVehiclePurchaseCard =
+    (pendingVehiclePurchaseCardId && vehicleCardMap[pendingVehiclePurchaseCardId]) ?? null
   const shouldAdvancePhase = isLastPlayerTurn(game)
+  const isAdvanceBlocked =
+    game.currentPhase === "claim-routes" && selectedCityIds.length >= 2
 
   function getFuelInfoLabel(resource: PurchasableResource, units: number) {
     const realFuel = calculateRealFuelFromUnits(units, resource, game)
@@ -718,6 +862,7 @@ export default function Board({
 
   function resetSelection(message = getPhaseStatusMessage(game.currentPhase)) {
     setSelectedCityIds([])
+    setSelectedClaimMode(null)
     setHoverCityId(null)
     setStatusMessage(message)
   }
@@ -736,12 +881,37 @@ export default function Board({
 
   useEffect(() => {
     setSelectedCityIds([])
+    setSelectedClaimMode(null)
     setHoverCityId(null)
+    setPendingVehiclePurchaseCardId(null)
     setStatusMessage(getPhaseStatusMessage(game.currentPhase))
   }, [game.currentPhase])
 
   useEffect(() => {
-    setIsResourceMarketOpen(game.currentPhase === "purchase-fuel")
+    if (selectedClaimMode && !connectionOptions.some(option => option.mode === selectedClaimMode && option.valid)) {
+      setSelectedClaimMode(null)
+    }
+  }, [connectionOptions, selectedClaimMode])
+
+  useEffect(() => {
+    const completedPeriod = game.isGameOver ? game.currentWeek : game.currentWeek - 1
+
+    if (game.currentPhase !== "purchase-equipment" || completedPeriod < 1) {
+      return
+    }
+
+    const summaryKey = `${completedPeriod}:${game.isGameOver ? "game-over" : "continue"}`
+
+    if (summaryKey === lastShownPeriodSummaryKey) {
+      return
+    }
+
+    setIsPeriodSummaryOpen(true)
+    setLastShownPeriodSummaryKey(summaryKey)
+  }, [game.currentPhase, game.currentWeek, game.isGameOver, lastShownPeriodSummaryKey])
+
+  useEffect(() => {
+    setIsResourceMarketOpen(false)
     setIsVehicleMarketOpen(game.currentPhase === "purchase-equipment")
     setIsBureaucracyOpen(game.currentPhase === "bureaucracy")
     setIsEconomicsOpen(false)
@@ -750,7 +920,7 @@ export default function Board({
   }, [game.currentPhase])
 
   function restorePhasePanel() {
-    setIsResourceMarketOpen(game.currentPhase === "purchase-fuel")
+    setIsResourceMarketOpen(false)
     setIsVehicleMarketOpen(game.currentPhase === "purchase-equipment")
     setIsBureaucracyOpen(game.currentPhase === "bureaucracy")
     setIsEconomicsOpen(false)
@@ -854,17 +1024,29 @@ export default function Board({
     )
   }
 
-  function handleClaim(mode: RouteMode) {
+  function handleSelectClaimMode(mode: RouteMode) {
+    const option = connectionOptions.find(candidate => candidate.mode === mode)
+
+    if (!option?.valid) {
+      setStatusMessage(option?.reason ?? "That connection type is not available.")
+      return
+    }
+
+    setSelectedClaimMode(mode)
+    setStatusMessage(`Ready to confirm this ${MODE_LABELS[mode].toLowerCase()} route.`)
+  }
+
+  function handleClaim() {
     if (game.currentPhase !== "claim-routes") {
       setStatusMessage(getRouteInteractionMessage(game.currentPhase))
       return
     }
 
-    if (selectedCityIds.length < 2) {
+    if (selectedCityIds.length < 2 || selectedClaimMode === null) {
       return
     }
 
-    const result = onClaimRoute(selectedCityIds, mode)
+    const result = onClaimRoute(selectedCityIds, selectedClaimMode)
 
     if (!result.ok) {
       setStatusMessage(result.error)
@@ -878,11 +1060,16 @@ export default function Board({
         : ""
 
     resetSelection(
-      `${currentPlayer?.name ?? "Current player"} claimed ${result.routes.length} ${MODE_LABELS[mode].toLowerCase()} segment${result.routes.length === 1 ? "" : "s"} across ${routeLabel}${result.cost > 0 ? ` for ${formatCurrency(result.cost)}` : ""}${rewardText}.`,
+      `${currentPlayer?.name ?? "Current player"} claimed ${result.routes.length} ${MODE_LABELS[selectedClaimMode].toLowerCase()} segment${result.routes.length === 1 ? "" : "s"} across ${routeLabel}${result.cost > 0 ? ` for ${formatCurrency(result.cost)}` : ""}${rewardText}.`,
     )
   }
 
   function handleAdvanceTurnClick() {
+    if (game.currentPhase === "claim-routes" && selectedCityIds.length >= 2) {
+      setStatusMessage("Confirm or cancel the selected route before ending the turn.")
+      return
+    }
+
     const nextStatusMessage = shouldAdvancePhase
       ? `Starting ${formatPhaseLabel(getNextPhase(game.currentPhase)).toLowerCase()}.`
       : `${nextPlayer?.name ?? "Next player"} is up.`
@@ -905,36 +1092,28 @@ export default function Board({
   }
 
   function handleBuyVehicleCardClick(cardId: string) {
-    const result = onBuyVehicleCard(cardId)
-
-    if (!result.ok) {
-      setStatusMessage(result.error)
-      return
-    }
-
-    setStatusMessage(
-      `${currentPlayer?.name ?? "Current player"} bought vehicle card ${result.card.number} (${getVehicleTypeLabel(result.card.type).toLowerCase()}) for ${formatCurrency(result.cost)}.`,
-    )
+    setPendingVehiclePurchaseCardId(cardId)
   }
 
-  function handleSetBureaucracyFuelUnits(routeId: string, requestedFuelUnits: number) {
-    const result = onSetBureaucracyRouteFuelUnits(routeId, requestedFuelUnits)
-
-    if (!result.ok) {
-      setStatusMessage(result.error)
+  function handleConfirmBuyVehicleCard() {
+    if (!pendingVehiclePurchaseCard) {
       return
     }
 
-    if (result.fuelUnits !== Math.max(0, Math.floor(requestedFuelUnits))) {
-      setStatusMessage(
-        `Fuel units adjusted to ${result.fuelUnits} based on route limits and available fuel.`,
-      )
+    const result = onBuyVehicleCard(pendingVehiclePurchaseCard.id)
+
+    if (!result.ok) {
+      setStatusMessage(result.error)
+      setPendingVehiclePurchaseCardId(null)
       return
     }
 
     setStatusMessage(
-      `Set fuel used to ${result.fuelUnits} unit${result.fuelUnits === 1 ? "" : "s"} for that route.`,
+      result.advancedPhase
+        ? `${currentPlayer?.name ?? "Current player"} bought vehicle card ${result.card.number} for ${formatCurrency(result.cost)}. Starting ${formatPhaseLabel(result.nextPhase).toLowerCase()}.`
+        : `${currentPlayer?.name ?? "Current player"} bought vehicle card ${result.card.number} for ${formatCurrency(result.cost)}. ${result.nextPlayerName} is up.`,
     )
+    setPendingVehiclePurchaseCardId(null)
   }
 
   function handleSetBureaucracyVehicleCard(routeId: string, vehicleCardId: string | null) {
@@ -950,6 +1129,37 @@ export default function Board({
         ? "Cleared the assigned vehicle for that route."
         : "Updated the vehicle assigned to that route.",
     )
+  }
+
+  function handleToggleServiceCity(routeId: string, cityId: string, selectedCityIds: string[]) {
+    const nextCityIds = selectedCityIds.includes(cityId)
+      ? selectedCityIds.filter(candidate => candidate !== cityId)
+      : [...selectedCityIds, cityId]
+    const result = onSetBureaucracyServiceCities(routeId, nextCityIds)
+
+    if (!result.ok) {
+      setStatusMessage(result.error)
+      return
+    }
+
+    setStatusMessage(
+      result.cityIds.length >= 2
+        ? `Updated service span to ${result.cityIds
+            .map(nextCityId => cityMap[nextCityId]?.name ?? nextCityId)
+            .join(" - ")}.`
+        : "Select at least two cities to run that service.",
+    )
+  }
+
+  function handleAddSplitService(corridorId: string) {
+    const result = onAddBureaucracyServiceSplit(corridorId)
+
+    if (!result.ok) {
+      setStatusMessage(result.error)
+      return
+    }
+
+    setStatusMessage("Added another service slot on that corridor.")
   }
 
   function handleUpgradeRailRoute(routeId: string) {
@@ -1021,7 +1231,7 @@ export default function Board({
           }}
         >
           <div>
-            <strong>Goal:</strong> Move the most passengers in {game.operatingConfig.totalWeeks} weeks.
+            <strong>Goal:</strong> Move the most passengers in {game.operatingConfig.totalWeeks} months.
           </div>
           <div style={{ color: "#56635a", fontSize: 13 }}>
             Ties break on connected cities, then cash.
@@ -1046,7 +1256,7 @@ export default function Board({
             }}
           >
             <div>
-              <strong>Weekly chance:</strong> {activeChanceCard.title}
+              <strong>Monthly chance:</strong> {activeChanceCard.title}
             </div>
             <div style={{ color: "#5f5482", fontSize: 13 }}>
               {activeChanceCard.description}
@@ -1067,25 +1277,46 @@ export default function Board({
         </div>
         <div>{statusMessage}</div>
         {selectedCityIds.length >= 2 && (
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {connectionOptions.map(option => (
-              <button
-                key={option.mode}
-                type="button"
-                disabled={!option.valid}
-                onClick={() => handleClaim(option.mode)}
-                style={{
-                  padding: "8px 12px",
-                  borderRadius: 999,
-                  border: "1px solid #c7d0c4",
-                  cursor: option.valid ? "pointer" : "not-allowed",
-                  background: option.valid ? "#ffffff" : "#f2f2f2",
-                  color: option.valid ? "#222222" : "#767676",
-                }}
-              >
-                {MODE_LABELS[option.mode]}
-              </button>
-            ))}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            {connectionOptions.map(option => {
+              const isSelected = selectedClaimMode === option.mode
+
+              return (
+                <button
+                  key={option.mode}
+                  type="button"
+                  disabled={!option.valid}
+                  onClick={() => handleSelectClaimMode(option.mode)}
+                  style={{
+                    padding: "8px 12px",
+                    borderRadius: 999,
+                    border: `1px solid ${isSelected ? "#223024" : "#c7d0c4"}`,
+                    cursor: option.valid ? "pointer" : "not-allowed",
+                    background: isSelected ? "#223024" : option.valid ? "#ffffff" : "#f2f2f2",
+                    color: isSelected ? "#ffffff" : option.valid ? "#222222" : "#767676",
+                    fontWeight: isSelected ? 700 : 500,
+                  }}
+                >
+                  {MODE_LABELS[option.mode]}
+                </button>
+              )
+            })}
+            <button
+              type="button"
+              onClick={handleClaim}
+              disabled={selectedClaimMode === null}
+              style={{
+                padding: "8px 12px",
+                borderRadius: 999,
+                border: "1px solid #223024",
+                cursor: selectedClaimMode === null ? "not-allowed" : "pointer",
+                background: selectedClaimMode === null ? "#dfe5de" : "#223024",
+                color: "#ffffff",
+                fontWeight: 700,
+              }}
+            >
+              Confirm route
+            </button>
             <button
               type="button"
               onClick={() => resetSelection()}
@@ -1103,33 +1334,157 @@ export default function Board({
         )}
         {optionMessage && selectedCityIds.length >= 2 && <div>{optionMessage}</div>}
         {routePreviewSummaries.length > 0 && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13 }}>
+          <div style={{ display: "grid", gap: 8, fontSize: 13 }}>
             {routePreviewSummaries.map(summary => (
-              <div key={`${summary.mode}-preview`} style={{ color: "#324236" }}>
-                <strong>{MODE_LABELS[summary.mode]}:</strong> {formatDecimal(summary.totalDistanceMiles)} mi
-                {" • "}Demand {summary.combinedDemand}
-                {summary.claimCost > 0 && (
-                  <>
-                    {" • "}Build {formatCurrency(summary.claimCost)}
-                  </>
+              <div
+                key={`${summary.mode}-preview`}
+                style={{
+                  border: selectedClaimMode === summary.mode ? "1px solid #223024" : "1px solid #d8dfd5",
+                  borderRadius: 10,
+                  padding: 10,
+                  background: selectedClaimMode === summary.mode ? "#f4f7f3" : "#ffffff",
+                  color: "#324236",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                  <strong>{MODE_LABELS[summary.mode]}</strong>
+                  <span style={{ color: summary.valid ? "#2a7f3b" : "#9b1c1c" }}>
+                    {summary.valid ? "Available" : "Unavailable"}
+                  </span>
+                </div>
+                <div style={{ marginTop: 4 }}>
+                  {formatDecimal(summary.totalDistanceMiles)} mi
+                  {" • "}Demand {summary.combinedDemand}
+                  {" • "}Capacity {summary.passengersPerTrip.toLocaleString()} / trip
+                </div>
+                {summary.previewCard && (
+                  <div style={{ color: "#56635a", marginTop: 4 }}>
+                    Vehicle preview: #{summary.previewCard.number} {summary.previewCard.name}
+                  </div>
                 )}
-                {summary.connectionBonus > 0 && (
-                  <>
-                    {" • "}Bonus {formatCurrency(summary.connectionBonus)}
-                    {" • "}New cities {summary.newCityCount}
-                  </>
-                )}
-                {summary.fuelCostPerWeek !== null && (
-                  <>
-                    {" • "}Fuel {formatDecimal(summary.weeklyFuelUnits)}u/week
-                    {" • "}{formatCurrency(summary.fuelCostPerWeek)}/week
-                  </>
+                <div style={{ marginTop: 4 }}>
+                  Trips/month {summary.maxTripsPerPeriod.toLocaleString()}
+                  {" • "}Passengers/month {summary.passengersPerPeriod.toLocaleString()}
+                </div>
+                <div style={{ marginTop: 4 }}>
+                  Revenue {formatCurrency(summary.revenuePerPeriod)}
+                  {" • "}Operating cost {formatCurrency(summary.operatingCostPerPeriod)}
+                  {" • "}Net {formatCurrency(summary.netPerPeriod)}
+                </div>
+                <div style={{ marginTop: 4, color: "#56635a", fontSize: 12 }}>
+                  Crew {formatCurrency(summary.crewCostPerPeriod)}
+                  {" • "}Maint {formatCurrency(summary.maintenanceCostPerPeriod)}
+                  {" • "}Balance {formatCurrency(summary.balanceCostPerPeriod)}
+                  {" • "}Fuel {formatCurrency(summary.fuelCostPerPeriod)}
+                </div>
+                <div style={{ marginTop: 4 }}>
+                  Build {formatCurrency(summary.claimCost)}
+                  {summary.connectionBonus > 0 && (
+                    <>
+                      {" • "}Bonus {formatCurrency(summary.connectionBonus)}
+                      {" • "}New cities {summary.newCityCount}
+                    </>
+                  )}
+                </div>
+                {!summary.valid && summary.reason && (
+                  <div style={{ marginTop: 4, color: "#9b1c1c" }}>{summary.reason}</div>
                 )}
               </div>
             ))}
           </div>
         )}
+        {selectedClaimPreview && selectedClaimPreview.valid && (
+          <div style={{ color: "#324236", fontSize: 13 }}>
+            Ready to confirm: <strong>{MODE_LABELS[selectedClaimPreview.mode]}</strong> for{" "}
+            {formatCurrency(selectedClaimPreview.claimCost)}
+            {selectedClaimPreview.connectionBonus > 0 &&
+              ` with ${formatCurrency(selectedClaimPreview.connectionBonus)} in connection bonuses`}
+            .
+          </div>
+        )}
       </div>
+      {isPeriodSummaryOpen && completedPeriod >= 1 && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: "rgba(10, 18, 12, 0.35)",
+            zIndex: 3,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 24,
+            fontFamily: "system-ui, sans-serif",
+          }}
+        >
+          <div
+            style={{
+              width: "min(760px, calc(100vw - 32px))",
+              maxHeight: "calc(100vh - 48px)",
+              overflowY: "auto",
+              background: "#ffffff",
+              borderRadius: 16,
+              boxShadow: "0 16px 40px rgba(0, 0, 0, 0.2)",
+              padding: 18,
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+              <div>
+                <strong>End of month {completedPeriod} summary</strong>
+                <div style={{ color: "#56635a", fontSize: 13 }}>
+                  Revenue, costs, and passenger totals from the month that just finished.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsPeriodSummaryOpen(false)}
+                style={{
+                  padding: "8px 12px",
+                  borderRadius: 999,
+                  border: "1px solid #c7d0c4",
+                  background: "#ffffff",
+                  cursor: "pointer",
+                  fontWeight: 600,
+                }}
+              >
+                Close
+              </button>
+            </div>
+            <div style={{ display: "grid", gap: 10 }}>
+              {playerSummaries.map(({ player, connectedCities, weeklyNet }) => (
+                <div
+                  key={`${player.id}-period-summary`}
+                  style={{
+                    border: "1px solid #d8dfd5",
+                    borderRadius: 12,
+                    padding: 12,
+                    display: "grid",
+                    gridTemplateColumns: "minmax(140px, 1fr) repeat(5, auto)",
+                    gap: 10,
+                    alignItems: "center",
+                    background: "#ffffff",
+                  }}
+                >
+                  <div>
+                    <strong style={{ color: player.color }}>{player.name}</strong>
+                    <div style={{ color: "#56635a", fontSize: 12 }}>
+                      Connected cities: {connectedCities.length}
+                    </div>
+                  </div>
+                  <div>Revenue {formatCurrency(player.weeklyPayout)}</div>
+                  <div>Costs {formatCurrency(player.operatingCosts)}</div>
+                  <div>Net {formatCurrency(weeklyNet)}</div>
+                  <div>Passengers {formatDecimal(player.lastPeriodPassengersServed, 0)}</div>
+                  <div>Cash {formatCurrency(player.money)}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
       {game.isGameOver && leadingStanding && (
         <div
           style={{
@@ -1179,7 +1534,7 @@ export default function Board({
               {formatCurrency(expandedPlayerSummary.player.operatingCosts)}
             </div>
             <div>
-              <strong>Weekly payout:</strong>{" "}
+              <strong>Monthly revenue:</strong>{" "}
               {formatCurrency(expandedPlayerSummary.player.weeklyPayout)}
             </div>
             <div>
@@ -1199,28 +1554,6 @@ export default function Board({
                     .map(card => `#${card.number} ${card.name}`)
                     .join(", ")
                 : "None yet"}
-            </div>
-            <div>
-              <strong>Fuel:</strong>{" "}
-              <span>
-                {formatDecimal(expandedPlayerSummary.player.inventory.fuel.diesel)} diesel units
-              </span>
-              <InfoBubble
-                label={getFuelInfoLabel(
-                  "diesel",
-                  expandedPlayerSummary.player.inventory.fuel.diesel,
-                )}
-              />
-              {", "}
-              <span>
-                {formatDecimal(expandedPlayerSummary.player.inventory.fuel.jetFuel)} jet fuel units
-              </span>
-              <InfoBubble
-                label={getFuelInfoLabel(
-                  "jetFuel",
-                  expandedPlayerSummary.player.inventory.fuel.jetFuel,
-                )}
-              />
             </div>
             <div>
               <strong>Connected cities:</strong>{" "}
@@ -1314,163 +1647,104 @@ export default function Board({
         <div style={RESOURCE_MARKET_PANEL_STYLE}>
           <strong>Bureaucracy ledger</strong>
           <div style={{ color: "#56635a" }}>
-            Assign vehicles to routes, then choose whole fuel units per route. One owned vehicle card operates one matching route, and revenue is paid per passenger-mile actually served.
+            Assign vehicles to routes. Fuel is charged here as trips operate, and each route defaults to the maximum trips you can afford.
           </div>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
-              gap: 12,
-            }}
-          >
-            {bureaucracySummaries.map(summary => (
+          {currentPlayerBureaucracySummary ? (
+            <div
+              style={{
+                border: "1px solid #d8dfd5",
+                borderRadius: 10,
+                padding: 12,
+                background: `${currentPlayerBureaucracySummary.player.color}12`,
+                boxShadow: `0 0 0 2px ${currentPlayerBureaucracySummary.player.color}22 inset`,
+                display: "flex",
+                flexDirection: "column",
+                gap: 12,
+              }}
+            >
               <div
-                key={`${summary.player.id}-bureaucracy`}
                 style={{
-                  border: "1px solid #d8dfd5",
-                  borderRadius: 10,
-                  padding: 10,
-                  background:
-                    summary.player.id === game.currentPlayerId
-                      ? `${summary.player.color}12`
-                      : "#ffffff",
-                  boxShadow:
-                    summary.player.id === game.currentPlayerId
-                      ? `0 0 0 2px ${summary.player.color}22 inset`
-                      : "none",
                   display: "flex",
                   flexDirection: "column",
                   gap: 8,
                 }}
               >
                 <div>
-                  <strong style={{ color: summary.player.color }}>{summary.player.name}</strong>
+                  <strong style={{ color: currentPlayerBureaucracySummary.player.color }}>
+                    {currentPlayerBureaucracySummary.player.name}
+                  </strong>
                 </div>
-                <div>Revenue: {formatCurrency(summary.totalRevenue)}</div>
-                <div>Operating cost: {formatCurrency(summary.totalOperatingCost)}</div>
+                <div>Revenue: {formatCurrency(currentPlayerBureaucracySummary.totalRevenue)}</div>
                 <div>
-                  <strong>Net:</strong> {formatCurrency(summary.netRevenue)}
+                  Operating cost: {formatCurrency(currentPlayerBureaucracySummary.totalOperatingCost)}
                 </div>
-                <div>Passengers served: {summary.totalPassengersServed.toLocaleString()}</div>
+                <div style={{ paddingLeft: 12, color: "#56635a", fontSize: 12 }}>
+                  Crew: {formatCurrency(currentPlayerBureaucracySummary.totalCrewCost)}
+                </div>
+                <div style={{ paddingLeft: 12, color: "#56635a", fontSize: 12 }}>
+                  Maintenance: {formatCurrency(currentPlayerBureaucracySummary.totalMaintenanceCost)}
+                </div>
+                <div style={{ paddingLeft: 12, color: "#56635a", fontSize: 12 }}>
+                  Balance: {formatCurrency(currentPlayerBureaucracySummary.totalBalanceAdjustmentCost)}
+                </div>
+                <div style={{ paddingLeft: 12, color: "#56635a", fontSize: 12 }}>
+                  Fuel: {formatCurrency(currentPlayerBureaucracySummary.totalFuelCost)}
+                </div>
                 <div>
-                  Fuel used: {formatDecimal(summary.fuelUsedUnits.diesel)} diesel units
-                  <InfoBubble
-                    label={`${formatDecimal(summary.fuelUsedReal.diesel)} ${getRealFuelLabel("diesel")}`}
-                  />
-                  {", "}
-                  {formatDecimal(summary.fuelUsedUnits.jetFuel)} jet fuel units
-                  <InfoBubble
-                    label={`${formatDecimal(summary.fuelUsedReal.jetFuel)} ${getRealFuelLabel("jetFuel")}`}
-                  />
+                  <strong>Net:</strong> {formatCurrency(currentPlayerBureaucracySummary.netRevenue)}
                 </div>
                 <div>
-                  Fuel remaining: {formatDecimal(summary.fuelRemainingUnits.diesel)} diesel units
-                  <InfoBubble
-                    label={`${formatDecimal(summary.fuelRemainingReal.diesel)} ${getRealFuelLabel("diesel")}`}
-                  />
-                  {", "}
-                  {formatDecimal(summary.fuelRemainingUnits.jetFuel)} jet fuel units
-                  <InfoBubble
-                    label={`${formatDecimal(summary.fuelRemainingReal.jetFuel)} ${getRealFuelLabel("jetFuel")}`}
-                  />
+                  Passengers served:{" "}
+                  {currentPlayerBureaucracySummary.totalPassengersServed.toLocaleString()}
                 </div>
-                {summary.routePlans.length === 0 ? (
+                {currentPlayerBureaucracySummary.routePlans.length === 0 ? (
                   <div style={{ color: "#56635a" }}>No routes to operate.</div>
                 ) : (
-                  summary.routePlans.map(plan => (
+                  currentPlayerBureaucracyPlansByMode.map(({ mode, plans }) => (
                     <div
-                      key={`${summary.player.id}-${plan.route.id}`}
+                      key={mode}
                       style={{
                         border: "1px solid #e1e6df",
-                        borderRadius: 8,
-                        padding: 8,
+                        borderRadius: 10,
+                        padding: 10,
+                        background: "#ffffff",
                         display: "flex",
                         flexDirection: "column",
-                        gap: 6,
+                        gap: 8,
                       }}
                     >
                       <div>
-                        <strong>
-                          {plan.cityAName} - {plan.cityBName}
-                        </strong>
+                        <strong>{MODE_LABELS[mode]}</strong>
                       </div>
-                      <div style={{ color: "#56635a", fontSize: 13 }}>
-                        {plan.route.mode === "rail" && getRailTraction(plan.route) === "electric"
-                          ? "Electric rail "
-                          : `${MODE_LABELS[plan.route.mode]} `}
-                        {plan.vehicleCard
-                          ? `• #${plan.vehicleCard.number} ${plan.vehicleCard.name}`
-                          : "• No vehicle assigned"}
-                      </div>
-                      {summary.player.id === game.currentPlayerId ? (
-                        <label
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 8,
-                            fontSize: 13,
-                          }}
-                        >
-                          Vehicle
-                          <select
-                            value={plan.vehicleCard?.id ?? ""}
-                            onChange={event =>
-                              handleSetBureaucracyVehicleCard(
-                                plan.route.id,
-                                event.target.value === "" ? null : event.target.value,
-                              )
-                            }
+                      {plans.length === 0 ? (
+                        <div style={{ color: "#56635a", fontSize: 13 }}>
+                          No {MODE_LABELS[mode].toLowerCase()} services to operate.
+                        </div>
+                      ) : (
+                        plans.map(plan => (
+                          <div
+                            key={plan.id}
                             style={{
-                              minWidth: 220,
-                              padding: "6px 8px",
+                              border: "1px solid #e1e6df",
                               borderRadius: 8,
-                              border: "1px solid #c7d0c4",
-                              background: "#ffffff",
+                              padding: 8,
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: 6,
                             }}
                           >
-                            <option value="">No vehicle assigned</option>
-                            {currentPlayerOwnedVehicleCards
-                              .filter(
-                                card => card.type === getVehicleTypeForMode(plan.route.mode),
-                              )
-                              .map(card => (
-                                <option key={card.id} value={card.id}>
-                                  #{card.number} {card.name}
-                                </option>
-                              ))}
-                          </select>
-                        </label>
-                      ) : null}
-                      <div
-                        style={{
-                          display: "flex",
-                          flexWrap: "wrap",
-                          gap: "4px 10px",
-                          color: "#324236",
-                          fontSize: 13,
-                        }}
-                      >
-                        {plan.distanceMiles !== null && (
-                          <span>{formatDecimal(plan.distanceMiles)} mi</span>
-                        )}
-                        <span>Demand {plan.combinedDemand}</span>
-                        <span>max {plan.maxTripsByTime} trips</span>
-                        <span>👥 {plan.passengersPerTrip.toLocaleString()}</span>
-                        {plan.statsFuelResource && (
-                          <span>
-                            {getResourceIcon(plan.statsFuelResource)}{" "}
-                            {formatDecimal(plan.weeklyFuelBurnUnits)} u/week
-                          </span>
-                        )}
-                        {plan.statsFuelResource && plan.statsFuelBurnUnit && (
-                          <InfoBubble
-                            label={`${formatDecimal(plan.weeklyFuelBurnReal)} ${plan.statsFuelBurnUnit} ${getResourceLabel(plan.statsFuelResource).toLowerCase()} per week`}
-                          />
-                        )}
-                      </div>
-                      {plan.vehicleCard ? (
-                        <>
-                          {summary.player.id === game.currentPlayerId ? (
+                            <div>
+                              <strong>{plan.serviceLabel}</strong>
+                            </div>
+                            <div style={{ color: "#56635a", fontSize: 13 }}>
+                              {plan.route.mode === "rail" && getRailTraction(plan.route) === "electric"
+                                ? "Electric rail "
+                                : `${MODE_LABELS[plan.route.mode]} `}
+                              {plan.segmentCount > 1 ? `• ${plan.segmentCount} segments ` : ""}
+                              {plan.vehicleCard
+                                ? `• #${plan.vehicleCard.number} ${plan.vehicleCard.name}`
+                                : "• No vehicle assigned"}
+                            </div>
                             <label
                               style={{
                                 display: "flex",
@@ -1479,60 +1753,233 @@ export default function Board({
                                 fontSize: 13,
                               }}
                             >
-                              Fuel used
+                              Vehicle
                               <select
-                                value={plan.selectedFuelUnits}
-                                onChange={event => {
-                                  const nextFuelUnits = Number(event.target.value)
-                                  handleSetBureaucracyFuelUnits(
-                                    plan.route.id,
-                                    nextFuelUnits,
+                                value={plan.vehicleCard?.id ?? ""}
+                                onChange={event =>
+                                  handleSetBureaucracyVehicleCard(
+                                    plan.id,
+                                    event.target.value === "" ? null : event.target.value,
                                   )
-                                }}
+                                }
                                 style={{
-                                  minWidth: 88,
+                                  minWidth: 220,
                                   padding: "6px 8px",
                                   borderRadius: 8,
                                   border: "1px solid #c7d0c4",
                                   background: "#ffffff",
                                 }}
                               >
-                                {Array.from(
-                                  { length: getMaxFuelUnitsForRoute(game, plan.route.id) + 1 },
-                                  (_, fuelUnits) => (
-                                    <option key={`${plan.route.id}-fuel-${fuelUnits}`} value={fuelUnits}>
-                                      {fuelUnits}
+                                <option value="">No vehicle assigned</option>
+                                {currentPlayerOwnedVehicleCards
+                                  .filter(card => card.type === getVehicleTypeForMode(plan.route.mode))
+                                  .map(card => (
+                                    <option key={card.id} value={card.id}>
+                                      #{card.number} {card.name}
                                     </option>
-                                  ),
-                                )}
+                                  ))}
                               </select>
                             </label>
-                          ) : (
-                            <div>Fuel units planned: {plan.selectedFuelUnits}</div>
-                          )}
-                          <div style={{ color: "#56635a", fontSize: 12 }}>
-                            Total fuel: {formatDecimal(plan.totalFuelBurnUnits)} units
-                            {plan.fuelResource && plan.fuelBurnUnit && (
-                              <InfoBubble
-                                label={`${formatDecimal(plan.totalFuelBurnReal)} ${plan.fuelBurnUnit} total`}
-                              />
-                            )}{" "}
-                            • Trips: {plan.selectedTrips}
-                            {" • "}Passengers: {plan.passengersServed.toLocaleString()}
-                            {" • "}Revenue: {formatCurrency(plan.revenue)}
-                            {" • "}Base cost: {formatCurrency(plan.operatingCost)}
+                            {plan.availableCityIds.length > 2 && (
+                              <div
+                                style={{
+                                  display: "flex",
+                                  flexDirection: "column",
+                                  gap: 6,
+                                  fontSize: 12,
+                                  color: "#324236",
+                                }}
+                              >
+                                <div>
+                                  <strong>Cities in service</strong>
+                                </div>
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 10px" }}>
+                                  {plan.availableCityIds.map(cityId => (
+                                    <label
+                                      key={`${plan.id}-${cityId}`}
+                                      style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={plan.selectedCityIds.includes(cityId)}
+                                        onChange={() =>
+                                          handleToggleServiceCity(plan.id, cityId, plan.selectedCityIds)
+                                        }
+                                      />
+                                      {cityMap[cityId]?.name ?? cityId}
+                                    </label>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            {plan.canAddSplitService && (
+                              <div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleAddSplitService(plan.corridorId)}
+                                  style={{
+                                    padding: "6px 10px",
+                                    borderRadius: 999,
+                                    border: "1px solid #c7d0c4",
+                                    background: "#ffffff",
+                                    cursor: "pointer",
+                                    fontSize: 12,
+                                  }}
+                                >
+                                  Add split service
+                                </button>
+                              </div>
+                            )}
+                            <div
+                              style={{
+                                display: "flex",
+                                flexWrap: "wrap",
+                                gap: "4px 10px",
+                                color: "#324236",
+                                fontSize: 13,
+                              }}
+                            >
+                              {plan.distanceMiles !== null && (
+                                <span>{formatDecimal(plan.distanceMiles)} mi</span>
+                              )}
+                              <span>Demand {plan.combinedDemand}</span>
+                              <span>max {plan.maxTripsByTime} trips</span>
+                              <span>👥 {plan.passengersPerTrip.toLocaleString()}</span>
+                            </div>
+                            {plan.vehicleCard ? (
+                              <div style={{ color: "#56635a", fontSize: 12 }}>
+                                Trips: {plan.selectedTrips}
+                                {" • "}Passengers: {plan.passengersServed.toLocaleString()}
+                                {" • "}Revenue: {formatCurrency(plan.revenue)}
+                                {" • "}Crew: {formatCurrency(plan.crewCost)}
+                                {" • "}Maint: {formatCurrency(plan.maintenanceCost)}
+                                {" • "}Balance: {formatCurrency(plan.balanceAdjustmentCost)}
+                                {" • "}Fuel cost: {formatCurrency(plan.fuelCost)}
+                                {" • "}Base cost: {formatCurrency(plan.baseOperatingCost)}
+                                {" • "}Total cost: {formatCurrency(plan.operatingCost)}
+                              </div>
+                            ) : (
+                              <div style={{ color: "#9b1c1c", fontSize: 13 }}>
+                                Assign a matching vehicle card to operate this route.
+                              </div>
+                            )}
                           </div>
-                        </>
-                      ) : (
-                        <div style={{ color: "#9b1c1c", fontSize: 13 }}>
-                          Assign a matching vehicle card to operate this route.
-                        </div>
+                        ))
                       )}
                     </div>
                   ))
                 )}
               </div>
-            ))}
+            </div>
+          ) : (
+            <div
+              style={{
+                border: "1px solid #d8dfd5",
+                borderRadius: 10,
+                padding: 12,
+                background: "#ffffff",
+                color: "#56635a",
+              }}
+            >
+              No bureaucracy summary is available for the current player.
+            </div>
+          )}
+        </div>
+      )}
+      {pendingVehiclePurchaseCard && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: "rgba(10, 18, 12, 0.35)",
+            zIndex: 4,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 24,
+            fontFamily: "system-ui, sans-serif",
+          }}
+        >
+          <div
+            style={{
+              width: "min(520px, calc(100vw - 32px))",
+              background: "#ffffff",
+              borderRadius: 16,
+              boxShadow: "0 16px 40px rgba(0, 0, 0, 0.2)",
+              padding: 18,
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+            }}
+          >
+            <div>
+              <strong>Confirm vehicle purchase</strong>
+              <div style={{ color: "#56635a", fontSize: 13 }}>
+                {currentPlayer?.name ?? "Current player"} is about to buy vehicle card #
+                {pendingVehiclePurchaseCard.number}.
+              </div>
+            </div>
+            <div
+              style={{
+                border: "1px solid #d8dfd5",
+                borderRadius: 12,
+                padding: 12,
+                display: "grid",
+                gap: 6,
+                background: "#f7faf6",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                <strong>
+                  #{pendingVehiclePurchaseCard.number} {pendingVehiclePurchaseCard.name}
+                </strong>
+                <span>{formatCurrency(pendingVehiclePurchaseCard.purchasePrice)}</span>
+              </div>
+              <div style={{ color: "#324236", fontSize: 13 }}>
+                {getVehicleTypeIcon(pendingVehiclePurchaseCard.type)}{" "}
+                {getVehicleTypeLabel(pendingVehiclePurchaseCard.type)} • x
+                {pendingVehiclePurchaseCard.vehicleCount} • 👥{" "}
+                {pendingVehiclePurchaseCard.totalPassengerCapacity.toLocaleString()} •{" "}
+                {pendingVehiclePurchaseCard.speed}mph
+              </div>
+            </div>
+            <div style={{ color: "#56635a", fontSize: 13 }}>
+              After confirmation, the turn will automatically move to{" "}
+              {shouldAdvancePhase
+                ? formatPhaseLabel(getNextPhase(game.currentPhase)).toLowerCase()
+                : nextPlayer?.name ?? "the next player"}
+              .
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={() => setPendingVehiclePurchaseCardId(null)}
+                style={{
+                  padding: "8px 12px",
+                  borderRadius: 999,
+                  border: "1px solid #c7d0c4",
+                  background: "#ffffff",
+                  cursor: "pointer",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmBuyVehicleCard}
+                style={{
+                  padding: "8px 12px",
+                  borderRadius: 999,
+                  border: "1px solid #223024",
+                  background: "#223024",
+                  color: "#ffffff",
+                  cursor: "pointer",
+                  fontWeight: 700,
+                }}
+              >
+                Confirm purchase
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1540,7 +1987,7 @@ export default function Board({
         <div style={RESOURCE_MARKET_PANEL_STYLE}>
           <strong>Vehicle market</strong>
           <div style={{ color: "#56635a" }}>
-            The deck is shuffled when the game starts. Only the first 4 cards can be bought during purchase equipment.
+            The deck is shuffled when the game starts. Only the first 4 cards can be bought during purchase equipment. If nobody buys a card this month, the most expensive visible card is discarded before claim routes begins.
           </div>
           <div
             style={{
@@ -1658,7 +2105,13 @@ export default function Board({
         <div style={RESOURCE_MARKET_PANEL_STYLE}>
           <strong>Economics</strong>
           <div style={{ color: "#56635a" }}>
-            Route pricing, operating costs, fuel pricing, and infrastructure costs for the current week.
+            Route pricing, operating costs, fuel pricing, and infrastructure costs for the current month.
+          </div>
+          <div style={{ color: "#56635a", fontSize: 13 }}>
+            Crew assumptions use {formatDecimal(game.operatingConfig.hoursPerDay)}h/day for{" "}
+            {formatDecimal(game.operatingConfig.daysPerWeek, 0)} days/week across{" "}
+            {formatDecimal(game.operatingConfig.weeksPerPeriod, 0)} weeks/month ={" "}
+            {formatDecimal(getHoursPerWeek(game), 0)}h/month per active vehicle.
           </div>
           {activeChanceCard && (
             <div
@@ -1709,11 +2162,13 @@ export default function Board({
                   <tr>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Mode</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Ticket / mile</th>
-                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Base cost / trip</th>
+                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Crew / hr</th>
+                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Crew / month / vehicle</th>
+                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Maint / month / vehicle</th>
+                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Balance / trip</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Loading</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Fuel</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Fuel price</th>
-                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Fuel unit</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1726,14 +2181,22 @@ export default function Board({
                         {formatUnitRate(row.ticketPricePerMile, 3)}
                       </td>
                       <td style={{ padding: "8px" }}>
-                        {formatCurrency(row.operatingCostPerTrip)}
+                        {formatUnitRate(row.crewHourlyCostPerVehicle, 0)}
+                      </td>
+                      <td style={{ padding: "8px" }}>
+                        {formatCurrency(row.crewCostPerWeekPerVehicle)}
+                      </td>
+                      <td style={{ padding: "8px" }}>
+                        {formatCurrency(row.maintenanceCostPerWeekPerVehicle)}
+                      </td>
+                      <td style={{ padding: "8px" }}>
+                        {formatCurrency(row.balanceAdjustmentPerTrip)}
                       </td>
                       <td style={{ padding: "8px" }}>
                         {formatDecimal(row.loadingHours)}h
                       </td>
                       <td style={{ padding: "8px" }}>{row.fuel}</td>
                       <td style={{ padding: "8px" }}>{row.fuelPrice}</td>
-                      <td style={{ padding: "8px" }}>{row.fuelUnit}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1802,9 +2265,6 @@ export default function Board({
         <div
           style={{
             ...RESOURCE_MARKET_PANEL_STYLE,
-            top: 88,
-            bottom: 88,
-            overflowY: "auto",
           }}
         >
           <strong>Game wiki</strong>
@@ -1832,7 +2292,7 @@ export default function Board({
             >
               <strong>How to win</strong>
               <div style={{ color: "#324236", fontSize: 13 }}>
-                The game lasts <strong>{game.operatingConfig.totalWeeks} weeks</strong>. Winner is the
+                The game lasts <strong>{game.operatingConfig.totalWeeks} months</strong>. Winner is the
                 player with the most passengers served.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
@@ -1859,6 +2319,9 @@ export default function Board({
                 1. <strong>Purchase Equipment</strong>: buy 1 vehicle card on your turn from the first 4 cards.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
+                If nobody buys a card during the month, the most expensive visible card is discarded before the next phase.
+              </div>
+              <div style={{ color: "#324236", fontSize: 13 }}>
                 2. <strong>Claim Routes</strong>: select cities and claim a bus, air, or rail connection.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
@@ -1866,10 +2329,12 @@ export default function Board({
                 network somewhere.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
-                3. <strong>Purchase Fuel</strong>: buy fuel units for the fleet you own, up to your current cap.
+                3. <strong>Bureaucracy</strong>: assign vehicles, set fuel caps if needed, and routes auto-run the maximum trips you can afford.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
-                4. <strong>Bureaucracy</strong>: assign vehicle cards to routes, allocate fuel, and collect revenue.
+                Real-world crew math uses <strong>{formatDecimal(game.operatingConfig.hoursPerDay)}</strong> hours/day for{" "}
+                <strong>{formatDecimal(game.operatingConfig.daysPerWeek, 0)}</strong> days/week across{" "}
+                <strong>{formatDecimal(game.operatingConfig.weeksPerPeriod, 0)}</strong> weeks/month.
               </div>
             </div>
             <div
@@ -1897,7 +2362,7 @@ export default function Board({
                 Connecting a brand-new city pays a bonus based on that city&apos;s size.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
-                One vehicle card can operate one matching route at a time during bureaucracy.
+                One vehicle card can operate one matching route at a time during bureaucracy, and fuel is charged as part of each trip&apos;s operating cost.
               </div>
             </div>
             <div
@@ -1929,10 +2394,31 @@ export default function Board({
                 Jet fuel: <strong>{formatUnitRate(effectiveFuelPriceByResource.jetFuel)}</strong> / lb
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
-                Diesel unit: <strong>{formatDecimal(game.operatingConfig.fuelUnits.diesel, 0)} gal</strong>
+                Bus crew:{" "}
+                <strong>{formatUnitRate(game.operatingConfig.realWorldOperatingCosts.crewHourlyCostPerVehicle.bus, 0)}/h</strong>{" "}
+                • {formatCurrency(getCrewCostPerWeekPerVehicle(game, "bus"))}/month/vehicle
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
-                Jet fuel unit: <strong>{formatDecimal(game.operatingConfig.fuelUnits.jetFuel, 0)} lb</strong>
+                Train crew:{" "}
+                <strong>{formatUnitRate(game.operatingConfig.realWorldOperatingCosts.crewHourlyCostPerVehicle.train, 0)}/h</strong>{" "}
+                • {formatCurrency(getCrewCostPerWeekPerVehicle(game, "train"))}/month/vehicle
+              </div>
+              <div style={{ color: "#324236", fontSize: 13 }}>
+                Air crew:{" "}
+                <strong>{formatUnitRate(game.operatingConfig.realWorldOperatingCosts.crewHourlyCostPerVehicle.air, 0)}/h</strong>{" "}
+                • {formatCurrency(getCrewCostPerWeekPerVehicle(game, "air"))}/month/vehicle
+              </div>
+              <div style={{ color: "#324236", fontSize: 13 }}>
+                Bus maintenance:{" "}
+                <strong>{formatCurrency(game.operatingConfig.realWorldOperatingCosts.maintenanceCostPerWeekPerVehicle.bus * game.operatingConfig.weeksPerPeriod)}</strong>/month/vehicle
+              </div>
+              <div style={{ color: "#324236", fontSize: 13 }}>
+                Train maintenance:{" "}
+                <strong>{formatCurrency(game.operatingConfig.realWorldOperatingCosts.maintenanceCostPerWeekPerVehicle.train * game.operatingConfig.weeksPerPeriod)}</strong>/month/vehicle
+              </div>
+              <div style={{ color: "#324236", fontSize: 13 }}>
+                Air maintenance:{" "}
+                <strong>{formatCurrency(game.operatingConfig.realWorldOperatingCosts.maintenanceCostPerWeekPerVehicle.air * game.operatingConfig.weeksPerPeriod)}</strong>/month/vehicle
               </div>
             </div>
           </div>
@@ -1960,11 +2446,13 @@ export default function Board({
                   <tr>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Mode</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Ticket / mile</th>
-                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Base cost / trip</th>
+                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Crew / hr</th>
+                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Crew / month / vehicle</th>
+                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Maint / month / vehicle</th>
+                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Balance / trip</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Loading</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Fuel</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Fuel price</th>
-                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Fuel unit</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1974,11 +2462,21 @@ export default function Board({
                         <strong>{row.label}</strong>
                       </td>
                       <td style={{ padding: "8px" }}>{formatUnitRate(row.ticketPricePerMile, 3)}</td>
-                      <td style={{ padding: "8px" }}>{formatCurrency(row.operatingCostPerTrip)}</td>
+                      <td style={{ padding: "8px" }}>
+                        {formatUnitRate(row.crewHourlyCostPerVehicle, 0)}
+                      </td>
+                      <td style={{ padding: "8px" }}>
+                        {formatCurrency(row.crewCostPerWeekPerVehicle)}
+                      </td>
+                      <td style={{ padding: "8px" }}>
+                        {formatCurrency(row.maintenanceCostPerWeekPerVehicle)}
+                      </td>
+                      <td style={{ padding: "8px" }}>
+                        {formatCurrency(row.balanceAdjustmentPerTrip)}
+                      </td>
                       <td style={{ padding: "8px" }}>{formatDecimal(row.loadingHours)}h</td>
                       <td style={{ padding: "8px" }}>{row.fuel}</td>
                       <td style={{ padding: "8px" }}>{row.fuelPrice}</td>
-                      <td style={{ padding: "8px" }}>{row.fuelUnit}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -2093,7 +2591,7 @@ export default function Board({
                   )}
                   {activeChanceCard?.id === card.id && (
                     <div style={{ color: "#5f5482", fontSize: 12, fontWeight: 600 }}>
-                      Active this week
+                      Active this month
                     </div>
                   )}
                 </div>
@@ -2246,10 +2744,48 @@ export default function Board({
           </div>
         </div>
       )}
+      {isActionLogOpen && (
+        <div style={ACTION_LOG_PANEL_STYLE}>
+          <strong>Action log</strong>
+          {game.actionLog.length === 0 ? (
+            <div style={{ color: "#56635a", fontSize: 13 }}>No actions yet.</div>
+          ) : (
+            game.actionLog
+              .slice(-18)
+              .toReversed()
+              .map(entry => {
+                const playerColor =
+                  game.players.find(player => player.id === entry.playerId)?.color ?? "#223024"
+
+                return (
+                  <div
+                    key={entry.id}
+                    style={{
+                      border: "1px solid #d8dfd5",
+                      borderRadius: 8,
+                      padding: "8px 10px",
+                      background: "#ffffff",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 4,
+                    }}
+                  >
+                    <div style={{ fontSize: 12, color: "#56635a" }}>
+                      <span style={{ color: playerColor, fontWeight: 700 }}>{entry.playerName}</span>
+                      {" • "}Month {entry.week}
+                      {" • "}{formatPhaseLabel(entry.phase)}
+                    </div>
+                    <div style={{ color: "#223024", fontSize: 13 }}>{entry.message}</div>
+                  </div>
+                )
+              })
+          )}
+        </div>
+      )}
       <div style={BOTTOM_BAR_STYLE}>
         <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
           <div>
-            <strong>Week:</strong> {game.currentWeek}/{game.operatingConfig.totalWeeks}
+            <strong>Month:</strong> {game.currentWeek}/{game.operatingConfig.totalWeeks}
           </div>
           <div>
             <strong>Phase:</strong> {formatPhaseLabel(game.currentPhase)}
@@ -2265,14 +2801,16 @@ export default function Board({
             </div>
           )}
           <div>
-            <strong>Weeks left:</strong> {weeksRemaining}
+            <strong>Months left:</strong> {periodsRemaining}
           </div>
           {game.currentPhase === "bureaucracy" && currentPlayerBureaucracySummary && (
             <div>
-              <strong>Planned fuel units:</strong>{" "}
-              {currentPlayerBureaucracySummary.routePlans.reduce(
-                (total, plan) => total + plan.selectedFuelUnits,
-                0,
+              <strong>Planned fuel cost:</strong>{" "}
+              {formatCurrency(
+                currentPlayerBureaucracySummary.routePlans.reduce(
+                  (total, plan) => total + plan.fuelCost,
+                  0,
+                ),
               )}
             </div>
           )}
@@ -2327,6 +2865,20 @@ export default function Board({
           </button>
           <button
             type="button"
+            onClick={() => setIsActionLogOpen(open => !open)}
+            style={{
+              padding: "10px 16px",
+              borderRadius: 999,
+              border: "1px solid #c7d0c4",
+              cursor: "pointer",
+              background: "#ffffff",
+              fontWeight: 600,
+            }}
+          >
+            {isActionLogOpen ? "Hide log" : "Action log"}
+          </button>
+          <button
+            type="button"
             onClick={() => {
               onUndo()
               setStatusMessage("Undid the last action.")
@@ -2346,13 +2898,13 @@ export default function Board({
           <button
             type="button"
             onClick={handleAdvanceTurnClick}
-            disabled={game.isGameOver}
+            disabled={game.isGameOver || isAdvanceBlocked}
             style={{
               padding: "10px 16px",
               borderRadius: 999,
               border: "1px solid #c7d0c4",
-              cursor: game.isGameOver ? "not-allowed" : "pointer",
-              background: game.isGameOver ? "#f2f2f2" : "#ffffff",
+              cursor: game.isGameOver || isAdvanceBlocked ? "not-allowed" : "pointer",
+              background: game.isGameOver || isAdvanceBlocked ? "#f2f2f2" : "#ffffff",
               fontWeight: 600,
             }}
           >

@@ -48,16 +48,36 @@ export type VehicleCard = {
   funFact: string
 }
 
+export type RouteDeckCard = {
+  id: string
+  mode: RouteMode
+  title: string
+  cityIds: string[]
+  isLoop: boolean
+  notes?: string
+}
+
+export type UserDeckData = {
+  vehicleCards: VehicleCard[]
+  chanceCards: ChanceCard[]
+  routeCards: RouteDeckCard[]
+}
+
 export type OperatingConfig = {
   hoursPerDay: number
   daysPerWeek: number
+  weeksPerPeriod: number
   totalWeeks: number
   loadingHours: Record<VehicleType, number>
   passengersPerDemandPoint: number
   connectionBonusPerCitySize: number
   railConstructionCostPerMile: number
   railElectrificationCostPerMile: number
-  operatingCostPerTrip: {
+  realWorldOperatingCosts: {
+    crewHourlyCostPerVehicle: Record<VehicleType, number>
+    maintenanceCostPerWeekPerVehicle: Record<VehicleType, number>
+  }
+  balanceAdjustmentPerTrip: {
     bus: number
     air: number
     railDiesel: number
@@ -79,6 +99,7 @@ export type Player = {
   ownedVehicleCardIds: string[]
   operatingCosts: number
   weeklyPayout: number
+  lastPeriodPassengersServed: number
 }
 
 export type RouteMode = "rail" | "air" | "bus"
@@ -110,6 +131,15 @@ export type Route = {
   ownerId?: string
 }
 
+export type GameActionLogEntry = {
+  id: string
+  playerId: string | null
+  playerName: string
+  week: number
+  phase: WeeklyPhase
+  message: string
+}
+
 export type GameState = {
   map: GameMap
   cities: City[]
@@ -124,13 +154,17 @@ export type GameState = {
   chanceDiscardCardIds: string[]
   bureaucracyFuelUnitsByRouteId: Record<string, number>
   bureaucracyVehicleCardIdsByRouteId: Record<string, string>
+  bureaucracyServiceCityIdsByRouteId: Record<string, string[]>
+  bureaucracyServiceSlotCountsByCorridorId: Record<string, number>
   resourceMarket: ResourceMarket
   resourceSupply: ResourceSupply
   vehicleCatalog: VehicleCard[]
   vehicleMarketCardIds: string[]
   hasPurchasedVehicleThisTurn: boolean
+  hasPurchasedVehicleThisPhase: boolean
 
   players: Player[]
   leadPlayerIndex: number
   currentPlayerId: string
+  actionLog: GameActionLogEntry[]
 }

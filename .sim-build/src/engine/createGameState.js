@@ -41,8 +41,8 @@ const INITIAL_OPERATING_CONFIG = {
     },
 };
 const DEFAULT_PLAYERS = [
-    { id: "p1", name: "Matt", color: "#e63946" },
-    { id: "p2", name: "Bot", color: "#457b9d" },
+    { id: "p1", name: "Matt", color: "#457b9d" },
+    { id: "p2", name: "Sarah", color: "#e96620" },
 ];
 function isVehicleType(type) {
     return type === "bus" || type === "train" || type === "air";

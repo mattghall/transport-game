@@ -7,6 +7,7 @@ import type {
   PurchasableResource,
   RailTraction,
   Route,
+  VehicleType,
   VehicleCard,
 } from "./types"
 
@@ -71,18 +72,60 @@ export function getRailTraction(route: Route): RailTraction {
   return route.mode === "rail" ? route.railTraction ?? "diesel" : "diesel"
 }
 
-export function getOperatingCostPerTrip(game: GameState, route: Route) {
+export function getHoursPerWeek(game: Pick<GameState, "operatingConfig">) {
+  return (
+    game.operatingConfig.hoursPerDay *
+    game.operatingConfig.daysPerWeek *
+    game.operatingConfig.weeksPerPeriod
+  )
+}
+
+export function getCrewCostPerWeekPerVehicle(
+  game: Pick<GameState, "operatingConfig">,
+  type: VehicleType,
+) {
+  return (
+    getHoursPerWeek(game) *
+    game.operatingConfig.realWorldOperatingCosts.crewHourlyCostPerVehicle[type]
+  )
+}
+
+export function getMaintenanceCostPerWeekPerVehicle(
+  game: Pick<GameState, "operatingConfig">,
+  type: VehicleType,
+) {
+  return (
+    game.operatingConfig.realWorldOperatingCosts.maintenanceCostPerWeekPerVehicle[type] *
+    game.operatingConfig.weeksPerPeriod
+  )
+}
+
+export function getWeeklyCrewCostForCard(
+  game: Pick<GameState, "operatingConfig">,
+  vehicleCard: VehicleCard,
+) {
+  return getCrewCostPerWeekPerVehicle(game, vehicleCard.type) * vehicleCard.vehicleCount
+}
+
+export function getWeeklyMaintenanceCostForCard(
+  game: Pick<GameState, "operatingConfig">,
+  vehicleCard: VehicleCard,
+) {
+  return getMaintenanceCostPerWeekPerVehicle(game, vehicleCard.type) * vehicleCard.vehicleCount
+}
+
+export function getBalanceAdjustmentPerTrip(game: GameState, route: Route) {
   if (route.mode === "bus") {
-    return game.operatingConfig.operatingCostPerTrip.bus
+    return game.operatingConfig.balanceAdjustmentPerTrip.bus
   }
 
   if (route.mode === "air") {
-    return game.operatingConfig.operatingCostPerTrip.air
+    return game.operatingConfig.balanceAdjustmentPerTrip.air
   }
 
   return getRailTraction(route) === "electric"
-    ? game.operatingConfig.operatingCostPerTrip.railElectric
-    : game.operatingConfig.operatingCostPerTrip.railDiesel
+    ? game.operatingConfig.balanceAdjustmentPerTrip.railElectric
+    : game.operatingConfig.balanceAdjustmentPerTrip.railDiesel
 }
 
 export function getConnectedCityIds(game: GameState, playerId: string) {

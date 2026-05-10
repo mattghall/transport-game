@@ -8,8 +8,7 @@ import type {
   ResourceSupply,
   VehicleCard,
 } from "./types"
-import vehicleCards from "../data/vehicleCards.json"
-import { chanceCards } from "../data/chanceCards"
+import { defaultDecks } from "../data/deckData"
 
 const INITIAL_RESOURCE_MARKET: ResourceMarket = {
   diesel: [5, 5, 5, 5, 4, 4, 4, 4],
@@ -24,6 +23,7 @@ const INITIAL_RESOURCE_SUPPLY: ResourceSupply = {
 const INITIAL_OPERATING_CONFIG: OperatingConfig = {
   hoursPerDay: 14,
   daysPerWeek: 7,
+  weeksPerPeriod: 4,
   totalWeeks: 10,
   loadingHours: {
     air: 1,
@@ -32,13 +32,25 @@ const INITIAL_OPERATING_CONFIG: OperatingConfig = {
   },
   passengersPerDemandPoint: 45,
   connectionBonusPerCitySize: 500_000,
-  railConstructionCostPerMile: 60_000,
+  railConstructionCostPerMile: 120_000,
   railElectrificationCostPerMile: 8_000,
-  operatingCostPerTrip: {
-    bus: 3_500,
-    air: 24_000,
-    railDiesel: 3_500,
-    railElectric: 1_500,
+  realWorldOperatingCosts: {
+    crewHourlyCostPerVehicle: {
+      bus: 30,
+      train: 45,
+      air: 120,
+    },
+    maintenanceCostPerWeekPerVehicle: {
+      bus: 1_000,
+      train: 3_000,
+      air: 10_000,
+    },
+  },
+  balanceAdjustmentPerTrip: {
+    bus: 0,
+    air: 0,
+    railDiesel: 0,
+    railElectric: 0,
   },
   fuelUnits: {
     diesel: 1000,
@@ -55,6 +67,8 @@ const INITIAL_OPERATING_CONFIG: OperatingConfig = {
   },
 }
 
+export const DEFAULT_STARTING_MONEY = 140_000_000
+
 export type GameSetupPlayer = {
   id: string
   name: string
@@ -63,29 +77,15 @@ export type GameSetupPlayer = {
 
 export type CreateGameStateOptions = {
   players?: GameSetupPlayer[]
+  vehicleCards?: VehicleCard[]
+  chanceCards?: ChanceCard[]
+  startingMoney?: number
 }
 
-const DEFAULT_PLAYERS: GameSetupPlayer[] = [
-  { id: "p1", name: "Matt", color: "#e63946" },
-  { id: "p2", name: "Bot", color: "#457b9d" },
+export const DEFAULT_PLAYERS: GameSetupPlayer[] = [
+  { id: "p1", name: "Matt", color: "#457b9d" },
+  { id: "p2", name: "Sarah", color: "#e96620" },
 ]
-
-function isVehicleType(type: string): type is VehicleCard["type"] {
-  return type === "bus" || type === "train" || type === "air"
-}
-
-function getStarterVehicleCards(): VehicleCard[] {
-  return vehicleCards.map(card => {
-    if (!isVehicleType(card.type)) {
-      throw new Error(`Invalid vehicle type: ${card.type}`)
-    }
-
-    return {
-      ...card,
-      type: card.type,
-    }
-  })
-}
 
 function shuffleCards<T>(cards: T[]) {
   const shuffledCards = [...cards]
@@ -100,20 +100,23 @@ function shuffleCards<T>(cards: T[]) {
   return shuffledCards
 }
 
-function shuffleVehicleCards() {
-  return shuffleCards(getStarterVehicleCards())
+function shuffleVehicleCards(cards: VehicleCard[]) {
+  const openingCards = shuffleCards(cards.slice(0, 6))
+  const remainingCards = shuffleCards(cards.slice(6))
+
+  return [...openingCards, ...remainingCards]
 }
 
-function shuffleChanceCards() {
-  return shuffleCards(chanceCards as ChanceCard[])
+function shuffleChanceCards(cards: ChanceCard[]) {
+  return shuffleCards(cards)
 }
 
-function createPlayer(player: GameSetupPlayer): Player {
+function createPlayer(player: GameSetupPlayer, startingMoney: number): Player {
   return {
     id: player.id,
     name: player.name,
     color: player.color,
-    money: 140000000,
+    money: startingMoney,
     totalPassengersServed: 0,
     startingCityId: undefined,
     inventory: {
@@ -130,6 +133,7 @@ function createPlayer(player: GameSetupPlayer): Player {
     ownedVehicleCardIds: [],
     operatingCosts: 0,
     weeklyPayout: 0,
+    lastPeriodPassengersServed: 0,
   }
 }
 
@@ -137,10 +141,15 @@ export function createGameState(
   map: GameMap,
   options: CreateGameStateOptions = {},
 ): GameState {
-  const shuffledVehicleCards = shuffleVehicleCards()
-  const shuffledChanceCards = shuffleChanceCards()
+  const vehicleCards = options.vehicleCards ?? defaultDecks.vehicleCards
+  const chanceCards = options.chanceCards ?? defaultDecks.chanceCards
+  const shuffledVehicleCards = shuffleVehicleCards(vehicleCards)
+  const shuffledChanceCards = shuffleChanceCards(chanceCards)
   const [activeChanceCard, ...chanceDeck] = shuffledChanceCards
-  const players = (options.players ?? DEFAULT_PLAYERS).map(createPlayer)
+  const startingMoney = options.startingMoney ?? DEFAULT_STARTING_MONEY
+  const players = (options.players ?? DEFAULT_PLAYERS).map(player =>
+    createPlayer(player, startingMoney),
+  )
 
   return {
     map,
@@ -150,19 +159,23 @@ export function createGameState(
     currentPhase: "purchase-equipment",
     isGameOver: false,
     operatingConfig: INITIAL_OPERATING_CONFIG,
-    chanceCatalog: chanceCards as ChanceCard[],
+    chanceCatalog: chanceCards,
     activeChanceCardId: activeChanceCard?.id ?? null,
     chanceDeckCardIds: chanceDeck.map(card => card.id),
     chanceDiscardCardIds: [],
     bureaucracyFuelUnitsByRouteId: {},
     bureaucracyVehicleCardIdsByRouteId: {},
+    bureaucracyServiceCityIdsByRouteId: {},
+    bureaucracyServiceSlotCountsByCorridorId: {},
     resourceMarket: INITIAL_RESOURCE_MARKET,
     resourceSupply: INITIAL_RESOURCE_SUPPLY,
     vehicleCatalog: shuffledVehicleCards,
     vehicleMarketCardIds: shuffledVehicleCards.map(card => card.id),
     hasPurchasedVehicleThisTurn: false,
+    hasPurchasedVehicleThisPhase: false,
     players,
     leadPlayerIndex: 0,
     currentPlayerId: players[0]?.id ?? "p1",
+    actionLog: [],
   }
 }
