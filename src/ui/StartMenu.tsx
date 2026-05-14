@@ -959,8 +959,9 @@ export default function StartMenu({
   return (
     <div
       style={{
-        width: "100vw",
-        height: "100vh",
+        position: "fixed",
+        inset: 0,
+        overflow: "hidden",
         background: "linear-gradient(180deg, #e8efe6 0%, #dce7ef 100%)",
         fontFamily: "system-ui, sans-serif",
         padding: 16,
@@ -978,6 +979,7 @@ export default function StartMenu({
         style={{
           width: "100%",
           height: "100%",
+          boxSizing: "border-box",
           background: "rgba(255, 255, 255, 0.95)",
           borderRadius: 18,
           boxShadow: "0 12px 40px rgba(0, 0, 0, 0.14)",

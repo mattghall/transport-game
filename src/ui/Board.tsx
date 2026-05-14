@@ -10,7 +10,6 @@ import {
   getConnectionOptions,
   getCurrentPlayer,
   isLastPlayerTurn,
-  type ClaimRouteResult,
   type ResourcePurchaseResult,
 } from "../engine/actions"
 import {
@@ -50,9 +49,22 @@ import type {
 type Props = {
   game: GameState
   onClaimRoute: (
-    cityIds: string[],
-    mode: RouteMode,
-  ) => ClaimRouteResult
+    routeCardId: string,
+  ) =>
+    | {
+        ok: true
+        routes: GameState["routes"]
+        cost: number
+        connectionBonus: number
+        newCityIds: string[]
+        nextPhase: WeeklyPhase
+        nextPlayerName: string
+        advancedPhase: boolean
+      }
+    | {
+        ok: false
+        error: string
+      }
   onBuyResource: (resource: PurchasableResource, quantity: number) => ResourcePurchaseResult
   onBuyVehicleCard: (
     cardId: string,
@@ -84,17 +96,27 @@ type Props = {
   canUndo: boolean
 }
 
+const TABLE_ZONE_HEIGHT = 254
+const LEFT_PANEL_WIDTH = 280
+const STATUS_RAIL_WIDTH = 120
+const TABLE_PREVIEW_WIDTH = 240
+const PANEL_GAP = 12
+const ROW_TWO_TOP = 88
+const BOARD_CLEARANCE_BOTTOM = TABLE_ZONE_HEIGHT + PANEL_GAP * 2
+const BOARD_LEFT_INSET = LEFT_PANEL_WIDTH + PANEL_GAP * 2
+const BOARD_RIGHT_INSET = STATUS_RAIL_WIDTH + PANEL_GAP * 2
+const ROUTE_MARKET_VISIBLE_COUNT = 3
+
 const BOARD_SHELL_STYLE = {
-  position: "relative",
-  width: "100vw",
-  height: "100vh",
+  position: "fixed",
+  inset: 0,
+  overflow: "hidden",
   background: "#e8efe6",
 } as const
 
 const HUD_STYLE = {
-  position: "absolute",
-  left: 16,
-  top: 88,
+  minHeight: 0,
+  overflowY: "auto",
   display: "flex",
   flexDirection: "column",
   gap: 8,
@@ -102,16 +124,28 @@ const HUD_STYLE = {
   borderRadius: 12,
   background: "rgba(255, 255, 255, 0.94)",
   boxShadow: "0 6px 24px rgba(0, 0, 0, 0.12)",
-  zIndex: 1,
+  zIndex: 2,
   fontFamily: "system-ui, sans-serif",
+} as const
+
+const ROW_TWO_STYLE = {
+  position: "absolute",
+  left: PANEL_GAP,
+  right: PANEL_GAP,
+  top: ROW_TWO_TOP,
+  bottom: BOARD_CLEARANCE_BOTTOM,
+  display: "grid",
+  gridTemplateColumns: `${LEFT_PANEL_WIDTH}px minmax(0, 1fr) ${STATUS_RAIL_WIDTH}px`,
+  gap: PANEL_GAP,
+  zIndex: 2,
 } as const
 
 const PLAYER_PANEL_STYLE = {
   position: "absolute",
-  right: 16,
-  top: 88,
+  right: BOARD_RIGHT_INSET,
+  top: ROW_TWO_TOP,
   width: 320,
-  maxHeight: "calc(100vh - 32px)",
+  bottom: BOARD_CLEARANCE_BOTTOM,
   overflowY: "auto",
   display: "flex",
   flexDirection: "column",
@@ -120,15 +154,15 @@ const PLAYER_PANEL_STYLE = {
   borderRadius: 12,
   background: "rgba(255, 255, 255, 0.94)",
   boxShadow: "0 6px 24px rgba(0, 0, 0, 0.12)",
-  zIndex: 1,
+  zIndex: 2,
   fontFamily: "system-ui, sans-serif",
 } as const
 
 const ACTION_LOG_PANEL_STYLE = {
   position: "absolute",
-  right: 16,
-  bottom: 88,
-  width: 320,
+  left: BOARD_LEFT_INSET,
+  right: BOARD_RIGHT_INSET,
+  bottom: BOARD_CLEARANCE_BOTTOM,
   maxHeight: 260,
   overflowY: "auto",
   display: "flex",
@@ -136,9 +170,9 @@ const ACTION_LOG_PANEL_STYLE = {
   gap: 8,
   padding: 12,
   borderRadius: 12,
-  background: "rgba(255, 255, 255, 0.94)",
-  boxShadow: "0 6px 24px rgba(0, 0, 0, 0.12)",
-  zIndex: 1,
+  background: "rgba(255, 255, 255, 0.97)",
+  boxShadow: "0 10px 28px rgba(0, 0, 0, 0.16)",
+  zIndex: 4,
   fontFamily: "system-ui, sans-serif",
 } as const
 
@@ -153,56 +187,79 @@ const PLAYER_CARD_STYLE = {
 
 const TOP_BAR_STYLE = {
   position: "absolute",
-  left: 16,
-  right: 16,
-  top: 16,
+  left: PANEL_GAP,
+  right: PANEL_GAP,
+  top: PANEL_GAP,
   display: "flex",
   alignItems: "stretch",
-  gap: 10,
-  padding: 10,
+  gap: 6,
+  padding: 6,
   borderRadius: 12,
   background: "rgba(255, 255, 255, 0.94)",
   boxShadow: "0 6px 24px rgba(0, 0, 0, 0.12)",
-  zIndex: 1,
+  zIndex: 2,
   fontFamily: "system-ui, sans-serif",
+} as const
+
+const TOP_BAR_PLAYERS_STYLE = {
+  minWidth: 0,
+  flex: "1 1 65%",
+  display: "flex",
+  alignItems: "stretch",
+  gap: 6,
   overflowX: "auto",
 } as const
 
 const TOP_BAR_PLAYER_STYLE = {
-  minWidth: 280,
+  minWidth: 240,
   border: "1px solid #d8dfd5",
   borderRadius: 10,
-  padding: "8px 10px",
+  padding: "5px 7px",
   display: "flex",
   alignItems: "center",
-  gap: 14,
+  gap: 8,
   whiteSpace: "nowrap",
   background: "#ffffff",
+  fontSize: 11,
+} as const
+
+const TOP_BAR_PROGRESS_STYLE = {
+  minWidth: 0,
+  flex: "1 1 35%",
+  alignSelf: "stretch",
+  margin: "-6px -6px -6px 0",
+  border: "none",
+  borderRadius: "0 12px 12px 0",
+  padding: 0,
+  display: "flex",
+  alignItems: "stretch",
+  justifyContent: "stretch",
+  background: "transparent",
+  fontSize: 12,
+  overflow: "hidden",
 } as const
 
 const BOTTOM_BAR_STYLE = {
-  position: "absolute",
-  left: 16,
-  right: 16,
-  bottom: 16,
+  minHeight: 0,
   display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: 16,
+  flexDirection: "column",
+  alignItems: "stretch",
+  justifyContent: "flex-start",
+  gap: 8,
   padding: 12,
   borderRadius: 12,
-  background: "rgba(255, 255, 255, 0.94)",
-  boxShadow: "0 6px 24px rgba(0, 0, 0, 0.12)",
-  zIndex: 1,
+  background: "rgba(255, 255, 255, 0.97)",
+  boxShadow: "0 10px 28px rgba(0, 0, 0, 0.16)",
+  zIndex: 2,
   fontFamily: "system-ui, sans-serif",
 } as const
 
 const RESOURCE_MARKET_PANEL_STYLE = {
   position: "absolute",
-  left: 16,
-  right: 16,
-  top: 88,
-  bottom: 88,
+  left: BOARD_LEFT_INSET,
+  right: BOARD_RIGHT_INSET,
+  top: ROW_TWO_TOP,
+  bottom: PANEL_GAP,
   overflowY: "auto",
   display: "flex",
   flexDirection: "column",
@@ -210,9 +267,56 @@ const RESOURCE_MARKET_PANEL_STYLE = {
   padding: 12,
   borderRadius: 12,
   background: "rgba(255, 255, 255, 0.96)",
-  boxShadow: "0 6px 24px rgba(0, 0, 0, 0.12)",
-  zIndex: 1,
+  boxShadow: "0 10px 28px rgba(0, 0, 0, 0.14)",
+  zIndex: 3,
   fontFamily: "system-ui, sans-serif",
+} as const
+
+const BOARD_STAGE_STYLE = {
+  position: "relative",
+  minWidth: 0,
+  minHeight: 0,
+  borderRadius: 12,
+  background: "#f4f7f3",
+  border: "1px solid rgba(124, 146, 127, 0.2)",
+  boxShadow: "0 10px 28px rgba(0, 0, 0, 0.12)",
+  zIndex: 0,
+  overflow: "hidden",
+} as const
+
+const BOARD_INNER_STYLE = {
+  position: "absolute",
+  inset: 0,
+  overflow: "hidden",
+  borderRadius: 12,
+  background: "#f4f7f3",
+  boxShadow: "inset 0 0 0 1px rgba(124, 146, 127, 0.18)",
+} as const
+
+const TABLE_ZONE_STYLE = {
+  position: "absolute",
+  left: PANEL_GAP,
+  right: PANEL_GAP,
+  bottom: PANEL_GAP,
+  height: TABLE_ZONE_HEIGHT,
+  display: "grid",
+  gridTemplateColumns: `minmax(0, 1fr) ${TABLE_PREVIEW_WIDTH}px`,
+  gap: 6,
+  zIndex: 2,
+  fontFamily: "system-ui, sans-serif",
+} as const
+
+const TABLE_LANE_STYLE = {
+  minWidth: 0,
+  minHeight: 0,
+  display: "flex",
+  flexDirection: "column",
+  gap: 8,
+  padding: 10,
+  borderRadius: 12,
+  background: "rgba(255, 255, 255, 0.94)",
+  border: "1px solid #d8dfd5",
+  overflow: "hidden",
 } as const
 
 const MAP_OUTLINE_STYLE = {
@@ -236,6 +340,115 @@ const MODE_LINE_STYLES: Record<
   rail: {},
   air: { strokeDasharray: "14 10" },
   bus: { strokeDasharray: "3 9", opacity: 0.9 },
+}
+
+const MODE_ACCENT_COLORS: Record<RouteMode, { border: string; face: string; badge: string }> = {
+  bus: { border: "#8aa07f", face: "#f7fbf4", badge: "#68865b" },
+  rail: { border: "#7d8fa8", face: "#f4f7fb", badge: "#5b7395" },
+  air: { border: "#9a88bb", face: "#f7f4fc", badge: "#7c66a7" },
+}
+
+const TOP_BAR_PHASE_ORDER: WeeklyPhase[] = [
+  "purchase-equipment",
+  "claim-routes",
+  "bureaucracy",
+]
+
+type CardStackPreviewProps = {
+  icon: string
+  label: string
+  count: number
+  accent: { border: string; face: string; badge: string }
+  compact?: boolean
+  dimmed?: boolean
+}
+
+function CardStackPreview({
+  icon,
+  label,
+  count,
+  accent,
+  compact = false,
+  dimmed = false,
+}: CardStackPreviewProps) {
+  const width = compact ? 19 : 34
+  const height = compact ? 26 : 48
+  const badgeSize = compact ? 12 : 15
+  const depth = count > 0 ? Math.min(3, count) : 1
+
+  return (
+    <div
+      title={`${label}: ${count}`}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        minWidth: 0,
+        opacity: dimmed ? 0.6 : 1,
+      }}
+    >
+      <div
+        style={{
+          position: "relative",
+          width: width + (depth - 1) * (compact ? 3 : 6),
+          height: height + (depth - 1) * (compact ? 2 : 4),
+          flexShrink: 0,
+        }}
+      >
+        {Array.from({ length: depth }).map((_, index) => {
+          const isTop = index === depth - 1
+
+          return (
+            <div
+              key={`${label}-${index}`}
+              style={{
+                position: "absolute",
+                left: index * (compact ? 3 : 6),
+                top: index * (compact ? 2 : 4),
+                width,
+                height,
+                borderRadius: compact ? 5 : 12,
+                border: `1px solid ${accent.border}`,
+                background: accent.face,
+                boxShadow: isTop ? "0 4px 10px rgba(0, 0, 0, 0.08)" : "none",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "#223024",
+                fontSize: compact ? 10 : 18,
+                fontWeight: 700,
+                overflow: "hidden",
+                opacity: count > 0 ? 1 : 0.45,
+              }}
+            >
+              {icon}
+              {isTop && (
+                <div
+                  style={{
+                    position: "absolute",
+                    right: compact ? 0 : 3,
+                    top: compact ? 0 : 3,
+                    minWidth: badgeSize,
+                    height: badgeSize,
+                    padding: compact ? "0 3px" : "0 4px",
+                    borderRadius: 999,
+                    background: accent.badge,
+                    color: "#ffffff",
+                    fontSize: compact ? 8 : 9,
+                    fontWeight: 800,
+                    lineHeight: `${badgeSize}px`,
+                    textAlign: "center",
+                    boxShadow: "0 1px 3px rgba(0, 0, 0, 0.18)",
+                  }}
+                >
+                  {count}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
 }
 
 function getMinimumVisibleCitySize(zoomScale: number) {
@@ -292,6 +505,21 @@ function getVehicleTypeForMode(mode: RouteMode): VehicleCard["type"] {
   return mode === "rail" ? "train" : mode
 }
 
+function getModeForVehicleType(type: VehicleCard["type"]): RouteMode {
+  return type === "train" ? "rail" : type
+}
+
+function getModeIcon(mode: RouteMode) {
+  switch (mode) {
+    case "bus":
+      return "🚌"
+    case "rail":
+      return "🗺"
+    case "air":
+      return "🗺"
+  }
+}
+
 function getRealFuelLabel(resource: PurchasableResource) {
   return resource === "diesel" ? "gallons" : "pounds"
 }
@@ -339,6 +567,14 @@ function getPhaseStatusMessage(phase: WeeklyPhase) {
     case "bureaucracy":
       return "Plan routes and operate the maximum affordable trips, then advance."
   }
+}
+
+function getTopBarPhaseIndex(phase: WeeklyPhase) {
+  if (phase === "purchase-fuel") {
+    return 1
+  }
+
+  return Math.max(0, TOP_BAR_PHASE_ORDER.indexOf(phase))
 }
 
 function getVehicleTypeLabel(type: VehicleCard["type"]) {
@@ -405,9 +641,7 @@ export default function Board({
 }: Props) {
   type RestorablePanel = "resource" | "vehicle" | "bureaucracy" | "economics" | null
 
-  const [selectedCityIds, setSelectedCityIds] = useState<string[]>([])
-  const [selectedClaimMode, setSelectedClaimMode] = useState<RouteMode | null>(null)
-  const [hoverCityId, setHoverCityId] = useState<string | null>(null)
+  const [selectedRouteCardId, setSelectedRouteCardId] = useState<string | null>(null)
   const [expandedPlayerId, setExpandedPlayerId] = useState<string | null>(null)
   const [isResourceMarketOpen, setIsResourceMarketOpen] = useState(false)
   const [isVehicleMarketOpen, setIsVehicleMarketOpen] = useState(false)
@@ -417,24 +651,37 @@ export default function Board({
   const [isActionLogOpen, setIsActionLogOpen] = useState(false)
   const [wikiPreviousPanel, setWikiPreviousPanel] = useState<RestorablePanel>(null)
   const [zoomScale, setZoomScale] = useState(1)
+  const [isLiveStagePulseOn, setIsLiveStagePulseOn] = useState(false)
   const [isPeriodSummaryOpen, setIsPeriodSummaryOpen] = useState(false)
   const [lastShownPeriodSummaryKey, setLastShownPeriodSummaryKey] = useState<string | null>(null)
   const [statusMessage, setStatusMessage] = useState<string>(
     getPhaseStatusMessage(game.currentPhase),
   )
   const [pendingVehiclePurchaseCardId, setPendingVehiclePurchaseCardId] = useState<string | null>(null)
+  const [revealedVehicleFunFactCardId, setRevealedVehicleFunFactCardId] = useState<string | null>(null)
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setIsLiveStagePulseOn(current => !current)
+    }, 3200)
+
+    return () => window.clearInterval(intervalId)
+  }, [])
 
   const map = game.map
   const currentPlayer = getCurrentPlayer(game)
 
-  const cityMap = Object.fromEntries(
+  const cityMap: Record<string, GameState["cities"][number]> = Object.fromEntries(
     game.cities.map(c => [c.id, c]),
   )
-  const playerMap = Object.fromEntries(
+  const playerMap: Record<string, GameState["players"][number]> = Object.fromEntries(
     game.players.map(player => [player.id, player]),
   )
-  const vehicleCardMap = Object.fromEntries(
+  const vehicleCardMap: Record<string, VehicleCard> = Object.fromEntries(
     game.vehicleCatalog.map(card => [card.id, card]),
+  )
+  const routeCardMap: Record<string, GameState["routeCatalog"][number]> = Object.fromEntries(
+    game.routeCatalog.map(card => [card.id, card]),
   )
   const bureaucracySummaries = useMemo(
     () => buildBureaucracySummaries(game),
@@ -468,9 +715,13 @@ export default function Board({
    })
    .join(" L ")
 
+  const selectedRouteCard = selectedRouteCardId
+    ? routeCardMap[selectedRouteCardId] ?? null
+    : null
+  const selectedCityIds = selectedRouteCard?.cityIds ?? []
   const selectedCities = selectedCityIds
     .map(cityId => cityMap[cityId])
-    .filter(city => city !== undefined)
+    .filter((city): city is GameState["cities"][number] => city !== undefined)
   const currentPlayerOwnedVehicleCards = useMemo(
     () =>
       (currentPlayer?.ownedVehicleCardIds ?? [])
@@ -479,43 +730,33 @@ export default function Board({
         .sort((cardA, cardB) => cardA.number - cardB.number),
     [currentPlayer, vehicleCardMap],
   )
+  const currentPlayerOwnedModes = useMemo(
+    () => new Set(currentPlayerOwnedVehicleCards.map(card => getModeForVehicleType(card.type))),
+    [currentPlayerOwnedVehicleCards],
+  )
 
   const connectionOptions = useMemo(() => {
-    if (selectedCityIds.length < 2) {
+    if (selectedRouteCard === null || selectedCityIds.length < 2) {
       return []
     }
 
     return getConnectionOptions(game, selectedCityIds)
-  }, [game, selectedCityIds])
+  }, [game, selectedCityIds, selectedRouteCard])
 
-  const previewCityIds =
-    selectedCityIds.length >= 2
-      ? selectedCityIds
-      : selectedCityIds.length === 1 &&
-          hoverCityId &&
-          selectedCityIds[0] !== hoverCityId
-        ? [selectedCityIds[0], hoverCityId]
-        : []
+  const previewCityIds = selectedCityIds.length >= 2 ? selectedCityIds : []
 
   const previewPoints = previewCityIds
     .map(cityId => cityMap[cityId])
-    .filter(city => city !== undefined)
+    .filter((city): city is GameState["cities"][number] => city !== undefined)
     .map(city => latLngToWorld(city))
 
   const previewVisible = previewPoints.length >= 2
 
   const selectionSummary =
-    selectedCities.length >= 2
-      ? selectedCities.map(city => city.name).join(" -> ")
-      : selectedCities.length === 1
-        ? `Start city: ${selectedCities[0].name}`
-        : "No cities selected"
+    selectedRouteCard
+      ? `${selectedRouteCard.title} (${MODE_LABELS[selectedRouteCard.mode]})`
+      : "No route card selected"
 
-  const optionMessage = connectionOptions
-    .filter(option => !option.valid && option.reason)
-    .map(option => option.reason)
-    .filter((reason, index, reasons) => reasons.indexOf(reason) === index)
-    .join(" ")
   const connectionBonusPreview = useMemo(
     () =>
       selectedCities.length >= 2
@@ -619,7 +860,6 @@ export default function Board({
             })
       const operatingCostPerPeriod =
         fixedCrewCost + fixedMaintenanceCost + balanceAdjustmentPerPeriod + fuelCostPerPeriod
-
       return {
         mode: option.mode,
         valid: option.valid,
@@ -648,9 +888,33 @@ export default function Board({
       }
     })
   }, [connectionBonusPreview, connectionOptions, currentPlayerOwnedVehicleCards, game, selectedCities])
-  const selectedClaimPreview = routePreviewSummaries.find(
-    summary => summary.mode === selectedClaimMode,
-  ) ?? null
+  const selectedClaimPreview =
+    selectedRouteCard === null
+      ? null
+      : routePreviewSummaries.find(summary => summary.mode === selectedRouteCard.mode) ?? null
+  const optionMessage =
+    selectedRouteCard !== null && selectedClaimPreview && !selectedClaimPreview.valid
+      ? selectedClaimPreview.reason ?? "That route is not available."
+      : ""
+  const routeCardsByMode = useMemo(
+    () => {
+      return BUREAUCRACY_MODE_ORDER.map(mode => {
+        const cardIds = game.routeMarketCardIdsByMode[mode]
+        const visibleCardIds = cardIds.slice(0, ROUTE_MARKET_VISIBLE_COUNT)
+
+        return {
+          mode,
+          cards: visibleCardIds
+            .map(cardId => routeCardMap[cardId])
+            .filter((card): card is (typeof game.routeCatalog)[number] => card !== undefined),
+          deckCount: Math.max(0, cardIds.length - visibleCardIds.length),
+          totalCount: cardIds.length,
+          owned: currentPlayerOwnedModes.has(mode),
+        }
+      })
+    },
+    [currentPlayerOwnedModes, game.routeCatalog, game.routeMarketCardIdsByMode, routeCardMap],
+  )
   const canBuyFuelByResource = useMemo(
     () => ({
       diesel: currentPlayerOwnedVehicleCards.some(card => card.type !== "air"),
@@ -672,7 +936,6 @@ export default function Board({
   const activeChanceCard = useMemo(() => getActiveChanceCard(game), [game])
   const victoryStandings = useMemo(() => buildVictoryStandings(game), [game])
   const leadingStanding = victoryStandings[0]
-  const periodsRemaining = Math.max(0, game.operatingConfig.totalWeeks - game.currentWeek)
   const completedPeriod = game.isGameOver ? game.currentWeek : game.currentWeek - 1
   const effectiveFuelPriceByResource = useMemo(
     () => ({
@@ -786,12 +1049,19 @@ export default function Board({
       const ownedVehicleCards = player.ownedVehicleCardIds
         .map(cardId => vehicleCardMap[cardId])
         .filter((card): card is VehicleCard => card !== undefined)
-
+      const ownedVehicleCounts = {
+        bus: ownedVehicleCards.filter(card => card.type === "bus").length,
+        train: ownedVehicleCards.filter(card => card.type === "train").length,
+        air: ownedVehicleCards.filter(card => card.type === "air").length,
+      }
+      const ownedRouteCount = ownedRoutes.length
       return {
         player,
         connectedCities,
         connectedRoutes,
         ownedVehicleCards,
+        ownedVehicleCounts,
+        ownedRouteCount,
         weeklyNet,
       }
     })
@@ -825,10 +1095,33 @@ export default function Board({
       .map(cardId => vehicleCardMap[cardId])
       .filter((card): card is VehicleCard => card !== undefined)
   }, [game.vehicleMarketCardIds, vehicleCardMap])
+  const vehicleMarketCountsByType = useMemo(
+    () => ({
+      bus: game.vehicleMarketCardIds.reduce(
+        (total, cardId) => total + (vehicleCardMap[cardId]?.type === "bus" ? 1 : 0),
+        0,
+      ),
+      train: game.vehicleMarketCardIds.reduce(
+        (total, cardId) => total + (vehicleCardMap[cardId]?.type === "train" ? 1 : 0),
+        0,
+      ),
+      air: game.vehicleMarketCardIds.reduce(
+        (total, cardId) => total + (vehicleCardMap[cardId]?.type === "air" ? 1 : 0),
+        0,
+      ),
+    }),
+    [game.vehicleMarketCardIds, vehicleCardMap],
+  )
   const remainingVehicleCardCount = Math.max(
     0,
     game.vehicleMarketCardIds.length - visibleVehicleCards.length,
   )
+  const totalRouteDeckCount = useMemo(
+    () => routeCardsByMode.reduce((total, { totalCount }) => total + totalCount, 0),
+    [routeCardsByMode],
+  )
+  const remainingChanceDeckCount = game.chanceDeckCardIds.length
+  const currentPhaseProgressIndex = getTopBarPhaseIndex(game.currentPhase)
   const currentPlayerIndex = game.players.findIndex(
     player => player.id === game.currentPlayerId,
   )
@@ -852,7 +1145,7 @@ export default function Board({
     (pendingVehiclePurchaseCardId && vehicleCardMap[pendingVehiclePurchaseCardId]) ?? null
   const shouldAdvancePhase = isLastPlayerTurn(game)
   const isAdvanceBlocked =
-    game.currentPhase === "claim-routes" && selectedCityIds.length >= 2
+    game.currentPhase === "claim-routes" && selectedRouteCard !== null
 
   function getFuelInfoLabel(resource: PurchasableResource, units: number) {
     const realFuel = calculateRealFuelFromUnits(units, resource, game)
@@ -861,37 +1154,22 @@ export default function Board({
   }
 
   function resetSelection(message = getPhaseStatusMessage(game.currentPhase)) {
-    setSelectedCityIds([])
-    setSelectedClaimMode(null)
-    setHoverCityId(null)
+    setSelectedRouteCardId(null)
     setStatusMessage(message)
   }
 
   useEffect(() => {
-    if (selectedCityIds.some(cityId => !visibleCityIds.has(cityId))) {
-      resetSelection("Zoom in to interact with smaller cities.")
-    }
-  }, [selectedCityIds, visibleCityIds])
-
-  useEffect(() => {
-    if (hoverCityId && !visibleCityIds.has(hoverCityId)) {
-      setHoverCityId(null)
-    }
-  }, [hoverCityId, visibleCityIds])
-
-  useEffect(() => {
-    setSelectedCityIds([])
-    setSelectedClaimMode(null)
-    setHoverCityId(null)
+    setSelectedRouteCardId(null)
     setPendingVehiclePurchaseCardId(null)
+    setRevealedVehicleFunFactCardId(null)
     setStatusMessage(getPhaseStatusMessage(game.currentPhase))
   }, [game.currentPhase])
 
   useEffect(() => {
-    if (selectedClaimMode && !connectionOptions.some(option => option.mode === selectedClaimMode && option.valid)) {
-      setSelectedClaimMode(null)
+    if (selectedRouteCardId && !routeCardMap[selectedRouteCardId]) {
+      setSelectedRouteCardId(null)
     }
-  }, [connectionOptions, selectedClaimMode])
+  }, [routeCardMap, selectedRouteCardId])
 
   useEffect(() => {
     const completedPeriod = game.isGameOver ? game.currentWeek : game.currentWeek - 1
@@ -980,60 +1258,27 @@ export default function Board({
     setWikiPreviousPanel(null)
   }
 
-  function handleCityClick(cityId: string) {
-    if (game.currentPhase !== "claim-routes") {
-      resetSelection(getRouteInteractionMessage(game.currentPhase))
+  function handleCityClick() {
+    if (game.currentPhase === "claim-routes") {
+      setStatusMessage("Choose a route card from the table to preview it on the map.")
       return
     }
 
-    if (!visibleCityIds.has(cityId)) {
-      return
-    }
-
-    if (selectedCityIds.length === 0) {
-      setSelectedCityIds([cityId])
-      setStatusMessage("Choose a second city.")
-      return
-    }
-
-    if (selectedCityIds[selectedCityIds.length - 1] === cityId) {
-      if (selectedCityIds.length === 1) {
-        resetSelection("Selection cleared.")
-        return
-      }
-
-      setSelectedCityIds(current => current.slice(0, -1))
-      setHoverCityId(null)
-      setStatusMessage("Removed the last city from the route chain.")
-      return
-    }
-
-    if (selectedCityIds.includes(cityId)) {
-      setSelectedCityIds([cityId])
-      setHoverCityId(null)
-      setStatusMessage("Restarted the route chain from that city.")
-      return
-    }
-
-    setSelectedCityIds(current => [...current, cityId])
-    setHoverCityId(null)
-    setStatusMessage(
-      selectedCityIds.length >= 1
-        ? "Add another city or choose a connection type."
-        : "Choose a second city.",
-    )
+    resetSelection(getRouteInteractionMessage(game.currentPhase))
   }
 
-  function handleSelectClaimMode(mode: RouteMode) {
-    const option = connectionOptions.find(candidate => candidate.mode === mode)
+  function handleSelectRouteCard(routeCardId: string) {
+    const routeCard = routeCardMap[routeCardId]
 
-    if (!option?.valid) {
-      setStatusMessage(option?.reason ?? "That connection type is not available.")
+    if (!routeCard) {
+      setStatusMessage("That route card could not be found.")
       return
     }
 
-    setSelectedClaimMode(mode)
-    setStatusMessage(`Ready to confirm this ${MODE_LABELS[mode].toLowerCase()} route.`)
+    setSelectedRouteCardId(routeCardId)
+    setStatusMessage(
+      `Previewing ${routeCard.title} (${MODE_LABELS[routeCard.mode].toLowerCase()}).`,
+    )
   }
 
   function handleClaim() {
@@ -1042,11 +1287,11 @@ export default function Board({
       return
     }
 
-    if (selectedCityIds.length < 2 || selectedClaimMode === null) {
+    if (selectedRouteCard === null || selectedCityIds.length < 2) {
       return
     }
 
-    const result = onClaimRoute(selectedCityIds, selectedClaimMode)
+    const result = onClaimRoute(selectedRouteCard.id)
 
     if (!result.ok) {
       setStatusMessage(result.error)
@@ -1060,7 +1305,9 @@ export default function Board({
         : ""
 
     resetSelection(
-      `${currentPlayer?.name ?? "Current player"} claimed ${result.routes.length} ${MODE_LABELS[selectedClaimMode].toLowerCase()} segment${result.routes.length === 1 ? "" : "s"} across ${routeLabel}${result.cost > 0 ? ` for ${formatCurrency(result.cost)}` : ""}${rewardText}.`,
+      result.advancedPhase
+        ? `${currentPlayer?.name ?? "Current player"} claimed ${selectedRouteCard.title} across ${routeLabel}${result.cost > 0 ? ` for ${formatCurrency(result.cost)}` : ""}${rewardText}. Starting ${formatPhaseLabel(result.nextPhase).toLowerCase()}.`
+        : `${currentPlayer?.name ?? "Current player"} claimed ${selectedRouteCard.title} across ${routeLabel}${result.cost > 0 ? ` for ${formatCurrency(result.cost)}` : ""}${rewardText}. ${result.nextPlayerName} is up.`,
     )
   }
 
@@ -1176,232 +1423,641 @@ export default function Board({
   return (
     <div style={BOARD_SHELL_STYLE}>
       <div style={TOP_BAR_STYLE}>
-        {playerSummaries.map(({ player, connectedCities, connectedRoutes, weeklyNet }) => (
-          <button
-            key={`${player.id}-summary`}
-            type="button"
-            onClick={() => setExpandedPlayerId(current =>
-              current === player.id ? null : player.id,
-            )}
-            style={{
-              ...TOP_BAR_PLAYER_STYLE,
-              borderColor: player.id === game.currentPlayerId ? player.color : "#d8dfd5",
-              boxShadow:
-                player.id === game.currentPlayerId
-                  ? `0 0 0 2px ${player.color}33 inset`
-                  : "none",
-              background:
-                player.id === game.currentPlayerId ? `${player.color}14` : "#ffffff",
-              cursor: "pointer",
-              textAlign: "left",
-            }}
-          >
-            <div style={{ minWidth: 0 }}>
-              <strong style={{ color: player.color }}>{player.name}</strong>
-            </div>
-            <div>
-              <span>
-                <strong>$</strong> {formatCurrency(player.money).replace("$", "")}
-              </span>
-            </div>
-            <div
+        <div style={TOP_BAR_PLAYERS_STYLE}>
+        {playerSummaries.map(
+          ({ player, connectedCities, weeklyNet, ownedVehicleCounts, ownedRouteCount }) => (
+            <button
+              key={`${player.id}-summary`}
+              type="button"
+              onClick={() => setExpandedPlayerId(current => (current === player.id ? null : player.id))}
               style={{
-                color: weeklyNet > 0 ? "#2a7f3b" : weeklyNet < 0 ? "#b42318" : "#666666",
-                fontWeight: 600,
+                ...TOP_BAR_PLAYER_STYLE,
+                borderColor: player.id === game.currentPlayerId ? player.color : "#d8dfd5",
+                boxShadow:
+                  player.id === game.currentPlayerId
+                    ? `0 0 0 2px ${player.color}33 inset`
+                    : "none",
+                background:
+                  player.id === game.currentPlayerId ? `${player.color}14` : "#ffffff",
+                cursor: "pointer",
+                textAlign: "left",
               }}
             >
-              {weeklyNet >= 0 ? "+" : "-"}
-              {formatCurrency(Math.abs(weeklyNet))}
-            </div>
-            <div style={{ display: "flex", gap: 12, color: "#324236" }}>
-              <span>👥 {formatDecimal(player.totalPassengersServed, 0)}</span>
-              <span>🏙 {connectedCities.length}</span>
-              <span>🛤 {connectedRoutes.length}</span>
-            </div>
-          </button>
-        ))}
-      </div>
-      <div style={HUD_STYLE}>
-        <div
-          style={{
-            border: "1px solid #d8dfd5",
-            borderRadius: 10,
-            padding: 10,
-            background: "#f7faf6",
-          }}
-        >
-          <div>
-            <strong>Goal:</strong> Move the most passengers in {game.operatingConfig.totalWeeks} months.
-          </div>
-          <div style={{ color: "#56635a", fontSize: 13 }}>
-            Ties break on connected cities, then cash.
-          </div>
-          {leadingStanding && (
-            <div style={{ marginTop: 4 }}>
-              <strong>Leader:</strong>{" "}
-              <span style={{ color: leadingStanding.player.color }}>
-                {leadingStanding.player.name}
-              </span>{" "}
-              • {formatDecimal(leadingStanding.player.totalPassengersServed, 0)} passengers
-            </div>
-          )}
+              <div style={{ minWidth: 0 }}>
+                <strong style={{ color: player.color }}>{player.name}</strong>
+              </div>
+              <div>
+                <span>
+                  <strong>$</strong> {formatCurrency(player.money).replace("$", "")}
+                </span>
+              </div>
+              <div
+                style={{
+                  color: weeklyNet > 0 ? "#2a7f3b" : weeklyNet < 0 ? "#b42318" : "#666666",
+                  fontWeight: 600,
+                }}
+              >
+                {weeklyNet >= 0 ? "+" : "-"}
+                {formatCurrency(Math.abs(weeklyNet))}
+              </div>
+              <div style={{ display: "flex", gap: 8, color: "#324236", alignItems: "center" }}>
+                <span>👥 {formatDecimal(player.totalPassengersServed, 0)}</span>
+                <span>🏙 {connectedCities.length}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+                  {ownedVehicleCounts.bus > 0 && (
+                    <CardStackPreview
+                      compact
+                      icon=""
+                      label="Bus cards"
+                      count={ownedVehicleCounts.bus}
+                      accent={{ border: "#8aa07f", face: "#f7fbf4", badge: "#68865b" }}
+                    />
+                  )}
+                  {ownedVehicleCounts.train > 0 && (
+                    <CardStackPreview
+                      compact
+                      icon=""
+                      label="Train cards"
+                      count={ownedVehicleCounts.train}
+                      accent={{ border: "#7d8fa8", face: "#f4f7fb", badge: "#5b7395" }}
+                    />
+                  )}
+                  {ownedVehicleCounts.air > 0 && (
+                    <CardStackPreview
+                      compact
+                      icon=""
+                      label="Air cards"
+                      count={ownedVehicleCounts.air}
+                      accent={{ border: "#9a88bb", face: "#f7f4fc", badge: "#7c66a7" }}
+                    />
+                  )}
+                </div>
+                <CardStackPreview
+                  compact
+                  icon="🗺"
+                  label="Route cards"
+                  count={ownedRouteCount}
+                  accent={{ border: "#b3966a", face: "#fbf6ed", badge: "#9a7440" }}
+                />
+              </div>
+            </button>
+          ),
+        )}
         </div>
-        {activeChanceCard && (
+        <div style={TOP_BAR_PROGRESS_STYLE}>
           <div
             style={{
-              border: "1px solid #d7d1eb",
+              display: "flex",
+              alignItems: "stretch",
+              gap: 0,
+              width: "100%",
+              height: "100%",
+              minWidth: 0,
+            }}
+          >
+            {Array.from({ length: game.operatingConfig.totalWeeks }, (_, index) => {
+              const monthNumber = index + 1
+              const isLastMonth = monthNumber === game.operatingConfig.totalWeeks
+              const isPast = monthNumber < game.currentWeek
+              const isCurrent = monthNumber === game.currentWeek
+              const isFuture = monthNumber > game.currentWeek
+
+              if (isCurrent) {
+                return (
+                  <div
+                    key={`month-progress-${monthNumber}`}
+                    title={`Month ${monthNumber}: ${formatPhaseLabel(game.currentPhase)}`}
+                    style={{
+                      position: "relative",
+                      flex: "0.72 1 0%",
+                      minWidth: 0,
+                      borderRadius: isLastMonth ? "0 12px 12px 0" : 0,
+                      background: "#d9ddd7",
+                      overflow: "hidden",
+                      zIndex: 1,
+                    }}
+                  >
+                    <div
+                      style={{
+                        position: "absolute",
+                        inset: 0,
+                        background:
+                          "repeating-linear-gradient(135deg, rgba(126, 155, 115, 0.85) 0 8px, rgba(111, 143, 100, 0.85) 8px 12px)",
+                        opacity: isLiveStagePulseOn ? 0.95 : 0.2,
+                        transition: "opacity 2800ms ease-in-out",
+                      }}
+                    />
+                    <div
+                      style={{
+                        position: "absolute",
+                        inset: 0,
+                        display: "grid",
+                        gridTemplateRows: `repeat(${TOP_BAR_PHASE_ORDER.length}, minmax(0, 1fr))`,
+                        gap: 1,
+                        background: "rgba(255, 255, 255, 0.28)",
+                      }}
+                    >
+                      {[2, 1, 0].map(requiredPhaseIndex => (
+                        <div
+                          key={`${monthNumber}-band-${requiredPhaseIndex}`}
+                          style={{
+                            background:
+                              currentPhaseProgressIndex >= requiredPhaseIndex
+                                ? "repeating-linear-gradient(135deg, #7e9b73 0 8px, #6f8f64 8px 12px)"
+                                : "transparent",
+                          }}
+                        />
+                      ))}
+                    </div>
+                    <div
+                      style={{
+                        position: "relative",
+                        zIndex: 1,
+                        height: "100%",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        color: "#ffffff",
+                        fontSize: 11,
+                        fontWeight: 800,
+                        textShadow: "0 1px 2px rgba(0, 0, 0, 0.35)",
+                      }}
+                    >
+                      {monthNumber}
+                    </div>
+                  </div>
+                )
+              }
+
+              return (
+                <div
+                  key={`month-progress-${monthNumber}`}
+                  title={`Month ${monthNumber}`}
+                      style={{
+                        position: "relative",
+                        flex: "0.72 1 0%",
+                        minWidth: 0,
+                        borderRadius: isLastMonth ? "0 12px 12px 0" : 0,
+                        background: isPast
+                          ? "repeating-linear-gradient(135deg, #a9c3dc 0 8px, #9bb7d4 8px 12px)"
+                          : isFuture
+                        ? "#d9ddd7"
+                        : "#edf3e8",
+                    boxShadow: isPast
+                      ? "none"
+                      : "inset 0 0 0 1px rgba(124, 146, 127, 0.18)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: isPast ? "#ffffff" : "#56635a",
+                    fontSize: 11,
+                        fontWeight: 800,
+                      }}
+                    >
+                      {monthNumber}
+                    </div>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+      <div style={ROW_TWO_STYLE}>
+        <div style={HUD_STYLE}>
+          <div
+            style={{
+              border: "1px solid #d8dfd5",
               borderRadius: 10,
               padding: 10,
-              background: "#f6f2ff",
+              background: "#f7faf6",
             }}
           >
             <div>
-              <strong>Monthly chance:</strong> {activeChanceCard.title}
+              <strong>Goal:</strong> Move the most passengers in {game.operatingConfig.totalWeeks} months.
             </div>
-            <div style={{ color: "#5f5482", fontSize: 13 }}>
-              {activeChanceCard.description}
+            <div style={{ color: "#56635a", fontSize: 13 }}>
+              Ties break on connected cities, then cash.
             </div>
           </div>
-        )}
-        <div>
-          <strong>Current turn:</strong>{" "}
-          <span style={{ color: currentPlayer?.color }}>
-            {currentPlayer?.name ?? "Unknown player"}
-          </span>
-        </div>
-        <div>
-          <strong>Selection:</strong> {selectionSummary}
-        </div>
-        <div>
-          <strong>Visible cities:</strong> size {minimumVisibleCitySize}+
-        </div>
-        <div>{statusMessage}</div>
-        {selectedCityIds.length >= 2 && (
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            {connectionOptions.map(option => {
-              const isSelected = selectedClaimMode === option.mode
-
-              return (
-                <button
-                  key={option.mode}
-                  type="button"
-                  disabled={!option.valid}
-                  onClick={() => handleSelectClaimMode(option.mode)}
-                  style={{
-                    padding: "8px 12px",
-                    borderRadius: 999,
-                    border: `1px solid ${isSelected ? "#223024" : "#c7d0c4"}`,
-                    cursor: option.valid ? "pointer" : "not-allowed",
-                    background: isSelected ? "#223024" : option.valid ? "#ffffff" : "#f2f2f2",
-                    color: isSelected ? "#ffffff" : option.valid ? "#222222" : "#767676",
-                    fontWeight: isSelected ? 700 : 500,
-                  }}
-                >
-                  {MODE_LABELS[option.mode]}
-                </button>
-              )
-            })}
-            <button
-              type="button"
-              onClick={handleClaim}
-              disabled={selectedClaimMode === null}
+          {activeChanceCard && (
+            <div
               style={{
-                padding: "8px 12px",
-                borderRadius: 999,
-                border: "1px solid #223024",
-                cursor: selectedClaimMode === null ? "not-allowed" : "pointer",
-                background: selectedClaimMode === null ? "#dfe5de" : "#223024",
-                color: "#ffffff",
-                fontWeight: 700,
+                border: "1px solid #d7d1eb",
+                borderRadius: 10,
+                padding: 10,
+                background: "#f6f2ff",
               }}
             >
-              Confirm route
-            </button>
+              <div>
+                <strong>Monthly chance:</strong> {activeChanceCard.title}
+              </div>
+              <div style={{ color: "#5f5482", fontSize: 13 }}>
+                {activeChanceCard.description}
+              </div>
+            </div>
+          )}
+          <div>
+            <strong>Current turn:</strong>{" "}
+            <span style={{ color: currentPlayer?.color }}>
+              {currentPlayer?.name ?? "Unknown player"}
+            </span>
+          </div>
+          <div>
+            <strong>Selection:</strong> {selectionSummary}
+          </div>
+          <div>
+            <strong>Visible cities:</strong> size {minimumVisibleCitySize}+
+          </div>
+          <div>{statusMessage}</div>
+          {(game.currentPhase === "purchase-equipment" || game.currentPhase === "claim-routes") && (
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+                border: "1px solid #d8dfd5",
+                borderRadius: 12,
+                padding: 10,
+                background: "#fffaf0",
+              }}
+            >
+              <strong>
+                {game.currentPhase === "purchase-equipment"
+                  ? "Vehicle deck on the table"
+                : "Route decks on the table"}
+              </strong>
+              <div style={{ color: "#56635a", fontSize: 13 }}>
+                {game.currentPhase === "purchase-equipment"
+                  ? "Choose from the cards laid out across the table below instead of opening a market menu."
+                  : "Choose a route card from the table below to preview it on the board, then confirm from the table summary."}
+              </div>
+              {game.currentPhase === "purchase-equipment" && game.hasPurchasedVehicleThisTurn && (
+                <div style={{ color: "#9b1c1c", fontSize: 13 }}>
+                  You have already bought 1 vehicle this turn. Advance to the next player.
+                </div>
+              )}
+              {game.currentPhase === "claim-routes" && game.hasClaimedRouteThisTurn && (
+                <div style={{ color: "#9b1c1c", fontSize: 13 }}>
+                  You have already claimed 1 route this turn. Advance to the next player.
+                </div>
+              )}
+              {game.currentPhase === "claim-routes" && currentPlayerOwnedModes.size === 0 && (
+                <div style={{ color: "#848484", fontSize: 13 }}>
+                  You do not own any vehicles that can claim route cards yet.
+                </div>
+              )}
+            </div>
+          )}
+          <div
+            style={{
+              marginTop: "auto",
+              display: "grid",
+              gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
+              justifyItems: "center",
+              alignItems: "end",
+              columnGap: 4,
+              rowGap: 4,
+            }}
+          >
+            <CardStackPreview
+              icon="🚌"
+              label="Bus cards"
+              count={vehicleMarketCountsByType.bus}
+              accent={MODE_ACCENT_COLORS.bus}
+            />
+            <CardStackPreview
+              icon="🚆"
+              label="Train cards"
+              count={vehicleMarketCountsByType.train}
+              accent={MODE_ACCENT_COLORS.rail}
+            />
+            <CardStackPreview
+              icon="✈️"
+              label="Air cards"
+              count={vehicleMarketCountsByType.air}
+              accent={MODE_ACCENT_COLORS.air}
+            />
+            <CardStackPreview
+              icon="🗺"
+              label="Route cards"
+              count={totalRouteDeckCount}
+              accent={{ border: "#b3966a", face: "#fbf6ed", badge: "#9a7440" }}
+              dimmed={game.currentPhase !== "claim-routes"}
+            />
+            <CardStackPreview
+              icon="?"
+              label="Chance cards"
+              count={remainingChanceDeckCount}
+              accent={{ border: "#b58cba", face: "#fbf4fb", badge: "#95669a" }}
+              dimmed={!activeChanceCard && remainingChanceDeckCount === 0}
+            />
+          </div>
+        </div>
+        <div style={BOARD_STAGE_STYLE}>
+          <div style={BOARD_INNER_STYLE}>
+            <TransformWrapper
+              minScale={0.5}
+              maxScale={6}
+              centerOnInit
+              limitToBounds={false}
+              onTransform={(_, state) => {
+                setZoomScale(current => (
+                  Math.abs(current - state.scale) < 0.001 ? current : state.scale
+                ))
+              }}
+            >
+              <TransformComponent
+                wrapperStyle={{ width: "100%", height: "100%" }}
+                contentStyle={{ width: "100%", height: "100%" }}
+              >
+                <svg
+                  viewBox={`0 0 ${map.width} ${map.height}`}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    display: "block",
+                  }}
+                >
+            <path
+              d={`M ${outlinePath} Z`}
+              fill={MAP_OUTLINE_STYLE.fill}
+              stroke={MAP_OUTLINE_STYLE.stroke}
+              strokeWidth={2}
+              opacity={MAP_OUTLINE_STYLE.opacity}
+            />
+
+            {game.routes.map(route => {
+              const aCity = cityMap[route.cityA]
+              const bCity = cityMap[route.cityB]
+              if (!aCity || !bCity) return null
+              if (!visibleCityIds.has(aCity.id) || !visibleCityIds.has(bCity.id)) {
+                return null
+              }
+
+              const a = latLngToWorld(aCity)
+              const b = latLngToWorld(bCity)
+              const owner = route.ownerId ? playerMap[route.ownerId] : undefined
+              const lineStyle = MODE_LINE_STYLES[route.mode]
+              const isElectricRail =
+                route.mode === "rail" && getRailTraction(route) === "electric"
+
+              return (
+                <g key={route.id}>
+                  {isElectricRail && (
+                    <line
+                      x1={a.x}
+                      y1={a.y}
+                      x2={b.x}
+                      y2={b.y}
+                      stroke="#8ed8ff"
+                      strokeWidth={8}
+                      strokeLinecap="round"
+                      opacity={0.7}
+                    />
+                  )}
+                  <line
+                    x1={a.x}
+                    y1={a.y}
+                    x2={b.x}
+                    y2={b.y}
+                    stroke={owner?.color ?? "#222222"}
+                    strokeWidth={4}
+                    strokeLinecap="round"
+                    strokeDasharray={
+                      isElectricRail ? "18 6" : lineStyle.strokeDasharray
+                    }
+                    opacity={lineStyle.opacity}
+                  />
+                </g>
+              )
+            })}
+
+            {previewVisible && (
+              <polyline
+                points={previewPoints.map(point => `${point.x},${point.y}`).join(" ")}
+                fill="none"
+                stroke={currentPlayer?.color ?? "#444444"}
+                strokeWidth={3}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeDasharray={
+                  selectedRouteCard?.mode === "air"
+                    ? "14 10"
+                    : selectedRouteCard?.mode === "bus"
+                      ? "4 8"
+                      : "10 8"
+                }
+                opacity={0.75}
+              />
+            )}
+
+            {visibleCities.map(city => {
+              const { x, y } = latLngToWorld(city)
+              const label = labelMap[city.id]
+
+              if (!label) {
+                return null
+              }
+
+              const dx = label.connectorX - x
+              const dy = label.connectorY - y
+              const connectorLength = Math.sqrt(dx * dx + dy * dy)
+              const radius = city.size * 2.5
+
+              if (connectorLength <= radius + 8) {
+                return null
+              }
+
+              const unitX = dx / connectorLength
+              const unitY = dy / connectorLength
+
+              return (
+                <line
+                  key={`${city.id}-label-connector`}
+                  x1={x + unitX * (radius + 1)}
+                  y1={y + unitY * (radius + 1)}
+                  x2={label.connectorX}
+                  y2={label.connectorY}
+                  stroke="rgba(34, 48, 36, 0.28)"
+                  strokeWidth={1.25}
+                  strokeLinecap="round"
+                  pointerEvents="none"
+                />
+              )
+            })}
+
+            {hiddenCities.map(city => {
+              const { x, y } = latLngToWorld(city)
+
+              return (
+                <circle
+                  key={`${city.id}-hint`}
+                  cx={x}
+                  cy={y}
+                  r={Math.max(1.6, city.size * 1.2)}
+                  fill="rgba(34, 48, 36, 0.38)"
+                  stroke="rgba(244, 241, 232, 0.55)"
+                  strokeWidth={0.8}
+                  pointerEvents="none"
+                />
+              )
+            })}
+
+            {visibleCities.map(city => {
+              const { x, y } = latLngToWorld(city)
+              const label = labelMap[city.id]
+              const isSelected = selectedCityIds.includes(city.id)
+              const fill = isSelected
+                ? currentPlayer?.color ?? "#ffffff"
+                : "#ffffff"
+
+              return (
+                <g
+                  key={city.id}
+                  onClick={handleCityClick}
+                  style={{ cursor: game.currentPhase === "claim-routes" ? "default" : "pointer" }}
+                >
+                  <circle
+                    cx={x}
+                    cy={y}
+                    r={city.size * 2.5}
+                    fill={fill}
+                    stroke="black"
+                    strokeWidth={isSelected ? 2.5 : 1.5}
+                  />
+
+                  {label && (
+                    <text
+                      x={label.textX}
+                      y={label.textY}
+                      fontSize={12}
+                      textAnchor={label.textAnchor}
+                      dominantBaseline="middle"
+                      fill="#223024"
+                      stroke="rgba(244, 241, 232, 0.95)"
+                      strokeWidth={4}
+                      strokeLinejoin="round"
+                      paintOrder="stroke"
+                      pointerEvents="none"
+                    >
+                      {city.name}
+                    </text>
+                  )}
+                </g>
+              )
+            })}
+                </svg>
+              </TransformComponent>
+            </TransformWrapper>
+          </div>
+        </div>
+        <div style={BOTTOM_BAR_STYLE}>
+          <div style={{ display: "grid", gap: 6 }}>
             <button
               type="button"
-              onClick={() => resetSelection()}
+              onClick={() => {
+                setIsEconomicsOpen(open => !open)
+                setIsResourceMarketOpen(false)
+                setIsVehicleMarketOpen(false)
+                setIsBureaucracyOpen(false)
+                setIsWikiOpen(false)
+              }}
               style={{
-                padding: "8px 12px",
-                borderRadius: 999,
+                padding: "8px 10px",
+                borderRadius: 10,
                 border: "1px solid #c7d0c4",
                 cursor: "pointer",
                 background: "#ffffff",
+                fontWeight: 600,
+                textAlign: "left",
+                fontSize: 13,
               }}
             >
-              Cancel
+              {isEconomicsOpen ? "Hide economics" : "Economics"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (isWikiOpen) {
+                  setIsWikiOpen(false)
+                  restoreWikiPreviousPanel()
+                  return
+                }
+
+                setWikiPreviousPanel(getCurrentRestorablePanel())
+                setIsWikiOpen(true)
+                setIsResourceMarketOpen(false)
+                setIsVehicleMarketOpen(false)
+                setIsBureaucracyOpen(false)
+                setIsEconomicsOpen(false)
+              }}
+              style={{
+                padding: "8px 10px",
+                borderRadius: 10,
+                border: "1px solid #c7d0c4",
+                cursor: "pointer",
+                background: "#ffffff",
+                fontWeight: 600,
+                textAlign: "left",
+                fontSize: 13,
+              }}
+            >
+              {isWikiOpen ? "Hide wiki" : "Wiki"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsActionLogOpen(open => !open)}
+              style={{
+                padding: "8px 10px",
+                borderRadius: 10,
+                border: "1px solid #c7d0c4",
+                cursor: "pointer",
+                background: "#ffffff",
+                fontWeight: 600,
+                textAlign: "left",
+                fontSize: 13,
+              }}
+            >
+              {isActionLogOpen ? "Hide log" : "Action log"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                onUndo()
+                setStatusMessage("Undid the last action.")
+              }}
+              disabled={!canUndo}
+              style={{
+                padding: "8px 10px",
+                borderRadius: 10,
+                border: "1px solid #c7d0c4",
+                cursor: canUndo ? "pointer" : "not-allowed",
+                background: canUndo ? "#ffffff" : "#f2f2f2",
+                fontWeight: 600,
+                textAlign: "left",
+                fontSize: 13,
+              }}
+            >
+              Undo
+            </button>
+            <button
+              type="button"
+              onClick={handleAdvanceTurnClick}
+              disabled={game.isGameOver || isAdvanceBlocked}
+              style={{
+                padding: "8px 10px",
+                borderRadius: 10,
+                border: "1px solid #c7d0c4",
+                cursor: game.isGameOver || isAdvanceBlocked ? "not-allowed" : "pointer",
+                background: game.isGameOver || isAdvanceBlocked ? "#f2f2f2" : "#ffffff",
+                fontWeight: 700,
+                textAlign: "left",
+                fontSize: 13,
+              }}
+            >
+              {game.isGameOver ? "Game over" : shouldAdvancePhase ? "Next phase" : "Next player"}
             </button>
           </div>
-        )}
-        {optionMessage && selectedCityIds.length >= 2 && <div>{optionMessage}</div>}
-        {routePreviewSummaries.length > 0 && (
-          <div style={{ display: "grid", gap: 8, fontSize: 13 }}>
-            {routePreviewSummaries.map(summary => (
-              <div
-                key={`${summary.mode}-preview`}
-                style={{
-                  border: selectedClaimMode === summary.mode ? "1px solid #223024" : "1px solid #d8dfd5",
-                  borderRadius: 10,
-                  padding: 10,
-                  background: selectedClaimMode === summary.mode ? "#f4f7f3" : "#ffffff",
-                  color: "#324236",
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                  <strong>{MODE_LABELS[summary.mode]}</strong>
-                  <span style={{ color: summary.valid ? "#2a7f3b" : "#9b1c1c" }}>
-                    {summary.valid ? "Available" : "Unavailable"}
-                  </span>
-                </div>
-                <div style={{ marginTop: 4 }}>
-                  {formatDecimal(summary.totalDistanceMiles)} mi
-                  {" • "}Demand {summary.combinedDemand}
-                  {" • "}Capacity {summary.passengersPerTrip.toLocaleString()} / trip
-                </div>
-                {summary.previewCard && (
-                  <div style={{ color: "#56635a", marginTop: 4 }}>
-                    Vehicle preview: #{summary.previewCard.number} {summary.previewCard.name}
-                  </div>
-                )}
-                <div style={{ marginTop: 4 }}>
-                  Trips/month {summary.maxTripsPerPeriod.toLocaleString()}
-                  {" • "}Passengers/month {summary.passengersPerPeriod.toLocaleString()}
-                </div>
-                <div style={{ marginTop: 4 }}>
-                  Revenue {formatCurrency(summary.revenuePerPeriod)}
-                  {" • "}Operating cost {formatCurrency(summary.operatingCostPerPeriod)}
-                  {" • "}Net {formatCurrency(summary.netPerPeriod)}
-                </div>
-                <div style={{ marginTop: 4, color: "#56635a", fontSize: 12 }}>
-                  Crew {formatCurrency(summary.crewCostPerPeriod)}
-                  {" • "}Maint {formatCurrency(summary.maintenanceCostPerPeriod)}
-                  {" • "}Balance {formatCurrency(summary.balanceCostPerPeriod)}
-                  {" • "}Fuel {formatCurrency(summary.fuelCostPerPeriod)}
-                </div>
-                <div style={{ marginTop: 4 }}>
-                  Build {formatCurrency(summary.claimCost)}
-                  {summary.connectionBonus > 0 && (
-                    <>
-                      {" • "}Bonus {formatCurrency(summary.connectionBonus)}
-                      {" • "}New cities {summary.newCityCount}
-                    </>
-                  )}
-                </div>
-                {!summary.valid && summary.reason && (
-                  <div style={{ marginTop: 4, color: "#9b1c1c" }}>{summary.reason}</div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-        {selectedClaimPreview && selectedClaimPreview.valid && (
-          <div style={{ color: "#324236", fontSize: 13 }}>
-            Ready to confirm: <strong>{MODE_LABELS[selectedClaimPreview.mode]}</strong> for{" "}
-            {formatCurrency(selectedClaimPreview.claimCost)}
-            {selectedClaimPreview.connectionBonus > 0 &&
-              ` with ${formatCurrency(selectedClaimPreview.connectionBonus)} in connection bonuses`}
-            .
-          </div>
-        )}
+        </div>
       </div>
       {isPeriodSummaryOpen && completedPeriod >= 1 && (
         <div
@@ -1453,9 +2109,9 @@ export default function Board({
                 Close
               </button>
             </div>
-            <div style={{ display: "grid", gap: 10 }}>
-              {playerSummaries.map(({ player, connectedCities, weeklyNet }) => (
-                <div
+              <div style={{ display: "grid", gap: 10 }}>
+                {playerSummaries.map(({ player, connectedCities, weeklyNet }) => (
+                  <div
                   key={`${player.id}-period-summary`}
                   style={{
                     border: "1px solid #d8dfd5",
@@ -1474,11 +2130,57 @@ export default function Board({
                       Connected cities: {connectedCities.length}
                     </div>
                   </div>
-                  <div>Revenue {formatCurrency(player.weeklyPayout)}</div>
-                  <div>Costs {formatCurrency(player.operatingCosts)}</div>
-                  <div>Net {formatCurrency(weeklyNet)}</div>
-                  <div>Passengers {formatDecimal(player.lastPeriodPassengersServed, 0)}</div>
-                  <div>Cash {formatCurrency(player.money)}</div>
+                  {[
+                    {
+                      label: "Passengers",
+                      value: formatDecimal(player.lastPeriodPassengersServed, 0),
+                      emphasized: true,
+                    },
+                    {
+                      label: "Profit",
+                      value: formatCurrency(weeklyNet),
+                      emphasized: true,
+                    },
+                    {
+                      label: "Revenue",
+                      value: formatCurrency(player.weeklyPayout),
+                      emphasized: false,
+                    },
+                    {
+                      label: "Costs",
+                      value: formatCurrency(player.operatingCosts),
+                      emphasized: false,
+                    },
+                    {
+                      label: "Cash",
+                      value: formatCurrency(player.money),
+                      emphasized: false,
+                    },
+                  ].map(stat => (
+                    <div
+                      key={`${player.id}-${stat.label}`}
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 4,
+                        minWidth: 96,
+                      }}
+                    >
+                      <div style={{ color: "#7b857d", fontSize: 11, fontWeight: 600 }}>
+                        {stat.label}
+                      </div>
+                      <div
+                        style={{
+                          color: "#223024",
+                          fontSize: stat.emphasized ? 22 : 16,
+                          fontWeight: stat.emphasized ? 800 : 700,
+                          lineHeight: 1.1,
+                        }}
+                      >
+                        {stat.value}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               ))}
             </div>
@@ -1979,124 +2681,6 @@ export default function Board({
               >
                 Confirm purchase
               </button>
-            </div>
-          </div>
-        </div>
-      )}
-      {isVehicleMarketOpen && (
-        <div style={RESOURCE_MARKET_PANEL_STYLE}>
-          <strong>Vehicle market</strong>
-          <div style={{ color: "#56635a" }}>
-            The deck is shuffled when the game starts. Only the first 4 cards can be bought during purchase equipment. If nobody buys a card this month, the most expensive visible card is discarded before claim routes begins.
-          </div>
-          <div
-            style={{
-              border: "1px solid #d8dfd5",
-              borderRadius: 10,
-              padding: 10,
-              display: "flex",
-              flexDirection: "column",
-              gap: 10,
-            }}
-          >
-            <div>
-              <strong>Purchase used this turn:</strong>{" "}
-              {game.hasPurchasedVehicleThisTurn ? "Yes" : "No"}
-            </div>
-            <div>
-              <strong>Remaining deck:</strong> {remainingVehicleCardCount} card
-              {remainingVehicleCardCount === 1 ? "" : "s"} behind the market
-            </div>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-                gap: 10,
-              }}
-            >
-              {visibleVehicleCards.map(card => {
-                const canBuy =
-                  game.currentPhase === "purchase-equipment" &&
-                  !game.hasPurchasedVehicleThisTurn &&
-                  (currentPlayer?.money ?? 0) >= card.purchasePrice
-
-                return (
-                  <div
-                    key={card.id}
-                    style={{
-                      border: "1px solid #d8dfd5",
-                      borderRadius: 10,
-                      padding: 10,
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: 5,
-                      background: "#ffffff",
-                    }}
-                  >
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                      <strong>
-                        #{card.number} {getVehicleTypeIcon(card.type)} {getVehicleTypeLabel(card.type)}
-                      </strong>
-                      <span>{formatCurrency(card.purchasePrice)}</span>
-                    </div>
-                    <div style={{ fontWeight: 600, color: "#223024" }}>{card.name}</div>
-                    <div
-                      style={{
-                        display: "flex",
-                        flexWrap: "wrap",
-                        gap: "4px 10px",
-                        color: "#324236",
-                        fontSize: 13,
-                      }}
-                    >
-                      <span>
-                        {getVehicleTypeIcon(card.type)} x{card.vehicleCount}
-                      </span>
-                      <span>👤 {card.capacityPerVehicle.toLocaleString()}</span>
-                      <span>👥 {card.totalPassengerCapacity.toLocaleString()}</span>
-                      <span>{card.speed}mph</span>
-                      <span>⚙️{card.operatingCostMultiplier}</span>
-                    </div>
-                    <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                      <span
-                        title={card.funFact}
-                        aria-label={card.funFact}
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          width: 20,
-                          height: 20,
-                          borderRadius: "50%",
-                          border: "1px solid #c7d0c4",
-                          color: "#56635a",
-                          fontSize: 12,
-                          fontWeight: 700,
-                          cursor: "help",
-                          userSelect: "none",
-                        }}
-                      >
-                        ?
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={!canBuy}
-                      onClick={() => handleBuyVehicleCardClick(card.id)}
-                      style={{
-                        marginTop: 4,
-                        padding: "8px 12px",
-                        borderRadius: 999,
-                        border: "1px solid #c7d0c4",
-                        cursor: canBuy ? "pointer" : "not-allowed",
-                        background: canBuy ? "#ffffff" : "#f2f2f2",
-                      }}
-                    >
-                      Buy card
-                    </button>
-                  </div>
-                )
-              })}
             </div>
           </div>
         </div>
@@ -2782,329 +3366,541 @@ export default function Board({
           )}
         </div>
       )}
-      <div style={BOTTOM_BAR_STYLE}>
-        <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
-          <div>
-            <strong>Month:</strong> {game.currentWeek}/{game.operatingConfig.totalWeeks}
-          </div>
-          <div>
-            <strong>Phase:</strong> {formatPhaseLabel(game.currentPhase)}
-          </div>
-          {activeChanceCard && (
-            <div>
-              <strong>Chance:</strong> {activeChanceCard.title}
-            </div>
-          )}
-          {leadingStanding && (
-            <div>
-              <strong>Leader:</strong> {leadingStanding.player.name}
-            </div>
-          )}
-          <div>
-            <strong>Months left:</strong> {periodsRemaining}
-          </div>
-          {game.currentPhase === "bureaucracy" && currentPlayerBureaucracySummary && (
-            <div>
-              <strong>Planned fuel cost:</strong>{" "}
-              {formatCurrency(
-                currentPlayerBureaucracySummary.routePlans.reduce(
-                  (total, plan) => total + plan.fuelCost,
-                  0,
-                ),
+      <div style={TABLE_ZONE_STYLE}>
+        <div style={TABLE_LANE_STYLE}>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              gap: 12,
+              alignItems: "baseline",
+              flexWrap: "wrap",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap", minWidth: 0 }}>
+              <div>
+              <div style={{ color: "#56635a", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em" }}>
+                TABLE
+              </div>
+              <strong>
+                {game.currentPhase === "purchase-equipment"
+                  ? "Vehicle market"
+                  : game.currentPhase === "claim-routes"
+                    ? "Route decks"
+                    : "Player aid"}
+              </strong>
+              </div>
+              {game.currentPhase === "purchase-equipment" && (
+                <div style={{ color: "#56635a", fontSize: 12 }}>
+                  Remaining deck: {remainingVehicleCardCount} card
+                  {remainingVehicleCardCount === 1 ? "" : "s"}. If nobody buys this month, the most
+                  expensive visible card is burned.
+                </div>
               )}
             </div>
+            <div style={{ color: "#56635a", fontSize: 13 }}>
+              {game.currentPhase === "purchase-equipment"
+                ? "Pick from the face-up market cards."
+                : game.currentPhase === "claim-routes"
+                  ? "Lay out a route card, preview it on the board, then confirm."
+                  : "The board stays clear while reference panels open over it."}
+            </div>
+            </div>
+            {game.currentPhase === "purchase-equipment" ? (
+              <>
+                <div
+                  style={{
+                    flex: 1,
+                  minHeight: 0,
+                  display: "flex",
+                  gap: 8,
+                  overflowY: "auto",
+                  overflowX: "auto",
+                  paddingRight: 2,
+                }}
+              >
+                {visibleVehicleCards.map(card => {
+                  const canBuy =
+                    game.currentPhase === "purchase-equipment" &&
+                    !game.hasPurchasedVehicleThisTurn &&
+                    (currentPlayer?.money ?? 0) >= card.purchasePrice
+
+                  return (
+                    <div
+                      key={card.id}
+                        style={{
+                          border: "1px solid #d8dfd5",
+                          borderRadius: 14,
+                          padding: 10,
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 4,
+                          background: "#ffffff",
+                          boxShadow: "0 4px 12px rgba(0, 0, 0, 0.06)",
+                          fontSize: 12,
+                        }}
+                      >
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                        <strong>
+                          #{card.number} {getVehicleTypeIcon(card.type)} {getVehicleTypeLabel(card.type)}
+                        </strong>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <span style={{ fontSize: 12 }}>{formatCurrency(card.purchasePrice)}</span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setRevealedVehicleFunFactCardId(current =>
+                                current === card.id ? null : card.id,
+                              )
+                            }
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              width: 20,
+                              height: 20,
+                              borderRadius: "50%",
+                              border: "1px solid #c7d0c4",
+                              background: "#ffffff",
+                              color: "#56635a",
+                              fontSize: 12,
+                              fontWeight: 700,
+                              cursor: "pointer",
+                              padding: 0,
+                              flexShrink: 0,
+                            }}
+                            aria-label={`Toggle fun fact for ${card.name}`}
+                            title="Show fun fact"
+                          >
+                            ?
+                          </button>
+                        </div>
+                      </div>
+                      <div style={{ fontWeight: 700, color: "#223024", fontSize: 12 }}>{card.name}</div>
+                      <div
+                        style={{
+                          display: "flex",
+                          flexWrap: "wrap",
+                          gap: "3px 8px",
+                          color: "#324236",
+                          fontSize: 12,
+                        }}
+                      >
+                        <span>x{card.vehicleCount}</span>
+                        <span>👤 {card.capacityPerVehicle.toLocaleString()}</span>
+                        <span>👥 {card.totalPassengerCapacity.toLocaleString()}</span>
+                        <span>{card.speed}mph</span>
+                        <span>⚙️{card.operatingCostMultiplier}</span>
+                      </div>
+                      {revealedVehicleFunFactCardId === card.id && (
+                        <div style={{ color: "#56635a", fontSize: 11 }}>
+                          {card.funFact}
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        disabled={!canBuy}
+                        onClick={() => handleBuyVehicleCardClick(card.id)}
+                        style={{
+                          marginTop: "auto",
+                          padding: "6px 10px",
+                          borderRadius: 999,
+                          border: "1px solid #c7d0c4",
+                          cursor: canBuy ? "pointer" : "not-allowed",
+                          background: canBuy ? "#ffffff" : "#f2f2f2",
+                          fontWeight: 700,
+                          fontSize: 12,
+                        }}
+                      >
+                        Buy card
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            </>
+          ) : game.currentPhase === "claim-routes" ? (
+            <>
+              {routeCardsByMode.every(({ totalCount }) => totalCount === 0) ? (
+                <div style={{ color: "#848484", fontSize: 13 }}>
+                  All route decks are empty.
+                </div>
+              ) : (
+                <div
+                  style={{
+                    flex: 1,
+                    minHeight: 0,
+                    display: "grid",
+                    gap: 10,
+                    overflowY: "auto",
+                    paddingRight: 2,
+                  }}
+                >
+                  {routeCardsByMode.map(({ mode, cards, owned }) => (
+                    <div key={mode} style={{ display: "grid", gap: 8 }}>
+                      <div
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 800,
+                          color: "#324236",
+                          letterSpacing: "0.05em",
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        {MODE_LABELS[mode]} deck
+                      </div>
+                      {!owned && (
+                        <div style={{ color: "#848484", fontSize: 12 }}>
+                          Buy a {mode === "rail" ? "train" : mode} vehicle card to claim from this deck.
+                        </div>
+                      )}
+                        <div
+                          style={{
+                            display: "flex",
+                            gap: 8,
+                            overflowX: "auto",
+                            paddingBottom: 2,
+                          }}
+                        >
+                        {cards.length === 0 && (
+                          <div
+                            style={{
+                                minWidth: 168,
+                                border: "1px dashed #d8dfd5",
+                                borderRadius: 14,
+                                padding: 12,
+                                background: "#fafcf9",
+                                color: "#848484",
+                                fontSize: 12,
+                              }}
+                            >
+                            No face-up cards left in this deck.
+                          </div>
+                        )}
+                        {cards.map(card => {
+                          const isSelected = card.id === selectedRouteCardId
+                          const canSelect = owned && !game.hasClaimedRouteThisTurn
+
+                          return (
+                            <button
+                              key={card.id}
+                              type="button"
+                              onClick={() => handleSelectRouteCard(card.id)}
+                              disabled={!canSelect}
+                              style={{
+                                 minWidth: 204,
+                                 border: `1px solid ${isSelected ? "#223024" : "#d8dfd5"}`,
+                                 borderRadius: 14,
+                                 padding: 10,
+                                 background: isSelected ? "#eef3e8" : "#ffffff",
+                                 display: "grid",
+                                 gap: 4,
+                                 textAlign: "left",
+                                 cursor: canSelect ? "pointer" : "not-allowed",
+                                 opacity: canSelect ? 1 : 0.65,
+                                boxShadow: isSelected
+                                  ? "0 0 0 2px rgba(34, 48, 36, 0.1) inset"
+                                  : "0 4px 12px rgba(0, 0, 0, 0.06)",
+                              }}
+                            >
+                              <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                                <strong style={{ fontSize: 12 }}>
+                                  {getModeIcon(mode)} {card.title}
+                                </strong>
+                                <span style={{ fontSize: 11 }}>{card.cityIds.length} stops</span>
+                              </div>
+                              <div style={{ color: "#7b857d", fontSize: 10, fontWeight: 700 }}>
+                                {MODE_LABELS[mode]} route card
+                              </div>
+                              <div style={{ color: "#324236", fontSize: 12 }}>
+                                {card.cityIds.map(cityId => cityMap[cityId]?.name ?? cityId).join(" -> ")}
+                              </div>
+                              {card.notes && (
+                                <div style={{ color: "#56635a", fontSize: 11 }}>{card.notes}</div>
+                              )}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <div
+              style={{
+                display: "grid",
+                gap: 8,
+                color: "#56635a",
+                fontSize: 13,
+              }}
+            >
+              <div>
+                Use the action buttons above the table for references, logs, and turn flow.
+              </div>
+              <div>
+                The board stays centered while ledgers and markets open over it like table aids instead of full-screen menus.
+              </div>
+            </div>
           )}
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button
-            type="button"
-            onClick={() => {
-              setIsEconomicsOpen(open => !open)
-              setIsResourceMarketOpen(false)
-              setIsVehicleMarketOpen(false)
-              setIsBureaucracyOpen(false)
-              setIsWikiOpen(false)
-            }}
-            style={{
-              padding: "10px 16px",
-              borderRadius: 999,
-              border: "1px solid #c7d0c4",
-              cursor: "pointer",
-              background: "#ffffff",
-              fontWeight: 600,
-            }}
-          >
-            {isEconomicsOpen ? "Hide economics" : "Economics"}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (isWikiOpen) {
-                setIsWikiOpen(false)
-                restoreWikiPreviousPanel()
-                return
-              }
-
-              setWikiPreviousPanel(getCurrentRestorablePanel())
-              setIsWikiOpen(true)
-              setIsResourceMarketOpen(false)
-              setIsVehicleMarketOpen(false)
-              setIsBureaucracyOpen(false)
-              setIsEconomicsOpen(false)
-            }}
-            style={{
-              padding: "10px 16px",
-              borderRadius: 999,
-              border: "1px solid #c7d0c4",
-              cursor: "pointer",
-              background: "#ffffff",
-              fontWeight: 600,
-            }}
-          >
-            {isWikiOpen ? "Hide wiki" : "Wiki"}
-          </button>
-          <button
-            type="button"
-            onClick={() => setIsActionLogOpen(open => !open)}
-            style={{
-              padding: "10px 16px",
-              borderRadius: 999,
-              border: "1px solid #c7d0c4",
-              cursor: "pointer",
-              background: "#ffffff",
-              fontWeight: 600,
-            }}
-          >
-            {isActionLogOpen ? "Hide log" : "Action log"}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              onUndo()
-              setStatusMessage("Undid the last action.")
-            }}
-            disabled={!canUndo}
-            style={{
-              padding: "10px 16px",
-              borderRadius: 999,
-              border: "1px solid #c7d0c4",
-              cursor: canUndo ? "pointer" : "not-allowed",
-              background: canUndo ? "#ffffff" : "#f2f2f2",
-              fontWeight: 600,
-            }}
-          >
-            Undo
-          </button>
-          <button
-            type="button"
-            onClick={handleAdvanceTurnClick}
-            disabled={game.isGameOver || isAdvanceBlocked}
-            style={{
-              padding: "10px 16px",
-              borderRadius: 999,
-              border: "1px solid #c7d0c4",
-              cursor: game.isGameOver || isAdvanceBlocked ? "not-allowed" : "pointer",
-              background: game.isGameOver || isAdvanceBlocked ? "#f2f2f2" : "#ffffff",
-              fontWeight: 600,
-            }}
-          >
-            {game.isGameOver ? "Game over" : shouldAdvancePhase ? "Next phase" : "Next player"}
-          </button>
+        <div style={TABLE_LANE_STYLE}>
+          {game.currentPhase === "claim-routes" ? (
+            <>
+              <div>
+                <div style={{ color: "#56635a", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em" }}>
+                  ROUTE PREVIEW
+                </div>
+                <strong>{selectedRouteCard?.title ?? "Choose a route card"}</strong>
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                <button
+                  type="button"
+                  onClick={handleClaim}
+                  disabled={!selectedClaimPreview?.valid || game.hasClaimedRouteThisTurn}
+                  style={{
+                    padding: "8px 12px",
+                    borderRadius: 999,
+                    border: "1px solid #223024",
+                    cursor:
+                      selectedClaimPreview?.valid && !game.hasClaimedRouteThisTurn
+                        ? "pointer"
+                        : "not-allowed",
+                    background:
+                      selectedClaimPreview?.valid && !game.hasClaimedRouteThisTurn
+                        ? "#223024"
+                        : "#dfe5de",
+                    color: "#ffffff",
+                    fontWeight: 700,
+                  }}
+                >
+                  Confirm route
+                </button>
+                <button
+                  type="button"
+                  onClick={() => resetSelection()}
+                  disabled={selectedRouteCard === null}
+                  style={{
+                    padding: "8px 12px",
+                    borderRadius: 999,
+                    border: "1px solid #c7d0c4",
+                    cursor: selectedRouteCard === null ? "not-allowed" : "pointer",
+                    background: selectedRouteCard === null ? "#f2f2f2" : "#ffffff",
+                  }}
+                >
+                  Clear
+                </button>
+              </div>
+              {selectedClaimPreview ? (
+                <div
+                  style={{
+                    flex: 1,
+                    minHeight: 0,
+                    display: "grid",
+                    gap: 8,
+                    fontSize: 13,
+                    border: "1px solid #d8dfd5",
+                    borderRadius: 12,
+                    padding: 12,
+                    background: "#ffffff",
+                    color: "#324236",
+                    overflowY: "auto",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                    <strong>{selectedRouteCard?.title}</strong>
+                    <span style={{ color: selectedClaimPreview.valid ? "#2a7f3b" : "#9b1c1c" }}>
+                      {selectedClaimPreview.valid ? "Available" : "Unavailable"}
+                    </span>
+                  </div>
+                  <div>
+                    {MODE_LABELS[selectedClaimPreview.mode]} • {formatDecimal(selectedClaimPreview.totalDistanceMiles)} mi
+                    {" • "}Demand {selectedClaimPreview.combinedDemand}
+                    {" • "}Capacity {selectedClaimPreview.passengersPerTrip.toLocaleString()} / trip
+                  </div>
+                  {selectedClaimPreview.previewCard && (
+                    <div style={{ color: "#56635a" }}>
+                      Vehicle preview: #{selectedClaimPreview.previewCard.number}{" "}
+                      {selectedClaimPreview.previewCard.name}
+                    </div>
+                  )}
+                  <div>
+                    Trips/month {selectedClaimPreview.maxTripsPerPeriod.toLocaleString()}
+                    {" • "}Passengers/month {selectedClaimPreview.passengersPerPeriod.toLocaleString()}
+                  </div>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
+                      gap: 10,
+                      border: "1px solid #e2e8df",
+                      borderRadius: 10,
+                      padding: 10,
+                      background: "#f7faf7",
+                      alignItems: "center",
+                    }}
+                  >
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                      <div style={{ color: "#7b857d", fontSize: 11, fontWeight: 600 }}>
+                        Avg net / month
+                      </div>
+                      <div
+                        style={{
+                          color:
+                            selectedClaimPreview.netPerPeriod > 0
+                              ? "#2a7f3b"
+                              : selectedClaimPreview.netPerPeriod < 0
+                                ? "#b42318"
+                                : "#223024",
+                          fontSize: 24,
+                          fontWeight: 800,
+                          lineHeight: 1.1,
+                        }}
+                      >
+                        {formatCurrency(selectedClaimPreview.netPerPeriod)}
+                      </div>
+                    </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 6,
+                        alignItems: "flex-start",
+                      }}
+                    >
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        <div style={{ color: "#7b857d", fontSize: 11, fontWeight: 600 }}>
+                          Avg revenue / month
+                        </div>
+                        <div style={{ color: "#324236", fontSize: 14, fontWeight: 700 }}>
+                          {formatCurrency(selectedClaimPreview.revenuePerPeriod)}
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        <div style={{ color: "#7b857d", fontSize: 11, fontWeight: 600 }}>
+                          Avg operating cost / month
+                        </div>
+                        <div style={{ color: "#324236", fontSize: 14, fontWeight: 700 }}>
+                          {formatCurrency(selectedClaimPreview.operatingCostPerPeriod)}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ color: "#56635a", fontSize: 12 }}>
+                    Crew {formatCurrency(selectedClaimPreview.crewCostPerPeriod)}
+                    {" • "}Maint {formatCurrency(selectedClaimPreview.maintenanceCostPerPeriod)}
+                    {" • "}Balance {formatCurrency(selectedClaimPreview.balanceCostPerPeriod)}
+                    {" • "}Fuel {formatCurrency(selectedClaimPreview.fuelCostPerPeriod)}
+                  </div>
+                  <div>
+                    Build {formatCurrency(selectedClaimPreview.claimCost)}
+                    {selectedClaimPreview.connectionBonus > 0 && (
+                      <>
+                        {" • "}Bonus {formatCurrency(selectedClaimPreview.connectionBonus)}
+                        {" • "}New cities {selectedClaimPreview.newCityCount}
+                      </>
+                    )}
+                  </div>
+                  {optionMessage && <div style={{ color: "#9b1c1c" }}>{optionMessage}</div>}
+                  {selectedClaimPreview.valid && (
+                    <div style={{ color: "#324236", fontSize: 13 }}>
+                      Ready to confirm for {formatCurrency(selectedClaimPreview.claimCost)}
+                      {selectedClaimPreview.connectionBonus > 0 &&
+                        ` with ${formatCurrency(selectedClaimPreview.connectionBonus)} in connection bonuses`}
+                      .
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div
+                  style={{
+                    border: "1px dashed #d8dfd5",
+                    borderRadius: 12,
+                    padding: 14,
+                    background: "#ffffff",
+                    color: "#56635a",
+                    fontSize: 13,
+                  }}
+                >
+                  Choose a route card from the table to preview it on the board.
+                </div>
+              )}
+            </>
+          ) : game.currentPhase === "purchase-equipment" ? (
+            <>
+              <div>
+                <div style={{ color: "#56635a", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em" }}>
+                  MARKET NOTES
+                </div>
+                <strong>{currentPlayer?.name ?? "Current player"}</strong>
+              </div>
+              <div style={{ display: "grid", gap: 8, fontSize: 13, color: "#324236" }}>
+                <div>
+                  Cash on hand: <strong>{formatCurrency(currentPlayer?.money ?? 0)}</strong>
+                </div>
+                <div>
+                  Purchase used this turn: <strong>{game.hasPurchasedVehicleThisTurn ? "Yes" : "No"}</strong>
+                </div>
+                <div>
+                  Next after purchase:{" "}
+                  <strong>
+                    {shouldAdvancePhase
+                      ? formatPhaseLabel(getNextPhase(game.currentPhase))
+                      : nextPlayer?.name ?? "Next player"}
+                  </strong>
+                </div>
+                {pendingVehiclePurchaseCard ? (
+                  <div
+                    style={{
+                      border: "1px solid #d8dfd5",
+                      borderRadius: 12,
+                      padding: 12,
+                      background: "#ffffff",
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                      <strong>
+                        #{pendingVehiclePurchaseCard.number} {pendingVehiclePurchaseCard.name}
+                      </strong>
+                      <span>{formatCurrency(pendingVehiclePurchaseCard.purchasePrice)}</span>
+                    </div>
+                    <div style={{ color: "#56635a", fontSize: 12, marginTop: 6 }}>
+                      Confirmation is open for this purchase.
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      border: "1px dashed #d8dfd5",
+                      borderRadius: 12,
+                      padding: 14,
+                      background: "#ffffff",
+                      color: "#56635a",
+                    }}
+                  >
+                    Pick any visible vehicle card on the table to open its confirmation.
+                  </div>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <div style={{ color: "#56635a", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em" }}>
+                  PHASE SUMMARY
+                </div>
+                <strong>{formatPhaseLabel(game.currentPhase)}</strong>
+              </div>
+              <div style={{ display: "grid", gap: 8, color: "#324236", fontSize: 13 }}>
+                <div>Current player: {currentPlayer?.name ?? "Unknown player"}</div>
+                <div>Selection: {selectionSummary}</div>
+                <div>{statusMessage}</div>
+              </div>
+            </>
+          )}
         </div>
       </div>
-      <TransformWrapper
-        minScale={0.5}
-        maxScale={6}
-        centerOnInit
-        limitToBounds={false}
-        onTransform={(_, state) => {
-          setZoomScale(current => (
-            Math.abs(current - state.scale) < 0.001 ? current : state.scale
-          ))
-        }}
-      >
-        <TransformComponent>
-          <svg
-            viewBox={`0 0 ${map.width} ${map.height}`}
-            style={{
-              width: "100vw",
-              height: "100vh",
-              display: "block",
-            }}
-          >
-            <path
-              d={`M ${outlinePath} Z`}
-              fill={MAP_OUTLINE_STYLE.fill}
-              stroke={MAP_OUTLINE_STYLE.stroke}
-              strokeWidth={2}
-              opacity={MAP_OUTLINE_STYLE.opacity}
-            />
-
-            {game.routes.map(route => {
-              const aCity = cityMap[route.cityA]
-              const bCity = cityMap[route.cityB]
-              if (!aCity || !bCity) return null
-              if (!visibleCityIds.has(aCity.id) || !visibleCityIds.has(bCity.id)) {
-                return null
-              }
-
-              const a = latLngToWorld(aCity)
-              const b = latLngToWorld(bCity)
-              const owner = route.ownerId ? playerMap[route.ownerId] : undefined
-              const lineStyle = MODE_LINE_STYLES[route.mode]
-              const isElectricRail =
-                route.mode === "rail" && getRailTraction(route) === "electric"
-
-              return (
-                <g key={route.id}>
-                  {isElectricRail && (
-                    <line
-                      x1={a.x}
-                      y1={a.y}
-                      x2={b.x}
-                      y2={b.y}
-                      stroke="#8ed8ff"
-                      strokeWidth={8}
-                      strokeLinecap="round"
-                      opacity={0.7}
-                    />
-                  )}
-                  <line
-                    x1={a.x}
-                    y1={a.y}
-                    x2={b.x}
-                    y2={b.y}
-                    stroke={owner?.color ?? "#222222"}
-                    strokeWidth={4}
-                    strokeLinecap="round"
-                    strokeDasharray={
-                      isElectricRail ? "18 6" : lineStyle.strokeDasharray
-                    }
-                    opacity={lineStyle.opacity}
-                  />
-                </g>
-              )
-            })}
-
-            {previewVisible && (
-              <polyline
-                points={previewPoints.map(point => `${point.x},${point.y}`).join(" ")}
-                fill="none"
-                stroke={currentPlayer?.color ?? "#444444"}
-                strokeWidth={3}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeDasharray="10 8"
-                opacity={0.75}
-              />
-            )}
-
-            {visibleCities.map(city => {
-              const { x, y } = latLngToWorld(city)
-              const label = labelMap[city.id]
-
-              if (!label) {
-                return null
-              }
-
-              const dx = label.connectorX - x
-              const dy = label.connectorY - y
-              const connectorLength = Math.sqrt(dx * dx + dy * dy)
-              const radius = city.size * 2.5
-
-              if (connectorLength <= radius + 8) {
-                return null
-              }
-
-              const unitX = dx / connectorLength
-              const unitY = dy / connectorLength
-
-              return (
-                <line
-                  key={`${city.id}-label-connector`}
-                  x1={x + unitX * (radius + 1)}
-                  y1={y + unitY * (radius + 1)}
-                  x2={label.connectorX}
-                  y2={label.connectorY}
-                  stroke="rgba(34, 48, 36, 0.28)"
-                  strokeWidth={1.25}
-                  strokeLinecap="round"
-                  pointerEvents="none"
-                />
-              )
-            })}
-
-            {hiddenCities.map(city => {
-              const { x, y } = latLngToWorld(city)
-
-              return (
-                <circle
-                  key={`${city.id}-hint`}
-                  cx={x}
-                  cy={y}
-                  r={Math.max(1.6, city.size * 1.2)}
-                  fill="rgba(34, 48, 36, 0.38)"
-                  stroke="rgba(244, 241, 232, 0.55)"
-                  strokeWidth={0.8}
-                  pointerEvents="none"
-                />
-              )
-            })}
-
-            {visibleCities.map(city => {
-              const { x, y } = latLngToWorld(city)
-              const label = labelMap[city.id]
-              const isSelected = selectedCityIds.includes(city.id)
-              const isPreviewTarget =
-                selectedCityIds.length === 1 && hoverCityId === city.id
-              const fill = isSelected
-                ? currentPlayer?.color ?? "#ffffff"
-                : isPreviewTarget
-                  ? "#d7e8ff"
-                  : "#ffffff"
-
-              return (
-                <g
-                  key={city.id}
-                  onClick={() => handleCityClick(city.id)}
-                  onMouseEnter={() => setHoverCityId(city.id)}
-                  onMouseLeave={() => setHoverCityId(current =>
-                    current === city.id ? null : current,
-                  )}
-                  style={{ cursor: "pointer" }}
-                >
-                  <circle
-                    cx={x}
-                    cy={y}
-                    r={city.size * 2.5}
-                    fill={fill}
-                    stroke="black"
-                    strokeWidth={isSelected ? 2.5 : 1.5}
-                  />
-
-                  {label && (
-                    <text
-                      x={label.textX}
-                      y={label.textY}
-                      fontSize={12}
-                      textAnchor={label.textAnchor}
-                      dominantBaseline="middle"
-                      fill="#223024"
-                      stroke="rgba(244, 241, 232, 0.95)"
-                      strokeWidth={4}
-                      strokeLinejoin="round"
-                      paintOrder="stroke"
-                      pointerEvents="none"
-                    >
-                      {city.name}
-                    </text>
-                  )}
-                </g>
-              )
-            })}
-          </svg>
-        </TransformComponent>
-      </TransformWrapper>
     </div>
   )
 }

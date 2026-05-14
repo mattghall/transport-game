@@ -18,7 +18,7 @@ import {
   DEFAULT_STARTING_MONEY,
   type GameSetupPlayer,
 } from "./engine/createGameState"
-import type { GameActionLogEntry, GameState, PurchasableResource, RouteMode, UserDeckData, WeeklyPhase } from "./engine/types"
+import type { GameActionLogEntry, GameState, PurchasableResource, UserDeckData, WeeklyPhase } from "./engine/types"
 import Board from "./ui/Board"
 import StartMenu from "./ui/StartMenu"
 
@@ -88,6 +88,7 @@ export default function App() {
       players: DEFAULT_PLAYERS,
       vehicleCards: initialUserDecks.vehicleCards,
       chanceCards: initialUserDecks.chanceCards,
+      routeCards: initialUserDecks.routeCards,
       startingMoney: DEFAULT_STARTING_MONEY,
     })
   })
@@ -191,11 +192,12 @@ export default function App() {
         players: normalizedPlayers,
         vehicleCards: userDecks.vehicleCards,
         chanceCards: userDecks.chanceCards,
+        routeCards: userDecks.routeCards,
         startingMoney,
       }),
     )
     setHasStarted(true)
-  }, [setupPlayers, startingMoney, userDecks.chanceCards, userDecks.vehicleCards])
+  }, [setupPlayers, startingMoney, userDecks.chanceCards, userDecks.routeCards, userDecks.vehicleCards])
 
   const commitGame = useCallback(
     (nextGame: typeof game) => {
@@ -205,28 +207,57 @@ export default function App() {
     [game],
   )
 
-  const handleClaimRoute = useCallback(
-    (cityIds: string[], mode: RouteMode) => {
-      const result = claimRoute(game, { cityIds, mode })
+  const handleClaimRouteAndAdvance = useCallback(
+    (routeCardId: string) => {
+      const routeCard = game.routeCatalog.find(card => card.id === routeCardId)
 
-      if (result.ok) {
-        const routeLabel = result.routes
-          .map(route => {
-            const cityA = game.cities.find(city => city.id === route.cityA)?.name ?? route.cityA
-            const cityB = game.cities.find(city => city.id === route.cityB)?.name ?? route.cityB
-            return `${cityA} - ${cityB}`
-          })
-          .join(", ")
-        commitGame(
-          appendActionLog(
-            game,
-            result.game,
-            `claimed ${mode} route ${routeLabel}${result.connectionBonus > 0 ? ` and earned ${Math.round(result.connectionBonus).toLocaleString()}` : ""}`,
-          ),
-        )
+      if (!routeCard) {
+        return {
+          ok: false as const,
+          error: "That route card could not be found.",
+        }
       }
 
-      return result
+      const claimResult = claimRoute(game, { routeCardId })
+
+      if (!claimResult.ok) {
+        return claimResult
+      }
+
+      const routeLabel = claimResult.routes
+        .map(route => {
+          const cityA = game.cities.find(city => city.id === route.cityA)?.name ?? route.cityA
+          const cityB = game.cities.find(city => city.id === route.cityB)?.name ?? route.cityB
+
+          return `${cityA} - ${cityB}`
+        })
+        .join(", ")
+      const claimedGame = appendActionLog(
+        game,
+        claimResult.game,
+        `claimed ${routeCard.title} (${routeCard.mode}) across ${routeLabel}${claimResult.connectionBonus > 0 ? ` and earned ${Math.round(claimResult.connectionBonus).toLocaleString()}` : ""}`,
+      )
+      const advancedGame = advanceTurn(claimedGame)
+      const finalGame = appendActionLog(
+        claimedGame,
+        advancedGame,
+        getAdvanceTurnLogMessage(claimedGame, advancedGame),
+      )
+
+      commitGame(finalGame)
+
+      return {
+        ok: true as const,
+        routes: claimResult.routes,
+        cost: claimResult.cost,
+        connectionBonus: claimResult.connectionBonus,
+        newCityIds: claimResult.newCityIds,
+        nextPhase: advancedGame.currentPhase,
+        nextPlayerName:
+          advancedGame.players.find(player => player.id === advancedGame.currentPlayerId)?.name ??
+          advancedGame.currentPlayerId,
+        advancedPhase: advancedGame.currentPhase !== claimedGame.currentPhase,
+      }
     },
     [commitGame, game],
   )
@@ -407,7 +438,7 @@ export default function App() {
   }, [])
 
   return (
-    <div style={{ width: "100vw", height: "100vh" }}>
+    <div style={{ position: "fixed", inset: 0, overflow: "hidden" }}>
       {!hasStarted ? (
       <StartMenu
         players={setupPlayers}
@@ -425,7 +456,7 @@ export default function App() {
       ) : (
       <Board
         game={game}
-        onClaimRoute={handleClaimRoute}
+        onClaimRoute={handleClaimRouteAndAdvance}
         onBuyResource={handleBuyResource}
         onBuyVehicleCard={handleBuyVehicleCardAndAdvance}
         onUpgradeRailRoute={handleUpgradeRailRoute}

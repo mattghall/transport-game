@@ -139,6 +139,31 @@ export function coerceUserDecks(value: unknown): UserDeckData {
   }
 }
 
+function mergeWithStarterDecks(userDecks: UserDeckData): UserDeckData {
+  const starterDecks = createInitialUserDecks()
+
+  return {
+    vehicleCards: [
+      ...userDecks.vehicleCards,
+      ...starterDecks.vehicleCards.filter(
+        starterCard => !userDecks.vehicleCards.some(card => card.id === starterCard.id),
+      ),
+    ],
+    chanceCards: [
+      ...userDecks.chanceCards,
+      ...starterDecks.chanceCards.filter(
+        starterCard => !userDecks.chanceCards.some(card => card.id === starterCard.id),
+      ),
+    ],
+    routeCards: [
+      ...userDecks.routeCards,
+      ...starterDecks.routeCards.filter(
+        starterCard => !userDecks.routeCards.some(card => card.id === starterCard.id),
+      ),
+    ],
+  }
+}
+
 export function loadUserDecks(): UserDeckData {
   if (typeof window === "undefined") {
     return createInitialUserDecks()
@@ -151,7 +176,7 @@ export function loadUserDecks(): UserDeckData {
   }
 
   try {
-    return coerceUserDecks(JSON.parse(rawValue))
+    return mergeWithStarterDecks(coerceUserDecks(JSON.parse(rawValue)))
   } catch (error) {
     console.error("Failed to load saved user decks.", error)
     return createInitialUserDecks()

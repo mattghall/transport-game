@@ -63,6 +63,8 @@ export type UserDeckData = {
   routeCards: RouteDeckCard[]
 }
 
+export type RouteMarketByMode = Record<RouteMode, string[]>
+
 export type OperatingConfig = {
   hoursPerDay: number
   daysPerWeek: number
@@ -160,8 +162,11 @@ export type GameState = {
   resourceSupply: ResourceSupply
   vehicleCatalog: VehicleCard[]
   vehicleMarketCardIds: string[]
+  routeCatalog: RouteDeckCard[]
+  routeMarketCardIdsByMode: RouteMarketByMode
   hasPurchasedVehicleThisTurn: boolean
   hasPurchasedVehicleThisPhase: boolean
+  hasClaimedRouteThisTurn: boolean
 
   players: Player[]
   leadPlayerIndex: number

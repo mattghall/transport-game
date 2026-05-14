@@ -4,8 +4,11 @@ import type {
   GameState,
   OperatingConfig,
   Player,
+  RouteDeckCard,
+  RouteMarketByMode,
   ResourceMarket,
   ResourceSupply,
+  RouteMode,
   VehicleCard,
 } from "./types"
 import { defaultDecks } from "../data/deckData"
@@ -79,6 +82,7 @@ export type CreateGameStateOptions = {
   players?: GameSetupPlayer[]
   vehicleCards?: VehicleCard[]
   chanceCards?: ChanceCard[]
+  routeCards?: RouteDeckCard[]
   startingMoney?: number
 }
 
@@ -109,6 +113,16 @@ function shuffleVehicleCards(cards: VehicleCard[]) {
 
 function shuffleChanceCards(cards: ChanceCard[]) {
   return shuffleCards(cards)
+}
+
+function shuffleRouteCards(cards: RouteDeckCard[]): RouteMarketByMode {
+  return (["bus", "rail", "air"] as RouteMode[]).reduce<RouteMarketByMode>(
+    (marketByMode, mode) => ({
+      ...marketByMode,
+      [mode]: shuffleCards(cards.filter(card => card.mode === mode)).map(card => card.id),
+    }),
+    { bus: [], rail: [], air: [] },
+  )
 }
 
 function createPlayer(player: GameSetupPlayer, startingMoney: number): Player {
@@ -143,8 +157,10 @@ export function createGameState(
 ): GameState {
   const vehicleCards = options.vehicleCards ?? defaultDecks.vehicleCards
   const chanceCards = options.chanceCards ?? defaultDecks.chanceCards
+  const routeCards = options.routeCards ?? defaultDecks.routeCards
   const shuffledVehicleCards = shuffleVehicleCards(vehicleCards)
   const shuffledChanceCards = shuffleChanceCards(chanceCards)
+  const shuffledRouteMarketCardIdsByMode = shuffleRouteCards(routeCards)
   const [activeChanceCard, ...chanceDeck] = shuffledChanceCards
   const startingMoney = options.startingMoney ?? DEFAULT_STARTING_MONEY
   const players = (options.players ?? DEFAULT_PLAYERS).map(player =>
@@ -171,8 +187,11 @@ export function createGameState(
     resourceSupply: INITIAL_RESOURCE_SUPPLY,
     vehicleCatalog: shuffledVehicleCards,
     vehicleMarketCardIds: shuffledVehicleCards.map(card => card.id),
+    routeCatalog: routeCards,
+    routeMarketCardIdsByMode: shuffledRouteMarketCardIdsByMode,
     hasPurchasedVehicleThisTurn: false,
     hasPurchasedVehicleThisPhase: false,
+    hasClaimedRouteThisTurn: false,
     players,
     leadPlayerIndex: 0,
     currentPlayerId: players[0]?.id ?? "p1",

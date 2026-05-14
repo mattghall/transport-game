@@ -16,7 +16,6 @@ import {
 } from "./bureaucracy"
 import {
   calculateConnectionBonus,
-  getConnectedCityIds,
   getFuelPriceMultiplier,
   getRailUpgradeCost,
 } from "./economy"
@@ -29,6 +28,10 @@ export type ConnectionOption = {
 }
 
 export type ClaimRouteInput = {
+  routeCardId: string
+}
+
+type ClaimRouteCostInput = {
   cityIds: string[]
   mode: RouteMode
 }
@@ -68,6 +71,7 @@ const WEEKLY_PHASES: WeeklyPhase[] = [
   "bureaucracy",
 ]
 const PURCHASABLE_VEHICLE_CARD_COUNT = 4
+const VISIBLE_ROUTE_CARD_COUNT = 3
 
 export type ResourcePurchaseResult =
   | {
@@ -301,7 +305,7 @@ function getRoutePairs(cityIds: string[]) {
 
 export function calculateClaimRouteCost(
   game: GameState,
-  input: ClaimRouteInput,
+  input: ClaimRouteCostInput,
 ) {
   if (input.mode !== "rail") {
     return 0
@@ -356,9 +360,6 @@ export function getConnectionOptions(
     .map(([cityAId, cityBId]) => getSharedConnectionError(game, cityAId, cityBId))
     .find(error => error !== undefined)
   const currentPlayer = getCurrentPlayer(game)
-  const currentNetwork = currentPlayer
-    ? new Set(getConnectedCityIds(game, currentPlayer.id))
-    : new Set<string>()
   const ownedVehicleTypes = new Set(getOwnedVehicleCards(game).map(card => card.type))
 
   return CONNECTION_MODES.map(mode => {
@@ -383,14 +384,6 @@ export function getConnectionOptions(
         mode,
         valid: false,
         reason: `Buy a ${mode === "rail" ? "train" : mode} vehicle card first.`,
-      }
-    }
-
-    if (currentNetwork.size > 0 && !cityIds.some(cityId => currentNetwork.has(cityId))) {
-      return {
-        mode,
-        valid: false,
-        reason: "New routes must attach to your existing network.",
       }
     }
 
@@ -492,6 +485,7 @@ export function advancePhase(game: GameState): GameState {
       currentPlayerId: firstPlayerId,
       hasPurchasedVehicleThisTurn: false,
       hasPurchasedVehicleThisPhase: false,
+      hasClaimedRouteThisTurn: false,
       vehicleMarketCardIds: nextVehicleMarketCardIds,
     }
   }
@@ -507,6 +501,7 @@ export function advancePhase(game: GameState): GameState {
         currentPlayerId: firstPlayerId,
         hasPurchasedVehicleThisTurn: false,
         hasPurchasedVehicleThisPhase: false,
+        hasClaimedRouteThisTurn: false,
       }
     }
 
@@ -552,6 +547,7 @@ export function advancePhase(game: GameState): GameState {
       currentPlayerId: firstPlayerId,
       hasPurchasedVehicleThisTurn: false,
       hasPurchasedVehicleThisPhase: false,
+      hasClaimedRouteThisTurn: false,
       resourceMarket: {
         diesel: dieselRefill.counts,
         jetFuel: jetFuelRefill.counts,
@@ -571,6 +567,7 @@ export function advancePhase(game: GameState): GameState {
     currentPlayerId: firstPlayerId,
     hasPurchasedVehicleThisTurn: false,
     hasPurchasedVehicleThisPhase: false,
+    hasClaimedRouteThisTurn: false,
   }
 }
 
@@ -776,6 +773,7 @@ export function advanceTurn(game: GameState): GameState {
     ...game,
     currentPlayerId: getNextPlayerId(game),
     hasPurchasedVehicleThisTurn: false,
+    hasClaimedRouteThisTurn: false,
   }
 }
 
@@ -1098,8 +1096,31 @@ export function claimRoute(
     }
   }
 
-  const option = getConnectionOptions(game, input.cityIds)
-    .find(connection => connection.mode === input.mode)
+  if (game.hasClaimedRouteThisTurn) {
+    return {
+      ok: false,
+      error: "You can claim at most 1 route card per turn.",
+    }
+  }
+
+  const routeCard = game.routeCatalog.find(card => card.id === input.routeCardId)
+
+  if (!routeCard) {
+    return {
+      ok: false,
+      error: "That route card could not be found.",
+    }
+  }
+
+  if (!game.routeMarketCardIdsByMode[routeCard.mode].slice(0, VISIBLE_ROUTE_CARD_COUNT).includes(routeCard.id)) {
+    return {
+      ok: false,
+      error: "That route card is not currently dealt face-up on the table.",
+    }
+  }
+
+  const option = getConnectionOptions(game, routeCard.cityIds)
+    .find(connection => connection.mode === routeCard.mode)
 
   if (!option?.valid) {
     return {
@@ -1117,8 +1138,8 @@ export function claimRoute(
     }
   }
 
-  const cost = Math.ceil(calculateClaimRouteCost(game, input))
-  const connectionBonus = calculateConnectionBonus(game, currentPlayer.id, input.cityIds)
+  const cost = Math.ceil(calculateClaimRouteCost(game, { cityIds: routeCard.cityIds, mode: routeCard.mode }))
+  const connectionBonus = calculateConnectionBonus(game, currentPlayer.id, routeCard.cityIds)
 
   if (currentPlayer.money < cost) {
     return {
@@ -1127,15 +1148,15 @@ export function claimRoute(
     }
   }
 
-  const routes: Route[] = getRoutePairs(input.cityIds).map(([cityAId, cityBId]) => {
+  const routes: Route[] = getRoutePairs(routeCard.cityIds).map(([cityAId, cityBId]) => {
     const [cityA, cityB] = normalizeRoutePair(cityAId, cityBId)
 
     return {
-      id: buildRouteId(cityA, cityB, input.mode),
+      id: buildRouteId(cityA, cityB, routeCard.mode),
       cityA,
       cityB,
-      mode: input.mode,
-      railTraction: input.mode === "rail" ? ("diesel" as const) : undefined,
+      mode: routeCard.mode,
+      railTraction: routeCard.mode === "rail" ? ("diesel" as const) : undefined,
       ownerId: game.currentPlayerId,
     }
   })
@@ -1149,12 +1170,17 @@ export function claimRoute(
     game: {
       ...game,
       routes: [...game.routes, ...routes],
+      routeMarketCardIdsByMode: {
+        ...game.routeMarketCardIdsByMode,
+        [routeCard.mode]: game.routeMarketCardIdsByMode[routeCard.mode].filter(cardId => cardId !== routeCard.id),
+      },
+      hasClaimedRouteThisTurn: true,
       players: game.players.map(player =>
         player.id === currentPlayer.id
           ? {
               ...player,
               money: player.money - cost + connectionBonus.totalBonus,
-              startingCityId: player.startingCityId ?? input.cityIds[0],
+              startingCityId: player.startingCityId ?? routeCard.cityIds[0],
             }
           : player,
       ),
