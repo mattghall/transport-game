@@ -57,15 +57,48 @@ export function getCombinedDemandForRoute(game: GameState, route: Route) {
   return getCombinedDemandForCityIds(game, [route.cityA, route.cityB])
 }
 
+export function getDemandCapacityForCityIds(game: GameState, cityIds: string[]) {
+  return getCombinedDemandForCityIds(game, cityIds) * game.operatingConfig.passengersPerDemandPoint
+}
+
+export function getFleetSizeForDemand(
+  game: GameState,
+  cityIds: string[],
+  vehicleCard: VehicleCard,
+  maxTripsPerPeriod = 1,
+) {
+  const demandCapacity = getDemandCapacityForCityIds(game, cityIds)
+  const serviceCapacityPerVehicle =
+    Math.max(vehicleCard.totalPassengerCapacity, 1) * Math.max(maxTripsPerPeriod, 1)
+
+  if (demandCapacity <= 0) {
+    return 0
+  }
+
+  return Math.max(1, Math.ceil(demandCapacity / serviceCapacityPerVehicle))
+}
+
 export function getPassengersPerTrip(
   game: GameState,
   route: Route,
   vehicleCard: VehicleCard,
+  fleetSize = vehicleCard.vehicleCount,
 ) {
-  const combinedDemand = getCombinedDemandForRoute(game, route)
-  const demandCapacity = combinedDemand * game.operatingConfig.passengersPerDemandPoint
+  const demandCapacity = getDemandCapacityForCityIds(game, [route.cityA, route.cityB])
 
-  return Math.min(vehicleCard.totalPassengerCapacity, demandCapacity)
+  return Math.min(vehicleCard.totalPassengerCapacity * Math.max(fleetSize, 0), demandCapacity)
+}
+
+export function getPassengersPerTripForCityIds(
+  game: GameState,
+  cityIds: string[],
+  vehicleCard: VehicleCard,
+  fleetSize = vehicleCard.vehicleCount,
+) {
+  return Math.min(
+    vehicleCard.totalPassengerCapacity * Math.max(fleetSize, 0),
+    getDemandCapacityForCityIds(game, cityIds),
+  )
 }
 
 export function getRailTraction(route: Route): RailTraction {
@@ -103,15 +136,57 @@ export function getMaintenanceCostPerWeekPerVehicle(
 export function getWeeklyCrewCostForCard(
   game: Pick<GameState, "operatingConfig">,
   vehicleCard: VehicleCard,
+  vehicleCount = vehicleCard.vehicleCount,
 ) {
-  return getCrewCostPerWeekPerVehicle(game, vehicleCard.type) * vehicleCard.vehicleCount
+  return getCrewCostPerWeekPerVehicle(game, vehicleCard.type) * Math.max(vehicleCount, 0)
 }
 
 export function getWeeklyMaintenanceCostForCard(
   game: Pick<GameState, "operatingConfig">,
   vehicleCard: VehicleCard,
+  vehicleCount = vehicleCard.vehicleCount,
 ) {
-  return getMaintenanceCostPerWeekPerVehicle(game, vehicleCard.type) * vehicleCard.vehicleCount
+  return getMaintenanceCostPerWeekPerVehicle(game, vehicleCard.type) * Math.max(vehicleCount, 0)
+}
+
+export function getAffordableFleetSize({
+  targetFleetSize,
+  availableBudget,
+  fixedCostPerVehicle,
+  variableTripCost,
+  maxTrips,
+}: {
+  targetFleetSize: number
+  availableBudget: number
+  fixedCostPerVehicle: number
+  variableTripCost: number
+  maxTrips: number
+}) {
+  if (targetFleetSize <= 0 || availableBudget <= 0) {
+    return 0
+  }
+
+  for (let fleetSize = targetFleetSize; fleetSize >= 1; fleetSize -= 1) {
+    const fixedCost = fixedCostPerVehicle * fleetSize
+
+    if (fixedCost > availableBudget + 1e-9) {
+      continue
+    }
+
+    if (maxTrips <= 0 || variableTripCost <= 0) {
+      return fleetSize
+    }
+
+    const maxTripsByBudget = Math.floor(
+      (availableBudget - fixedCost + 1e-9) / (variableTripCost * fleetSize),
+    )
+
+    if (maxTripsByBudget > 0) {
+      return fleetSize
+    }
+  }
+
+  return 0
 }
 
 export function getBalanceAdjustmentPerTrip(game: GameState, route: Route) {

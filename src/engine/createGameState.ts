@@ -1,17 +1,34 @@
 import type { GameMap } from "./maps/types"
+import { calculateDistanceMiles } from "./trips"
 import type {
   ChanceCard,
   GameState,
   OperatingConfig,
   Player,
+  RouteClaimsByMode,
   RouteDeckCard,
   RouteMarketByMode,
   ResourceMarket,
   ResourceSupply,
   RouteMode,
   VehicleCard,
+  VehiclePurchasesByType,
 } from "./types"
 import { defaultDecks } from "../data/deckData"
+
+const OPENING_VEHICLE_POOL_SIZE = 5
+const OPENING_VISIBLE_TRAIN_COUNT = 2
+const OPENING_VISIBLE_ROUTE_COUNT = 3
+const EMPTY_VEHICLE_PURCHASES_BY_TYPE: VehiclePurchasesByType = {
+  bus: false,
+  train: false,
+  air: false,
+}
+const EMPTY_ROUTE_CLAIMS_BY_MODE: RouteClaimsByMode = {
+  bus: false,
+  rail: false,
+  air: false,
+}
 
 const INITIAL_RESOURCE_MARKET: ResourceMarket = {
   diesel: [5, 5, 5, 5, 4, 4, 4, 4],
@@ -33,7 +50,7 @@ const INITIAL_OPERATING_CONFIG: OperatingConfig = {
     train: 0.5,
     bus: 0.25,
   },
-  passengersPerDemandPoint: 45,
+  passengersPerDemandPoint: 50,
   connectionBonusPerCitySize: 500_000,
   railConstructionCostPerMile: 120_000,
   railElectrificationCostPerMile: 8_000,
@@ -105,10 +122,15 @@ function shuffleCards<T>(cards: T[]) {
 }
 
 function shuffleVehicleCards(cards: VehicleCard[]) {
-  const openingCards = shuffleCards(cards.slice(0, 6))
-  const remainingCards = shuffleCards(cards.slice(6))
+  return (["bus", "train", "air"] as const).flatMap(type => {
+    const typeCards = cards
+      .filter(card => card.type === type)
+      .sort((cardA, cardB) => cardA.number - cardB.number)
+    const openingCards = shuffleCards(typeCards.slice(0, OPENING_VEHICLE_POOL_SIZE))
+    const remainingCards = shuffleCards(typeCards.slice(OPENING_VEHICLE_POOL_SIZE))
 
-  return [...openingCards, ...remainingCards]
+    return [...openingCards, ...remainingCards]
+  })
 }
 
 function shuffleChanceCards(cards: ChanceCard[]) {
@@ -123,6 +145,87 @@ function shuffleRouteCards(cards: RouteDeckCard[]): RouteMarketByMode {
     }),
     { bus: [], rail: [], air: [] },
   )
+}
+
+function calculateOpeningRailRouteCost(
+  routeCard: RouteDeckCard,
+  map: GameMap,
+  railConstructionCostPerMile: number,
+) {
+  if (routeCard.mode !== "rail") {
+    return 0
+  }
+
+  return routeCard.cityIds.slice(0, -1).reduce((total, cityId, index) => {
+    const cityA = map.cities.find(city => city.id === cityId)
+    const cityB = map.cities.find(city => city.id === routeCard.cityIds[index + 1])
+
+    if (!cityA || !cityB) {
+      return total
+    }
+
+    return total + calculateDistanceMiles(cityA, cityB) * railConstructionCostPerMile
+  }, 0)
+}
+
+function seedOpeningRouteMarket(
+  routeMarketByMode: RouteMarketByMode,
+  routeCards: RouteDeckCard[],
+  map: GameMap,
+  railConstructionCostPerMile: number,
+  startingMoney: number,
+  shuffledVehicleCards: VehicleCard[],
+) {
+  const openingTrainCards: VehicleCard[] = []
+
+  for (const card of shuffledVehicleCards) {
+    if (card.type !== "train") {
+      continue
+    }
+
+    openingTrainCards.push(card)
+
+    if (openingTrainCards.length >= OPENING_VISIBLE_TRAIN_COUNT) {
+      break
+    }
+  }
+
+  if (openingTrainCards.length === 0) {
+    return routeMarketByMode
+  }
+
+  const openingRailBudget = startingMoney - Math.min(...openingTrainCards.map(card => card.purchasePrice))
+  const railRouteCardsById = new Map(routeCards.filter(card => card.mode === "rail").map(card => [card.id, card]))
+  const visibleRailIds = routeMarketByMode.rail.slice(0, OPENING_VISIBLE_ROUTE_COUNT)
+  const hasAffordableVisibleRail = visibleRailIds.some(cardId => {
+    const routeCard = railRouteCardsById.get(cardId)
+
+    return routeCard !== undefined &&
+      calculateOpeningRailRouteCost(routeCard, map, railConstructionCostPerMile) <= openingRailBudget
+  })
+
+  if (hasAffordableVisibleRail) {
+    return routeMarketByMode
+  }
+
+  const affordableRailCardId = routeMarketByMode.rail.find(cardId => {
+    const routeCard = railRouteCardsById.get(cardId)
+
+    return routeCard !== undefined &&
+      calculateOpeningRailRouteCost(routeCard, map, railConstructionCostPerMile) <= openingRailBudget
+  })
+
+  if (!affordableRailCardId) {
+    return routeMarketByMode
+  }
+
+  return {
+    ...routeMarketByMode,
+    rail: [
+      affordableRailCardId,
+      ...routeMarketByMode.rail.filter(cardId => cardId !== affordableRailCardId),
+    ],
+  }
 }
 
 function createPlayer(player: GameSetupPlayer, startingMoney: number): Player {
@@ -145,6 +248,7 @@ function createPlayer(player: GameSetupPlayer, startingMoney: number): Player {
       },
     },
     ownedVehicleCardIds: [],
+    ownedVehicleCountsByCardId: {},
     operatingCosts: 0,
     weeklyPayout: 0,
     lastPeriodPassengersServed: 0,
@@ -160,9 +264,16 @@ export function createGameState(
   const routeCards = options.routeCards ?? defaultDecks.routeCards
   const shuffledVehicleCards = shuffleVehicleCards(vehicleCards)
   const shuffledChanceCards = shuffleChanceCards(chanceCards)
-  const shuffledRouteMarketCardIdsByMode = shuffleRouteCards(routeCards)
-  const [activeChanceCard, ...chanceDeck] = shuffledChanceCards
   const startingMoney = options.startingMoney ?? DEFAULT_STARTING_MONEY
+  const shuffledRouteMarketCardIdsByMode = seedOpeningRouteMarket(
+    shuffleRouteCards(routeCards),
+    routeCards,
+    map,
+    INITIAL_OPERATING_CONFIG.railConstructionCostPerMile,
+    startingMoney,
+    shuffledVehicleCards,
+  )
+  const [activeChanceCard, ...chanceDeck] = shuffledChanceCards
   const players = (options.players ?? DEFAULT_PLAYERS).map(player =>
     createPlayer(player, startingMoney),
   )
@@ -191,7 +302,9 @@ export function createGameState(
     routeMarketCardIdsByMode: shuffledRouteMarketCardIdsByMode,
     hasPurchasedVehicleThisTurn: false,
     hasPurchasedVehicleThisPhase: false,
+    purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
     hasClaimedRouteThisTurn: false,
+    claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
     players,
     leadPlayerIndex: 0,
     currentPlayerId: players[0]?.id ?? "p1",

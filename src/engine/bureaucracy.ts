@@ -1,6 +1,7 @@
 import {
+  getAffordableFleetSize,
   getBalanceAdjustmentPerTrip,
-  getCombinedDemandForCityIds,
+  getCityDemandSize,
   getFuelPriceMultiplier,
   getWeeklyCrewCostForCard,
   getWeeklyMaintenanceCostForCard,
@@ -32,10 +33,23 @@ export type BureaucracyRoutePlan = {
   cityIds: string[]
   availableCityIds: string[]
   selectedCityIds: string[]
+  cityCubeDemands: {
+    cityId: string
+    cityName: string
+    outboundCubes: number
+    inboundCubes: number
+  }[]
   segmentCount: number
   canAddSplitService: boolean
   combinedDemand: number
+  totalOutboundCubes: number
+  totalInboundCubes: number
+  cubeCapacityPerTrip: number
+  movableDemandCubes: number
+  movedCubes: number
   vehicleCard: VehicleCard | null
+  demandFleetSize: number
+  selectedFleetSize: number
   statsFuelResource: PurchasableResource | null
   statsFuelBurnUnit: FuelBurnUnit | null
   distanceMiles: number | null
@@ -61,6 +75,20 @@ export type BureaucracyRoutePlan = {
   revenue: number
   operatingCost: number
   netRevenue: number
+}
+
+type CityCubeDemand = {
+  cityId: string
+  cityName: string
+  outboundCubes: number
+  inboundCubes: number
+}
+
+type CubeTransferDemand = {
+  cityCubeDemands: CityCubeDemand[]
+  totalOutboundCubes: number
+  totalInboundCubes: number
+  movableDemandCubes: number
 }
 
 type ServiceGroup = {
@@ -116,6 +144,64 @@ function getOwnedVehicleCards(game: GameState, player: Player) {
     .map(cardId => game.vehicleCatalog.find(card => card.id === cardId) ?? null)
     .filter((card): card is VehicleCard => card !== null)
     .sort((cardA, cardB) => cardA.number - cardB.number)
+}
+
+function buildCubeTransferDemand(
+  game: GameState,
+  cityIds: string[],
+): CubeTransferDemand {
+  const cityCubeDemands = [...new Set(cityIds)].map(cityId => {
+    const city = game.cities.find(candidate => candidate.id === cityId)
+    const cubeCount = city ? Math.max(0, getCityDemandSize(game, city)) : 0
+
+    return {
+      cityId,
+      cityName: getCityName(game, cityId),
+      outboundCubes: cubeCount,
+      inboundCubes: cubeCount,
+    }
+  })
+  const totalOutboundCubes = cityCubeDemands.reduce(
+    (total, cityDemand) => total + cityDemand.outboundCubes,
+    0,
+  )
+  const totalInboundCubes = cityCubeDemands.reduce(
+    (total, cityDemand) => total + cityDemand.inboundCubes,
+    0,
+  )
+  const movableDemandCubes = cityCubeDemands.reduce((bestTotal, cityDemand) => {
+    const availableOtherInbound = totalInboundCubes - cityDemand.inboundCubes
+    const blockedOutbound = Math.max(
+      0,
+      cityDemand.outboundCubes - availableOtherInbound,
+    )
+
+    return Math.min(bestTotal, totalOutboundCubes - blockedOutbound)
+  }, Math.min(totalOutboundCubes, totalInboundCubes))
+
+  return {
+    cityCubeDemands,
+    totalOutboundCubes,
+    totalInboundCubes,
+    movableDemandCubes: Math.max(0, movableDemandCubes),
+  }
+}
+
+function getCubeCapacityPerTrip(
+  game: Pick<GameState, "operatingConfig">,
+  vehicleCard: VehicleCard | null,
+) {
+  if (!vehicleCard) {
+    return 0
+  }
+
+  return Math.max(
+    1,
+    Math.ceil(
+      vehicleCard.totalPassengerCapacity /
+        Math.max(game.operatingConfig.passengersPerDemandPoint, 1),
+    ),
+  )
 }
 
 function buildServiceGroupId(routes: Route[]) {
@@ -394,7 +480,9 @@ function calculateServiceGroupTripSummary(
   const tripsPerWeek = totalTripDurationHours <= 0
     ? 0
     : Math.floor(
-        (game.operatingConfig.hoursPerDay * game.operatingConfig.daysPerWeek) /
+        (game.operatingConfig.hoursPerDay *
+          game.operatingConfig.daysPerWeek *
+          game.operatingConfig.weeksPerPeriod) /
           totalTripDurationHours,
       )
   const fuelResource = segmentSummaries[0].fuelResource
@@ -469,14 +557,72 @@ export function buildPlayerBureaucracySummary(
         statsVehicleCard === null || activeRoutes.length === 0
           ? null
           : calculateServiceGroupTripSummary(game, activeServiceGroup, statsVehicleCard)
+      const cubeTransferDemand = buildCubeTransferDemand(game, selectedCityIds)
+      const routeDemandCubes = cubeTransferDemand.movableDemandCubes
+      const statsCubeCapacityPerTrip = getCubeCapacityPerTrip(game, statsVehicleCard)
+      const vehicleCubeCapacityPerTrip = getCubeCapacityPerTrip(game, vehicleCard)
+      const fuelCostPerTrip =
+        routeTripSummary?.fuelResource === null || routeTripSummary === null
+          ? 0
+          : routeTripSummary.tripFuelBurn *
+            getFuelCostPerRealUnit(game, routeTripSummary.fuelResource)
+      const balanceAdjustmentPerTrip =
+        vehicleCard === null ? 0 : getBalanceAdjustmentPerTrip(game, route)
+      const maxTripsPerVehicle = routeTripSummary?.tripsPerWeek ?? 0
+      const demandFleetSize =
+        vehicleCard === null ||
+        routeDemandCubes <= 0 ||
+        vehicleCubeCapacityPerTrip <= 0 ||
+        maxTripsPerVehicle <= 0
+          ? 0
+          : Math.max(
+              1,
+              Math.ceil(
+                routeDemandCubes /
+                  Math.max(vehicleCubeCapacityPerTrip * maxTripsPerVehicle, 1),
+              ),
+            )
+      const ownedFleetSize =
+        vehicleCard === null ? 0 : Math.max(0, player.ownedVehicleCountsByCardId[vehicleCard.id] ?? 0)
+      const weeklyCrewCostPerVehicle =
+        vehicleCard === null ? 0 : getWeeklyCrewCostForCard(game, vehicleCard, 1)
+      const weeklyMaintenanceCostPerVehicle =
+        vehicleCard === null ? 0 : getWeeklyMaintenanceCostForCard(game, vehicleCard, 1)
+      const fixedWeeklyCostPerVehicle = weeklyCrewCostPerVehicle + weeklyMaintenanceCostPerVehicle
+      const variableTripCost = balanceAdjustmentPerTrip + fuelCostPerTrip
+      const selectedFleetSize =
+        vehicleCard === null || routeDemandCubes <= 0
+          ? 0
+          : getAffordableFleetSize({
+              targetFleetSize: Math.min(demandFleetSize, ownedFleetSize),
+              availableBudget: remainingBudget,
+              fixedCostPerVehicle: fixedWeeklyCostPerVehicle,
+              variableTripCost,
+              maxTrips: maxTripsPerVehicle,
+            })
+      const maxUsefulTripsByDemand =
+        selectedFleetSize <= 0 || vehicleCubeCapacityPerTrip <= 0
+          ? 0
+          : Math.ceil(
+              routeDemandCubes /
+                Math.max(vehicleCubeCapacityPerTrip, 1),
+            )
+      const maxTripsByTime =
+        selectedFleetSize <= 0 ? 0 : maxTripsPerVehicle * selectedFleetSize
       const defaultFuelUnits =
         routeTripSummary?.fuelResource === null || routeTripSummary === null
           ? 0
-          : Math.ceil(routeTripSummary.tripFuelUnits * routeTripSummary.tripsPerWeek)
+          : Math.ceil(
+              routeTripSummary.tripFuelUnits *
+                Math.min(maxTripsByTime, maxUsefulTripsByDemand),
+            )
       const maxFuelUnitsByTime =
-        routeTripSummary && routeTripSummary.fuelResource !== null
-          ? Math.ceil(routeTripSummary.tripFuelUnits * routeTripSummary.tripsPerWeek)
-          : 0
+        routeTripSummary?.fuelResource === null || routeTripSummary === null
+          ? 0
+          : Math.ceil(
+              routeTripSummary.tripFuelUnits *
+                Math.min(maxTripsByTime, maxUsefulTripsByDemand),
+            )
       const cappedFuelUnits =
         routeTripSummary === null || routeTripSummary.fuelResource === null
           ? 0
@@ -489,37 +635,36 @@ export function buildPlayerBureaucracySummary(
               ),
               maxFuelUnitsByTime,
             )
-      const fuelCostPerTrip =
-        routeTripSummary?.fuelResource === null || routeTripSummary === null
-          ? 0
-          : routeTripSummary.tripFuelBurn *
-            getFuelCostPerRealUnit(game, routeTripSummary.fuelResource)
-      const balanceAdjustmentPerTrip =
-        vehicleCard === null ? 0 : getBalanceAdjustmentPerTrip(game, route)
-      const weeklyCrewCost = vehicleCard === null ? 0 : getWeeklyCrewCostForCard(game, vehicleCard)
+      const weeklyCrewCost =
+        vehicleCard === null ? 0 : getWeeklyCrewCostForCard(game, vehicleCard, selectedFleetSize)
       const weeklyMaintenanceCost =
-        vehicleCard === null ? 0 : getWeeklyMaintenanceCostForCard(game, vehicleCard)
+        vehicleCard === null
+          ? 0
+          : getWeeklyMaintenanceCostForCard(game, vehicleCard, selectedFleetSize)
       const fixedWeeklyCost = weeklyCrewCost + weeklyMaintenanceCost
-      const variableTripCost = balanceAdjustmentPerTrip + fuelCostPerTrip
       const maxTripsByBudget =
-        routeTripSummary === null
+        routeTripSummary === null || selectedFleetSize === 0
           ? 0
           : variableTripCost <= 0
             ? remainingBudget >= fixedWeeklyCost
-              ? routeTripSummary.tripsPerWeek
+              ? maxTripsByTime
               : 0
             : Math.max(
                 0,
-                Math.floor((remainingBudget - fixedWeeklyCost + 1e-9) / variableTripCost),
+                Math.floor(
+                  (remainingBudget - fixedWeeklyCost + 1e-9) /
+                    Math.max(variableTripCost, 0.000001),
+                ),
               )
       const selectedTrips =
         routeTripSummary === null
           ? 0
           : routeTripSummary.fuelResource === null
-            ? Math.min(routeTripSummary.tripsPerWeek, maxTripsByBudget)
+            ? Math.min(maxTripsByTime, maxTripsByBudget, maxUsefulTripsByDemand)
             : Math.min(
-                routeTripSummary.tripsPerWeek,
+                maxTripsByTime,
                 maxTripsByBudget,
+                maxUsefulTripsByDemand,
                 Math.floor(
                   (cappedFuelUnits + 1e-9) /
                     Math.max(routeTripSummary.tripFuelUnits, 0.000001),
@@ -529,22 +674,21 @@ export function buildPlayerBureaucracySummary(
         routeTripSummary?.fuelResource === null || routeTripSummary === null
           ? 0
           : Math.ceil(routeTripSummary.tripFuelUnits * selectedTrips)
+      const movedCubes =
+        selectedFleetSize <= 0 || vehicleCubeCapacityPerTrip <= 0
+          ? 0
+          : Math.min(routeDemandCubes, selectedTrips * vehicleCubeCapacityPerTrip)
       const passengersPerTrip =
         statsVehicleCard === null
           ? 0
-          : Math.min(
-              statsVehicleCard.totalPassengerCapacity,
-              getCombinedDemandForCityIds(game, selectedCityIds) *
-                game.operatingConfig.passengersPerDemandPoint,
-            )
+          : statsVehicleCard.totalPassengerCapacity *
+            Math.max(selectedFleetSize, vehicleCard ? 1 : Math.min(demandFleetSize, 1))
       const passengersServed =
-        vehicleCard === null
+        vehicleCard === null || selectedFleetSize === 0
           ? 0
-          : selectedTrips *
-            Math.min(
-              vehicleCard.totalPassengerCapacity,
-              getCombinedDemandForCityIds(game, selectedCityIds) *
-                game.operatingConfig.passengersPerDemandPoint,
+          : Math.min(
+              selectedTrips * vehicleCard.totalPassengerCapacity,
+              movedCubes * game.operatingConfig.passengersPerDemandPoint,
             )
       const revenue =
         (routeTripSummary?.distanceMiles ?? 0) *
@@ -578,19 +722,35 @@ export function buildPlayerBureaucracySummary(
         cityIds: selectedCityIds,
         availableCityIds: serviceGroup.cityIds,
         selectedCityIds,
+        cityCubeDemands: cubeTransferDemand.cityCubeDemands,
         segmentCount: activeRoutes.length,
         canAddSplitService: serviceSlot.canAddSplitService,
-        combinedDemand: getCombinedDemandForCityIds(game, selectedCityIds),
+        combinedDemand: routeDemandCubes,
+        totalOutboundCubes: cubeTransferDemand.totalOutboundCubes,
+        totalInboundCubes: cubeTransferDemand.totalInboundCubes,
+        cubeCapacityPerTrip: statsCubeCapacityPerTrip,
+        movableDemandCubes: routeDemandCubes,
+        movedCubes,
         vehicleCard,
+        demandFleetSize,
+        selectedFleetSize,
         statsFuelResource: statsRouteTripSummary?.fuelResource ?? null,
         statsFuelBurnUnit: statsRouteTripSummary?.fuelBurnUnit ?? null,
         distanceMiles: statsRouteTripSummary?.distanceMiles ?? null,
-        maxTripsByTime: statsRouteTripSummary?.tripsPerWeek ?? 0,
+        maxTripsByTime: Math.min(
+          (statsRouteTripSummary?.tripsPerWeek ?? 0) *
+            Math.max(selectedFleetSize, vehicleCard ? 1 : Math.min(demandFleetSize, 1)),
+          statsCubeCapacityPerTrip <= 0 || routeDemandCubes <= 0
+            ? 0
+            : Math.ceil(routeDemandCubes / statsCubeCapacityPerTrip),
+        ),
         maxFuelUnitsByTime,
-        weeklyFuelBurnReal: statsRouteTripSummary?.weeklyFuelBurn ?? 0,
+        weeklyFuelBurnReal: (statsRouteTripSummary?.weeklyFuelBurn ?? 0) * selectedFleetSize,
         weeklyFuelBurnUnits: statsRouteTripSummary?.fuelResource
           ? Math.ceil(
-              statsRouteTripSummary.tripFuelUnits * statsRouteTripSummary.tripsPerWeek,
+              statsRouteTripSummary.tripFuelUnits *
+                statsRouteTripSummary.tripsPerWeek *
+                selectedFleetSize,
             )
           : 0,
         selectedFuelUnits,

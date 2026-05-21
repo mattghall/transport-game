@@ -52,6 +52,10 @@ const VEHICLE_FIELD_LABEL_STYLE = {
   fontWeight: 700,
 } as const
 
+function getVehicleNumberKey(card: Pick<VehicleCard, "type" | "number">) {
+  return `${card.type}:${card.number}`
+}
+
 function parseNumber(value: string, fallback = 0) {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : fallback
@@ -95,16 +99,17 @@ export default function StartMenu({
     [userDecks.vehicleCards],
   )
   const duplicateVehicleNumbers = useMemo(() => {
-    const counts = new Map<number, number>()
+    const counts = new Map<string, number>()
 
     for (const card of userDecks.vehicleCards) {
-      counts.set(card.number, (counts.get(card.number) ?? 0) + 1)
+      const key = getVehicleNumberKey(card)
+      counts.set(key, (counts.get(key) ?? 0) + 1)
     }
 
     return new Set(
       [...counts.entries()]
         .filter(([, count]) => count > 1)
-        .map(([number]) => number),
+        .map(([key]) => key),
     )
   }, [userDecks.vehicleCards])
   const routeCardsByMode = useMemo(
@@ -180,10 +185,21 @@ export default function StartMenu({
     value: string | number,
   ) {
     if (
-      field === "number" &&
-      userDecks.vehicleCards.some(card => card.id !== cardId && card.number === value)
+      (field === "number" || field === "type") &&
+      userDecks.vehicleCards.some(card => {
+        if (card.id === cardId) {
+          return false
+        }
+
+        const nextType = field === "type" ? (value as VehicleCard["type"]) : card.type
+        const nextNumber = field === "number" ? Number(value) : card.number
+        return card.type === nextType && card.number === nextNumber
+      })
     ) {
-      setDeckMessage(`Vehicle #${value} already exists. Each vehicle card number must be unique.`)
+      const currentCard = userDecks.vehicleCards.find(card => card.id === cardId)
+      const nextType = field === "type" ? (value as VehicleCard["type"]) : currentCard?.type ?? "bus"
+      const nextNumber = field === "number" ? Number(value) : currentCard?.number ?? 0
+      setDeckMessage(`Vehicle #${nextNumber} already exists for ${nextType}. Vehicle numbers must be unique within each type.`)
       return
     }
 
@@ -198,10 +214,8 @@ export default function StartMenu({
           [field]: value,
         } as VehicleCard
 
-        if (field === "vehicleCount" || field === "capacityPerVehicle") {
-          nextCard.totalPassengerCapacity =
-            nextCard.vehicleCount * nextCard.capacityPerVehicle
-        }
+        nextCard.vehicleCount = 1
+        nextCard.totalPassengerCapacity = nextCard.capacityPerVehicle
 
         return nextCard
       }),
@@ -376,7 +390,7 @@ export default function StartMenu({
   }
 
   function renderVehicleCard(card: VehicleCard) {
-    const hasDuplicateNumber = duplicateVehicleNumbers.has(card.number)
+    const hasDuplicateNumber = duplicateVehicleNumbers.has(getVehicleNumberKey(card))
 
     return (
       <div
@@ -447,21 +461,24 @@ export default function StartMenu({
               style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #c7d0c4" }}
             />
           </label>
-          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 4,
+              justifyContent: "center",
+              borderRadius: 8,
+              border: "1px solid #d8dfd5",
+              background: "#f7faf6",
+              padding: "8px 10px",
+            }}
+          >
             <span style={VEHICLE_FIELD_LABEL_STYLE}>🚚 Vehicles</span>
-            <input
-              type="number"
-              value={card.vehicleCount}
-              onChange={event =>
-                handleUpdateVehicleCard(
-                  card.id,
-                  "vehicleCount",
-                  parseNumber(event.target.value, card.vehicleCount),
-                )
-              }
-              style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #c7d0c4" }}
-            />
-          </label>
+            <span style={{ color: "#223024", fontSize: 14, fontWeight: 700 }}>1 per card</span>
+            <span style={{ color: "#56635a", fontSize: 11 }}>
+              Fleet size scales during bureaucracy.
+            </span>
+          </div>
           <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             <span style={VEHICLE_FIELD_LABEL_STYLE}>👤 Seats</span>
             <input
@@ -507,7 +524,7 @@ export default function StartMenu({
             />
           </label>
           <div style={{ color: "#56635a", fontSize: 13 }}>
-            👥 Total cap {card.totalPassengerCapacity.toLocaleString()}
+            👥 Total cap {card.totalPassengerCapacity.toLocaleString()} per vehicle
           </div>
           <button
             type="button"
@@ -536,7 +553,7 @@ export default function StartMenu({
         </label>
         {hasDuplicateNumber && (
           <div style={{ color: "#b42318", fontSize: 13 }}>
-            Vehicle #{card.number} is duplicated. Pick a unique number.
+            Vehicle #{card.number} is duplicated within {card.type}. Pick a unique number for that type.
           </div>
         )}
       </div>
@@ -1068,7 +1085,13 @@ export default function StartMenu({
           {duplicateVehicleNumbers.size > 0 && (
             <div style={{ marginBottom: 12, color: "#b42318", fontSize: 14 }}>
               Fix duplicate vehicle numbers before starting:{" "}
-              {[...duplicateVehicleNumbers].sort((a, b) => a - b).join(", ")}
+              {[...duplicateVehicleNumbers]
+                .sort((a, b) => a.localeCompare(b))
+                .map(key => {
+                  const [type, number] = key.split(":")
+                  return `${type} #${number}`
+                })
+                .join(", ")}
             </div>
           )}
           {activeTab === "setup" && (

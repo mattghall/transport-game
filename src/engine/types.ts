@@ -16,6 +16,8 @@ export type PurchasableResource = "diesel" | "jetFuel"
 export type VehicleType = "air" | "train" | "bus"
 export type FuelBurnUnit = "gallons" | "pounds"
 export type RailTraction = "diesel" | "electric"
+export type VehiclePurchasesByType = Record<VehicleType, boolean>
+export type RouteClaimsByMode = Record<RouteMode, boolean>
 
 export type ChanceDemandBoost = {
   regions: string[]
@@ -99,6 +101,7 @@ export type Player = {
   startingCityId?: string
   inventory: PlayerInventory
   ownedVehicleCardIds: string[]
+  ownedVehicleCountsByCardId: Record<string, number>
   operatingCosts: number
   weeklyPayout: number
   lastPeriodPassengersServed: number
@@ -166,7 +169,9 @@ export type GameState = {
   routeMarketCardIdsByMode: RouteMarketByMode
   hasPurchasedVehicleThisTurn: boolean
   hasPurchasedVehicleThisPhase: boolean
+  purchasedVehicleTypesThisPhase: VehiclePurchasesByType
   hasClaimedRouteThisTurn: boolean
+  claimedRouteModesThisPhase: RouteClaimsByMode
 
   players: Player[]
   leadPlayerIndex: number

@@ -76,6 +76,43 @@ function getAdvanceTurnLogMessage(previousGame: GameState, nextGame: GameState) 
       : `ended turn, next player ${nextPlayer?.name ?? nextGame.currentPlayerId}`
 }
 
+function getPhaseDiscardLogMessage(previousGame: GameState, nextGame: GameState) {
+  const burnedVehicleCards =
+    previousGame.currentPhase === "purchase-equipment" &&
+    nextGame.currentPhase === "claim-routes" &&
+    previousGame.vehicleMarketCardIds.length !== nextGame.vehicleMarketCardIds.length
+      ? previousGame.vehicleMarketCardIds
+          .filter(cardId => !nextGame.vehicleMarketCardIds.includes(cardId))
+          .map(cardId => previousGame.vehicleCatalog.find(card => card.id === cardId) ?? null)
+          .filter((card): card is NonNullable<typeof card> => card !== null)
+          .sort((cardA, cardB) => cardA.type.localeCompare(cardB.type) || cardA.number - cardB.number)
+      : []
+  const burnedRouteCards =
+    previousGame.currentPhase === "claim-routes" &&
+    nextGame.currentPhase === "bureaucracy"
+      ? (["bus", "rail", "air"] as const)
+          .flatMap(mode =>
+            previousGame.routeMarketCardIdsByMode[mode]
+              .filter(cardId => !nextGame.routeMarketCardIdsByMode[mode].includes(cardId))
+              .map(cardId => previousGame.routeCatalog.find(card => card.id === cardId) ?? null)
+              .filter((card): card is NonNullable<typeof card> => card !== null),
+          )
+          .sort((cardA, cardB) => cardA.mode.localeCompare(cardB.mode) || cardA.title.localeCompare(cardB.title))
+      : []
+  const messages = [
+    ...burnedVehicleCards.map(
+      card =>
+        `removed vehicle #${card.number} ${card.name} from the ${card.type} deck because nobody bought a ${card.type === "air" ? "plane" : card.type} this month`,
+    ),
+    ...burnedRouteCards.map(
+      card =>
+        `removed route ${card.title} from the ${card.mode} deck because nobody claimed a ${card.mode} route this month`,
+    ),
+  ]
+
+  return messages.length > 0 ? messages.join("; ") : null
+}
+
 export default function App() {
   const [setupPlayers, setSetupPlayers] = useState<GameSetupPlayer[]>(() => DEFAULT_PLAYERS)
   const [startingMoney, setStartingMoney] = useState(DEFAULT_STARTING_MONEY)
@@ -241,7 +278,9 @@ export default function App() {
       const finalGame = appendActionLog(
         claimedGame,
         advancedGame,
-        getAdvanceTurnLogMessage(claimedGame, advancedGame),
+        [getAdvanceTurnLogMessage(claimedGame, advancedGame), getPhaseDiscardLogMessage(claimedGame, advancedGame)]
+          .filter((message): message is string => Boolean(message))
+          .join("; "),
       )
 
       commitGame(finalGame)
@@ -265,18 +304,9 @@ export default function App() {
   const handleAdvanceTurn = useCallback(() => {
     const nextGame = advanceTurn(game)
     const message = getAdvanceTurnLogMessage(game, nextGame)
-    const burnedVehicleCardId = game.vehicleMarketCardIds.find(
-      cardId => !nextGame.vehicleMarketCardIds.includes(cardId),
-    )
-    const burnedVehicleCard =
-      game.currentPhase === "purchase-equipment" &&
-      nextGame.currentPhase === "claim-routes" &&
-      !game.hasPurchasedVehicleThisPhase &&
-      burnedVehicleCardId
-        ? game.vehicleCatalog.find(card => card.id === burnedVehicleCardId) ?? null
-        : null
-    const fullMessage = burnedVehicleCard
-      ? `${message}; removed vehicle #${burnedVehicleCard.number} ${burnedVehicleCard.name} from the market because nobody bought a card this month`
+    const discardMessage = getPhaseDiscardLogMessage(game, nextGame)
+    const fullMessage = discardMessage
+      ? `${message}; ${discardMessage}`
       : message
     commitGame(appendActionLog(game, nextGame, fullMessage))
   }, [commitGame, game])
@@ -301,8 +331,8 @@ export default function App() {
   )
 
   const handleBuyVehicleCardAndAdvance = useCallback(
-    (cardId: string) => {
-      const purchaseResult = buyVehicleCard(game, cardId)
+    (cardId: string, quantity: number) => {
+      const purchaseResult = buyVehicleCard(game, cardId, quantity)
 
       if (!purchaseResult.ok) {
         return purchaseResult
@@ -311,7 +341,7 @@ export default function App() {
       const purchasedGame = appendActionLog(
         game,
         purchaseResult.game,
-        `purchased vehicle #${purchaseResult.card.number} ${purchaseResult.card.name}`,
+        `purchased ${purchaseResult.quantity} vehicle${purchaseResult.quantity === 1 ? "" : "s"} of #${purchaseResult.card.number} ${purchaseResult.card.name}`,
       )
       const advancedGame = advanceTurn(purchasedGame)
       const finalGame = appendActionLog(
@@ -325,6 +355,7 @@ export default function App() {
       return {
         ok: true as const,
         card: purchaseResult.card,
+        quantity: purchaseResult.quantity,
         cost: purchaseResult.cost,
         nextPhase: advancedGame.currentPhase,
         nextPlayerName:

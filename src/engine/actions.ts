@@ -70,8 +70,32 @@ const WEEKLY_PHASES: WeeklyPhase[] = [
   "claim-routes",
   "bureaucracy",
 ]
-const PURCHASABLE_VEHICLE_CARD_COUNT = 4
 const VISIBLE_ROUTE_CARD_COUNT = 3
+const VEHICLE_PURCHASE_LIMITS: Record<VehicleType, number> = {
+  bus: 6,
+  train: 3,
+  air: 1,
+}
+const EMPTY_VEHICLE_PURCHASES_BY_TYPE = {
+  bus: false,
+  train: false,
+  air: false,
+} as const
+const EMPTY_ROUTE_CLAIMS_BY_MODE = {
+  bus: false,
+  rail: false,
+  air: false,
+} as const
+const EARLY_VEHICLE_MARKET_SLOTS: Record<VehicleType, number> = {
+  bus: 2,
+  train: 2,
+  air: 0,
+}
+const LATE_VEHICLE_MARKET_SLOTS: Record<VehicleType, number> = {
+  bus: 2,
+  train: 2,
+  air: 2,
+}
 
 export type ResourcePurchaseResult =
   | {
@@ -91,6 +115,7 @@ export type VehiclePurchaseResult =
       ok: true
       game: GameState
       card: VehicleCard
+      quantity: number
       cost: number
     }
   | {
@@ -240,6 +265,47 @@ function getOwnedVehicleCards(game: GameState) {
     .filter((card): card is VehicleCard => card !== null)
 }
 
+export function getVisibleVehicleMarketCountsByType(week: number) {
+  return week >= 6 ? LATE_VEHICLE_MARKET_SLOTS : EARLY_VEHICLE_MARKET_SLOTS
+}
+
+export function getVisibleVehicleMarketCardIds(game: GameState) {
+  const visibleCountsByType = getVisibleVehicleMarketCountsByType(game.currentWeek)
+  const visibleCardIdsByType: Record<VehicleType, string[]> = {
+    bus: [],
+    train: [],
+    air: [],
+  }
+
+  for (const cardId of game.vehicleMarketCardIds) {
+    const card = game.vehicleCatalog.find(entry => entry.id === cardId)
+
+    if (!card) {
+      continue
+    }
+
+    if (visibleCardIdsByType[card.type].length >= visibleCountsByType[card.type]) {
+      continue
+    }
+
+    visibleCardIdsByType[card.type].push(cardId)
+  }
+
+  return [
+    ...visibleCardIdsByType.bus,
+    ...visibleCardIdsByType.train,
+    ...visibleCardIdsByType.air,
+  ]
+}
+
+function isVisibleVehicleMarketCard(game: GameState, cardId: string) {
+  return getVisibleVehicleMarketCardIds(game).includes(cardId)
+}
+
+function isOwnedVehicleCard(game: GameState, cardId: string) {
+  return getCurrentPlayer(game)?.ownedVehicleCardIds.includes(cardId) ?? false
+}
+
 function getCityById(cities: City[], cityId: string) {
   return cities.find(city => city.id === cityId)
 }
@@ -301,6 +367,28 @@ function getRoutePairs(cityIds: string[]) {
   }
 
   return pairs
+}
+
+function isRouteCardBlockedByClaimedRoutes(game: GameState, routeCard: { cityIds: string[] }) {
+  return getRoutePairs(routeCard.cityIds).some(([cityAId, cityBId]) =>
+    findExistingRoute(game.routes, cityAId, cityBId),
+  )
+}
+
+export function getAvailableRouteMarketCardIds(game: GameState, mode: RouteMode) {
+  return game.routeMarketCardIdsByMode[mode].filter(cardId => {
+    const routeCard = game.routeCatalog.find(card => card.id === cardId)
+
+    if (!routeCard) {
+      return false
+    }
+
+    return !isRouteCardBlockedByClaimedRoutes(game, routeCard)
+  })
+}
+
+export function getVisibleRouteMarketCardIds(game: GameState, mode: RouteMode) {
+  return getAvailableRouteMarketCardIds(game, mode).slice(0, VISIBLE_ROUTE_CARD_COUNT)
 }
 
 export function calculateClaimRouteCost(
@@ -406,6 +494,10 @@ export function getCurrentPlayer(game: GameState) {
   )
 }
 
+export function getVehiclePurchaseLimit(type: VehicleType) {
+  return VEHICLE_PURCHASE_LIMITS[type]
+}
+
 function refillResourceTrack(
   counts: number[],
   availableSupply: number,
@@ -435,24 +527,32 @@ function refillResourceTrack(
   }
 }
 
-function getVehicleMarketBurnCardId(game: GameState) {
-  const visibleMarketCards = game.vehicleMarketCardIds
-    .slice(0, PURCHASABLE_VEHICLE_CARD_COUNT)
-    .map(cardId => game.vehicleCatalog.find(card => card.id === cardId) ?? null)
-    .filter((card): card is VehicleCard => card !== null)
+function getVehicleMarketBurnCardIds(game: GameState) {
+  return (["bus", "train", "air"] as VehicleType[]).flatMap(type => {
+    if (game.purchasedVehicleTypesThisPhase[type]) {
+      return []
+    }
 
-  if (visibleMarketCards.length === 0) {
-    return null
-  }
+    const cardToBurn = game.vehicleMarketCardIds
+      .map(cardId => game.vehicleCatalog.find(card => card.id === cardId) ?? null)
+      .filter((card): card is VehicleCard => card !== null && card.type === type)
+      .sort((cardA, cardB) => cardA.number - cardB.number)[0]
 
-  return [...visibleMarketCards]
-    .sort((cardA, cardB) => {
-      if (cardB.purchasePrice !== cardA.purchasePrice) {
-        return cardB.purchasePrice - cardA.purchasePrice
-      }
+    return cardToBurn ? [cardToBurn.id] : []
+  })
+}
 
-      return cardB.number - cardA.number
-    })[0]?.id ?? null
+function getRouteMarketBurnCardIds(game: GameState) {
+  return (["bus", "rail", "air"] as RouteMode[]).flatMap(mode => {
+    if (game.claimedRouteModesThisPhase[mode]) {
+      return []
+    }
+
+    const visibleCardIds = getVisibleRouteMarketCardIds(game, mode)
+    const rightMostVisibleCardId = visibleCardIds[visibleCardIds.length - 1]
+
+    return rightMostVisibleCardId ? [rightMostVisibleCardId] : []
+  })
 }
 
 export function advancePhase(game: GameState): GameState {
@@ -471,11 +571,11 @@ export function advancePhase(game: GameState): GameState {
   const firstPlayerId = game.players[nextLeadPlayerIndex]?.id ?? game.currentPlayerId
 
   if (game.currentPhase === "purchase-equipment") {
-    const burnedCardId = game.hasPurchasedVehicleThisPhase ? null : getVehicleMarketBurnCardId(game)
+    const burnedCardIds = getVehicleMarketBurnCardIds(game)
     const nextVehicleMarketCardIds =
-      burnedCardId === null
+      burnedCardIds.length === 0
         ? game.vehicleMarketCardIds
-        : game.vehicleMarketCardIds.filter(cardId => cardId !== burnedCardId)
+        : game.vehicleMarketCardIds.filter(cardId => !burnedCardIds.includes(cardId))
 
     return {
       ...game,
@@ -485,8 +585,32 @@ export function advancePhase(game: GameState): GameState {
       currentPlayerId: firstPlayerId,
       hasPurchasedVehicleThisTurn: false,
       hasPurchasedVehicleThisPhase: false,
+      purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
       hasClaimedRouteThisTurn: false,
+      claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
       vehicleMarketCardIds: nextVehicleMarketCardIds,
+    }
+  }
+
+  if (game.currentPhase === "claim-routes") {
+    const burnedRouteCardIds = getRouteMarketBurnCardIds(game)
+
+    return {
+      ...game,
+      currentWeek: wrappedWeek,
+      currentPhase: WEEKLY_PHASES[nextPhaseIndex],
+      leadPlayerIndex: nextLeadPlayerIndex,
+      currentPlayerId: firstPlayerId,
+      hasPurchasedVehicleThisTurn: false,
+      hasPurchasedVehicleThisPhase: false,
+      purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
+      hasClaimedRouteThisTurn: false,
+      claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
+      routeMarketCardIdsByMode: {
+        bus: game.routeMarketCardIdsByMode.bus.filter(cardId => !burnedRouteCardIds.includes(cardId)),
+        rail: game.routeMarketCardIdsByMode.rail.filter(cardId => !burnedRouteCardIds.includes(cardId)),
+        air: game.routeMarketCardIdsByMode.air.filter(cardId => !burnedRouteCardIds.includes(cardId)),
+      },
     }
   }
 
@@ -501,7 +625,9 @@ export function advancePhase(game: GameState): GameState {
         currentPlayerId: firstPlayerId,
         hasPurchasedVehicleThisTurn: false,
         hasPurchasedVehicleThisPhase: false,
+        purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
         hasClaimedRouteThisTurn: false,
+        claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
       }
     }
 
@@ -547,7 +673,9 @@ export function advancePhase(game: GameState): GameState {
       currentPlayerId: firstPlayerId,
       hasPurchasedVehicleThisTurn: false,
       hasPurchasedVehicleThisPhase: false,
+      purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
       hasClaimedRouteThisTurn: false,
+      claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
       resourceMarket: {
         diesel: dieselRefill.counts,
         jetFuel: jetFuelRefill.counts,
@@ -567,7 +695,9 @@ export function advancePhase(game: GameState): GameState {
     currentPlayerId: firstPlayerId,
     hasPurchasedVehicleThisTurn: false,
     hasPurchasedVehicleThisPhase: false,
+    purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
     hasClaimedRouteThisTurn: false,
+    claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
   }
 }
 
@@ -780,6 +910,7 @@ export function advanceTurn(game: GameState): GameState {
 export function buyVehicleCard(
   game: GameState,
   cardId: string,
+  quantity = 1,
 ): VehiclePurchaseResult {
   if (isGameLocked(game)) {
     return {
@@ -798,7 +929,7 @@ export function buyVehicleCard(
   if (game.hasPurchasedVehicleThisTurn) {
     return {
       ok: false,
-      error: "You can buy at most 1 vehicle card per turn.",
+      error: "You can make only 1 vehicle purchase per turn.",
     }
   }
 
@@ -811,17 +942,15 @@ export function buyVehicleCard(
     }
   }
 
-  if (!game.vehicleMarketCardIds.includes(cardId)) {
-    return {
-      ok: false,
-      error: "That vehicle card is no longer available.",
-    }
-  }
+  const isOwnedCard = isOwnedVehicleCard(game, cardId)
+  const isVisibleMarketCard = isVisibleVehicleMarketCard(game, cardId)
 
-  if (!game.vehicleMarketCardIds.slice(0, PURCHASABLE_VEHICLE_CARD_COUNT).includes(cardId)) {
+  if (!isVisibleMarketCard && !isOwnedCard) {
     return {
       ok: false,
-      error: "Only the first 4 vehicle cards are purchasable right now.",
+      error: game.vehicleCatalog.some(vehicleCard => vehicleCard.id === cardId)
+        ? "You can only buy visible market cards or vehicle models you already own."
+        : "That vehicle card is no longer available.",
     }
   }
 
@@ -834,7 +963,23 @@ export function buyVehicleCard(
     }
   }
 
-  const cost = card.purchasePrice
+  if (!Number.isInteger(quantity) || quantity < 1) {
+    return {
+      ok: false,
+      error: "Vehicle quantity must be at least 1.",
+    }
+  }
+
+  const purchaseLimit = getVehiclePurchaseLimit(card.type)
+
+  if (quantity > purchaseLimit) {
+    return {
+      ok: false,
+      error: `You can buy at most ${purchaseLimit} ${card.type === "bus" ? "buses" : card.type === "train" ? "trains" : "plane"} at a time.`,
+    }
+  }
+
+  const cost = card.purchasePrice * quantity
 
   if (currentPlayer.money < cost) {
     return {
@@ -848,12 +993,19 @@ export function buyVehicleCard(
   return {
     ok: true,
     card,
+    quantity,
     cost,
     game: {
       ...game,
-      vehicleMarketCardIds: game.vehicleMarketCardIds.filter(id => id !== cardId),
       hasPurchasedVehicleThisTurn: true,
       hasPurchasedVehicleThisPhase: true,
+      purchasedVehicleTypesThisPhase: {
+        ...game.purchasedVehicleTypesThisPhase,
+        [card.type]: true,
+      },
+      vehicleMarketCardIds: isVisibleMarketCard
+        ? game.vehicleMarketCardIds.filter(marketCardId => marketCardId !== card.id)
+        : game.vehicleMarketCardIds,
       players: game.players.map(player => {
         if (player.id !== currentPlayer.id) {
           return player
@@ -862,12 +1014,18 @@ export function buyVehicleCard(
         return {
           ...player,
           money: player.money - cost,
-          ownedVehicleCardIds: [...player.ownedVehicleCardIds, card.id],
+          ownedVehicleCardIds: player.ownedVehicleCardIds.includes(card.id)
+            ? player.ownedVehicleCardIds
+            : [...player.ownedVehicleCardIds, card.id],
+          ownedVehicleCountsByCardId: {
+            ...player.ownedVehicleCountsByCardId,
+            [card.id]: (player.ownedVehicleCountsByCardId[card.id] ?? 0) + quantity,
+          },
           inventory: {
             ...player.inventory,
             vehicles: {
               ...player.inventory.vehicles,
-              [inventoryKey]: player.inventory.vehicles[inventoryKey] + card.vehicleCount,
+              [inventoryKey]: player.inventory.vehicles[inventoryKey] + quantity,
             },
           },
         }
@@ -1112,7 +1270,7 @@ export function claimRoute(
     }
   }
 
-  if (!game.routeMarketCardIdsByMode[routeCard.mode].slice(0, VISIBLE_ROUTE_CARD_COUNT).includes(routeCard.id)) {
+  if (!getVisibleRouteMarketCardIds(game, routeCard.mode).includes(routeCard.id)) {
     return {
       ok: false,
       error: "That route card is not currently dealt face-up on the table.",
@@ -1175,6 +1333,10 @@ export function claimRoute(
         [routeCard.mode]: game.routeMarketCardIdsByMode[routeCard.mode].filter(cardId => cardId !== routeCard.id),
       },
       hasClaimedRouteThisTurn: true,
+      claimedRouteModesThisPhase: {
+        ...game.claimedRouteModesThisPhase,
+        [routeCard.mode]: true,
+      },
       players: game.players.map(player =>
         player.id === currentPlayer.id
           ? {

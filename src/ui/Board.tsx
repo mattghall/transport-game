@@ -1,10 +1,14 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react"
 import {
   type RailUpgradeResult,
   calculateClaimRouteCost,
   type BureaucracyServiceCitiesResult,
   type BureaucracyServiceSplitResult,
   type BureaucracyVehicleCardResult,
+  getAvailableRouteMarketCardIds,
+  getVisibleRouteMarketCardIds,
+  getVisibleVehicleMarketCardIds,
+  getVehiclePurchaseLimit,
   getFuelPurchaseCost,
   getFuelUnitPrice,
   getConnectionOptions,
@@ -17,15 +21,21 @@ import {
   getMaxFuelUnitsCapacityForPlayer,
 } from "../engine/bureaucracy"
 import {
+  getAffordableFleetSize,
   buildVictoryStandings,
   calculateConnectionBonus,
   getActiveChanceCard,
   getBalanceAdjustmentPerTrip,
+  getCityDemandSize,
   getCombinedDemandForCityIds,
+  getDemandCapacityForCityIds,
   getCrewCostPerWeekPerVehicle,
+  getFleetSizeForDemand,
   getConnectedCityIds,
   getFuelPriceMultiplier,
   getHoursPerWeek,
+  getMaintenanceCostPerWeekPerVehicle,
+  getPassengersPerTripForCityIds,
   getRailTraction,
   getRailUpgradeCost,
 } from "../engine/economy"
@@ -68,10 +78,12 @@ type Props = {
   onBuyResource: (resource: PurchasableResource, quantity: number) => ResourcePurchaseResult
   onBuyVehicleCard: (
     cardId: string,
+    quantity: number,
   ) =>
     | {
         ok: true
         card: VehicleCard
+        quantity: number
         cost: number
         nextPhase: WeeklyPhase
         nextPlayerName: string
@@ -96,16 +108,27 @@ type Props = {
   canUndo: boolean
 }
 
-const TABLE_ZONE_HEIGHT = 254
-const LEFT_PANEL_WIDTH = 280
-const STATUS_RAIL_WIDTH = 120
-const TABLE_PREVIEW_WIDTH = 240
+type ResizeTarget = "left-panel" | "right-rail" | "table-height" | "table-preview"
+
+type ResizeState = {
+  target: ResizeTarget
+  startX: number
+  startY: number
+  startValue: number
+}
+
+const MIN_TRAY_SIZE = 200
+const DEFAULT_TABLE_ZONE_HEIGHT = 390
+const DEFAULT_LEFT_PANEL_WIDTH = 280
+const DEFAULT_STATUS_RAIL_WIDTH = 200
+const DEFAULT_TABLE_PREVIEW_WIDTH = 240
 const PANEL_GAP = 12
 const ROW_TWO_TOP = 88
-const BOARD_CLEARANCE_BOTTOM = TABLE_ZONE_HEIGHT + PANEL_GAP * 2
-const BOARD_LEFT_INSET = LEFT_PANEL_WIDTH + PANEL_GAP * 2
-const BOARD_RIGHT_INSET = STATUS_RAIL_WIDTH + PANEL_GAP * 2
-const ROUTE_MARKET_VISIBLE_COUNT = 3
+const TABLE_ZONE_GAP = 6
+const RESIZE_HANDLE_SIZE = 12
+const CITY_DOT_RADIUS = 2.4
+const DEMAND_CUBE_PASSENGERS = 50
+const DEMAND_CYLINDER_PASSENGERS = 250
 
 const BOARD_SHELL_STYLE = {
   position: "fixed",
@@ -133,19 +156,15 @@ const ROW_TWO_STYLE = {
   left: PANEL_GAP,
   right: PANEL_GAP,
   top: ROW_TWO_TOP,
-  bottom: BOARD_CLEARANCE_BOTTOM,
   display: "grid",
-  gridTemplateColumns: `${LEFT_PANEL_WIDTH}px minmax(0, 1fr) ${STATUS_RAIL_WIDTH}px`,
   gap: PANEL_GAP,
   zIndex: 2,
 } as const
 
 const PLAYER_PANEL_STYLE = {
   position: "absolute",
-  right: BOARD_RIGHT_INSET,
   top: ROW_TWO_TOP,
   width: 320,
-  bottom: BOARD_CLEARANCE_BOTTOM,
   overflowY: "auto",
   display: "flex",
   flexDirection: "column",
@@ -160,9 +179,6 @@ const PLAYER_PANEL_STYLE = {
 
 const ACTION_LOG_PANEL_STYLE = {
   position: "absolute",
-  left: BOARD_LEFT_INSET,
-  right: BOARD_RIGHT_INSET,
-  bottom: BOARD_CLEARANCE_BOTTOM,
   maxHeight: 260,
   overflowY: "auto",
   display: "flex",
@@ -254,10 +270,90 @@ const BOTTOM_BAR_STYLE = {
   fontFamily: "system-ui, sans-serif",
 } as const
 
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max)
+}
+
+function colorWithOpacity(color: string, opacity: number) {
+  const normalized = color.trim()
+  const shortHexMatch = /^#([\da-f]{3})$/i.exec(normalized)
+  const fullHexMatch = /^#([\da-f]{6})$/i.exec(normalized)
+
+  if (shortHexMatch) {
+    const [r, g, b] = shortHexMatch[1].split("").map(channel => parseInt(channel + channel, 16))
+    return `rgba(${r}, ${g}, ${b}, ${opacity})`
+  }
+
+  if (fullHexMatch) {
+    const value = fullHexMatch[1]
+    const r = parseInt(value.slice(0, 2), 16)
+    const g = parseInt(value.slice(2, 4), 16)
+    const b = parseInt(value.slice(4, 6), 16)
+    return `rgba(${r}, ${g}, ${b}, ${opacity})`
+  }
+
+  return color
+}
+
+function getDiePipPositions(value: number) {
+  switch (value) {
+    case 1:
+      return [{ top: "50%", left: "50%" }]
+    case 2:
+      return [
+        { top: "28%", left: "28%" },
+        { top: "72%", left: "72%" },
+      ]
+    case 3:
+      return [
+        { top: "28%", left: "28%" },
+        { top: "50%", left: "50%" },
+        { top: "72%", left: "72%" },
+      ]
+    case 4:
+      return [
+        { top: "28%", left: "28%" },
+        { top: "28%", left: "72%" },
+        { top: "72%", left: "28%" },
+        { top: "72%", left: "72%" },
+      ]
+    case 5:
+      return [
+        { top: "28%", left: "28%" },
+        { top: "28%", left: "72%" },
+        { top: "50%", left: "50%" },
+        { top: "72%", left: "28%" },
+        { top: "72%", left: "72%" },
+      ]
+    default:
+      return [
+        { top: "28%", left: "28%" },
+        { top: "28%", left: "72%" },
+        { top: "50%", left: "28%" },
+        { top: "50%", left: "72%" },
+        { top: "72%", left: "28%" },
+        { top: "72%", left: "72%" },
+      ]
+  }
+}
+
+function getDefaultTablePreviewWidth() {
+  if (typeof window === "undefined") {
+    return DEFAULT_TABLE_PREVIEW_WIDTH
+  }
+
+  const availableTableZoneWidth = window.innerWidth - PANEL_GAP * 2 - TABLE_ZONE_GAP
+  const maxTablePreviewWidth = Math.max(MIN_TRAY_SIZE, availableTableZoneWidth - MIN_TRAY_SIZE)
+
+  return clamp(Math.round(availableTableZoneWidth * 0.25), MIN_TRAY_SIZE, maxTablePreviewWidth)
+}
+
+function getResizeCursor(target: ResizeTarget) {
+  return target === "table-height" ? "ns-resize" : "ew-resize"
+}
+
 const RESOURCE_MARKET_PANEL_STYLE = {
   position: "absolute",
-  left: BOARD_LEFT_INSET,
-  right: BOARD_RIGHT_INSET,
   top: ROW_TWO_TOP,
   bottom: PANEL_GAP,
   overflowY: "auto",
@@ -298,10 +394,8 @@ const TABLE_ZONE_STYLE = {
   left: PANEL_GAP,
   right: PANEL_GAP,
   bottom: PANEL_GAP,
-  height: TABLE_ZONE_HEIGHT,
   display: "grid",
-  gridTemplateColumns: `minmax(0, 1fr) ${TABLE_PREVIEW_WIDTH}px`,
-  gap: 6,
+  gap: TABLE_ZONE_GAP,
   zIndex: 2,
   fontFamily: "system-ui, sans-serif",
 } as const
@@ -451,16 +545,104 @@ function CardStackPreview({
   )
 }
 
-function getMinimumVisibleCitySize(zoomScale: number) {
-  if (zoomScale <= 1.15) {
-    return 3
+function getCityDemandTokenCounts(passengers: number) {
+  const roundedPassengers = Math.max(
+    0,
+    Math.round(passengers / DEMAND_CUBE_PASSENGERS) * DEMAND_CUBE_PASSENGERS,
+  )
+
+  return {
+    roundedPassengers,
+    cylinders: Math.floor(roundedPassengers / DEMAND_CYLINDER_PASSENGERS),
+    cubes:
+      (roundedPassengers % DEMAND_CYLINDER_PASSENGERS) / DEMAND_CUBE_PASSENGERS,
+  }
+}
+
+function renderCityDemandTokens(
+  cityName: string,
+  x: number,
+  y: number,
+  radius: number,
+  passengers: number,
+) {
+  const { roundedPassengers, cylinders, cubes } =
+    getCityDemandTokenCounts(passengers)
+
+  if (roundedPassengers <= 0) {
+    return null
   }
 
-  if (zoomScale <= 2) {
-    return 2
+  const layers: ReactNode[] = []
+  let nextBottomY = y - radius - 3
+
+  for (let index = 0; index < cylinders; index += 1) {
+    const tokenHeight = 8
+    const topY = nextBottomY - tokenHeight
+
+    layers.push(
+      <g key={`${cityName}-cylinder-${index}`}>
+        <ellipse
+          cx={x}
+          cy={topY + 1.1}
+          rx={4.2}
+          ry={1.8}
+          fill="#f6d174"
+          stroke="#7f5c1f"
+          strokeWidth={0.9}
+        />
+        <rect
+          x={x - 4.2}
+          y={topY + 1.1}
+          width={8.4}
+          height={5.8}
+          rx={1.5}
+          fill="#f0bc4f"
+          stroke="#7f5c1f"
+          strokeWidth={0.9}
+        />
+        <ellipse
+          cx={x}
+          cy={topY + 6.9}
+          rx={4.2}
+          ry={1.8}
+          fill="#d89a2c"
+          stroke="#7f5c1f"
+          strokeWidth={0.9}
+        />
+      </g>,
+    )
+
+    nextBottomY = topY - 1.2
   }
 
-  return 1
+  for (let index = 0; index < cubes; index += 1) {
+    const tokenSize = 6
+    const topY = nextBottomY - tokenSize
+
+    layers.push(
+      <rect
+        key={`${cityName}-cube-${index}`}
+        x={x - tokenSize / 2}
+        y={topY}
+        width={tokenSize}
+        height={tokenSize}
+        rx={1.2}
+        fill="#5fbf72"
+        stroke="#224b2c"
+        strokeWidth={0.9}
+      />,
+    )
+
+    nextBottomY = topY - 1.2
+  }
+
+  return (
+    <g pointerEvents="none">
+      <title>{`${cityName}: ${roundedPassengers} passengers of monthly demand`}</title>
+      {layers}
+    </g>
+  )
 }
 
 function formatCurrency(amount: number) {
@@ -559,7 +741,7 @@ function getRouteInteractionMessage(phase: WeeklyPhase) {
 function getPhaseStatusMessage(phase: WeeklyPhase) {
   switch (phase) {
     case "purchase-equipment":
-      return "Buy up to 1 vehicle card this turn."
+      return "Make 1 vehicle purchase this turn. Buses can buy up to 6, trains up to 3, planes 1."
     case "claim-routes":
       return "Select cities to create a connection."
     case "purchase-fuel":
@@ -585,6 +767,17 @@ function getVehicleTypeLabel(type: VehicleCard["type"]) {
       return "Train"
     case "air":
       return "Air"
+  }
+}
+
+function getVehiclePurchaseLabel(type: VehicleCard["type"], quantity: number) {
+  switch (type) {
+    case "bus":
+      return quantity === 1 ? "bus" : "buses"
+    case "train":
+      return quantity === 1 ? "train" : "trains"
+    case "air":
+      return quantity === 1 ? "plane" : "planes"
   }
 }
 
@@ -657,7 +850,13 @@ export default function Board({
   const [statusMessage, setStatusMessage] = useState<string>(
     getPhaseStatusMessage(game.currentPhase),
   )
+  const [leftPanelWidth, setLeftPanelWidth] = useState(DEFAULT_LEFT_PANEL_WIDTH)
+  const [rightRailWidth, setRightRailWidth] = useState(DEFAULT_STATUS_RAIL_WIDTH)
+  const [tableZoneHeight, setTableZoneHeight] = useState(DEFAULT_TABLE_ZONE_HEIGHT)
+  const [tablePreviewWidth, setTablePreviewWidth] = useState(getDefaultTablePreviewWidth)
+  const [resizeState, setResizeState] = useState<ResizeState | null>(null)
   const [pendingVehiclePurchaseCardId, setPendingVehiclePurchaseCardId] = useState<string | null>(null)
+  const [pendingVehiclePurchaseQuantity, setPendingVehiclePurchaseQuantity] = useState(1)
   const [revealedVehicleFunFactCardId, setRevealedVehicleFunFactCardId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -668,8 +867,106 @@ export default function Board({
     return () => window.clearInterval(intervalId)
   }, [])
 
+  useEffect(() => {
+    if (!resizeState) {
+      return
+    }
+
+    const previousUserSelect = document.body.style.userSelect
+    const previousCursor = document.body.style.cursor
+    document.body.style.userSelect = "none"
+    document.body.style.cursor = getResizeCursor(resizeState.target)
+
+    const handleMouseMove = (event: MouseEvent) => {
+      const viewportWidth = window.innerWidth
+      const viewportHeight = window.innerHeight
+      const maxSidePanelWidth = Math.max(
+        MIN_TRAY_SIZE,
+        viewportWidth - PANEL_GAP * 4 - MIN_TRAY_SIZE - rightRailWidth,
+      )
+      const maxRightRailWidth = Math.max(
+        MIN_TRAY_SIZE,
+        viewportWidth - PANEL_GAP * 4 - MIN_TRAY_SIZE - leftPanelWidth,
+      )
+      const maxTableZoneHeight = Math.max(
+        MIN_TRAY_SIZE,
+        viewportHeight - ROW_TWO_TOP - PANEL_GAP * 2 - MIN_TRAY_SIZE,
+      )
+      const maxTablePreviewWidth = Math.max(
+        MIN_TRAY_SIZE,
+        viewportWidth - PANEL_GAP * 2 - TABLE_ZONE_GAP - MIN_TRAY_SIZE,
+      )
+
+      switch (resizeState.target) {
+        case "left-panel":
+          setLeftPanelWidth(
+            clamp(resizeState.startValue + (event.clientX - resizeState.startX), MIN_TRAY_SIZE, maxSidePanelWidth),
+          )
+          break
+        case "right-rail":
+          setRightRailWidth(
+            clamp(resizeState.startValue - (event.clientX - resizeState.startX), MIN_TRAY_SIZE, maxRightRailWidth),
+          )
+          break
+        case "table-height":
+          setTableZoneHeight(
+            clamp(resizeState.startValue - (event.clientY - resizeState.startY), MIN_TRAY_SIZE, maxTableZoneHeight),
+          )
+          break
+        case "table-preview":
+          setTablePreviewWidth(
+            clamp(resizeState.startValue - (event.clientX - resizeState.startX), MIN_TRAY_SIZE, maxTablePreviewWidth),
+          )
+          break
+      }
+    }
+
+    const handleMouseUp = () => {
+      setResizeState(null)
+    }
+
+    window.addEventListener("mousemove", handleMouseMove)
+    window.addEventListener("mouseup", handleMouseUp)
+
+    return () => {
+      document.body.style.userSelect = previousUserSelect
+      document.body.style.cursor = previousCursor
+      window.removeEventListener("mousemove", handleMouseMove)
+      window.removeEventListener("mouseup", handleMouseUp)
+    }
+  }, [leftPanelWidth, resizeState, rightRailWidth])
+
   const map = game.map
   const currentPlayer = getCurrentPlayer(game)
+  const boardClearanceBottom = tableZoneHeight + PANEL_GAP * 2
+  const boardLeftInset = leftPanelWidth + PANEL_GAP * 2
+  const boardRightInset = rightRailWidth + PANEL_GAP * 2
+  const rowTwoStyle = {
+    ...ROW_TWO_STYLE,
+    bottom: boardClearanceBottom,
+    gridTemplateColumns: `${leftPanelWidth}px minmax(0, 1fr) ${rightRailWidth}px`,
+  } as const
+  const playerPanelStyle = {
+    ...PLAYER_PANEL_STYLE,
+    right: boardRightInset,
+    bottom: boardClearanceBottom,
+  } as const
+  const actionLogPanelStyle = {
+    ...ACTION_LOG_PANEL_STYLE,
+    left: boardLeftInset,
+    right: boardRightInset,
+    bottom: boardClearanceBottom,
+  } as const
+  const resourceMarketPanelStyle = {
+    ...RESOURCE_MARKET_PANEL_STYLE,
+    left: boardLeftInset,
+    right: boardRightInset,
+  } as const
+  const tableZoneStyle = {
+    ...TABLE_ZONE_STYLE,
+    height: tableZoneHeight,
+    gridTemplateColumns: `minmax(0, 1fr) ${tablePreviewWidth}px`,
+  } as const
 
   const cityMap: Record<string, GameState["cities"][number]> = Object.fromEntries(
     game.cities.map(c => [c.id, c]),
@@ -687,41 +984,71 @@ export default function Board({
     () => buildBureaucracySummaries(game),
     [game],
   )
-  const minimumVisibleCitySize = getMinimumVisibleCitySize(zoomScale)
-  const visibleCities = useMemo(
-    () => game.cities.filter(city => city.size >= minimumVisibleCitySize),
-    [game.cities, minimumVisibleCitySize],
+  const selectedRouteCard = selectedRouteCardId
+    ? routeCardMap[selectedRouteCardId] ?? null
+    : null
+  const selectedCityIds = useMemo(
+    () => selectedRouteCard?.cityIds ?? [],
+    [selectedRouteCard],
   )
-  const hiddenCities = useMemo(
-    () => game.cities.filter(city => city.size < minimumVisibleCitySize),
-    [game.cities, minimumVisibleCitySize],
+  const currentPlayerConnectedCityIds = useMemo(
+    () =>
+      currentPlayer
+        ? new Set(getConnectedCityIds(game, currentPlayer.id))
+        : new Set<string>(),
+    [currentPlayer, game],
   )
-  const visibleCityIds = useMemo(
-    () => new Set(visibleCities.map(city => city.id)),
-    [visibleCities],
-  )
+  const expandedCityIds = useMemo(() => {
+    const cardVisibleCityIds = new Set<string>(selectedCityIds)
 
+    currentPlayerConnectedCityIds.forEach(cityId => {
+      cardVisibleCityIds.add(cityId)
+    })
+
+    if (game.currentPhase !== "claim-routes") {
+      return cardVisibleCityIds
+    }
+
+    for (const mode of BUREAUCRACY_MODE_ORDER) {
+      for (const routeCardId of getVisibleRouteMarketCardIds(game, mode)) {
+        const routeCard = routeCardMap[routeCardId]
+
+        if (!routeCard) {
+          continue
+        }
+
+        routeCard.cityIds.forEach(cityId => {
+          cardVisibleCityIds.add(cityId)
+        })
+      }
+    }
+
+    return cardVisibleCityIds
+  }, [game, routeCardMap, selectedCityIds])
+  const expandedCities = useMemo(
+    () => game.cities.filter(city => expandedCityIds.has(city.id)),
+    [expandedCityIds, game.cities],
+  )
   const labels = useMemo(
-    () => computeLabels(visibleCities, zoomScale),
-    [visibleCities, zoomScale],
+    () => computeLabels(expandedCities, zoomScale),
+    [expandedCities, zoomScale],
   )
   const labelMap = Object.fromEntries(
     labels.map(l => [l.cityId, l]),
   )
   const outlinePath = usOutline
-  .map(([lng, lat]) => {
-     const p = latLngToWorld({ lng, lat })
-     return `${p.x},${p.y}`
-   })
-   .join(" L ")
-
-  const selectedRouteCard = selectedRouteCardId
-    ? routeCardMap[selectedRouteCardId] ?? null
-    : null
-  const selectedCityIds = selectedRouteCard?.cityIds ?? []
-  const selectedCities = selectedCityIds
-    .map(cityId => cityMap[cityId])
-    .filter((city): city is GameState["cities"][number] => city !== undefined)
+    .map(([lng, lat]) => {
+      const p = latLngToWorld({ lng, lat })
+      return `${p.x},${p.y}`
+    })
+    .join(" L ")
+  const selectedCities = useMemo(
+    () =>
+      selectedCityIds
+        .map(cityId => cityMap[cityId])
+        .filter((city): city is GameState["cities"][number] => city !== undefined),
+    [cityMap, selectedCityIds],
+  )
   const currentPlayerOwnedVehicleCards = useMemo(
     () =>
       (currentPlayer?.ownedVehicleCardIds ?? [])
@@ -730,6 +1057,7 @@ export default function Board({
         .sort((cardA, cardB) => cardA.number - cardB.number),
     [currentPlayer, vehicleCardMap],
   )
+  const currentPlayerOwnedVehicleCountsByCardId = currentPlayer?.ownedVehicleCountsByCardId ?? {}
   const currentPlayerOwnedModes = useMemo(
     () => new Set(currentPlayerOwnedVehicleCards.map(card => getModeForVehicleType(card.type))),
     [currentPlayerOwnedVehicleCards],
@@ -791,6 +1119,12 @@ export default function Board({
         currentPlayerOwnedVehicleCards.find(
           card => card.type === getVehicleTypeForMode(option.mode),
         ) ?? null
+      const claimCost = Math.ceil(
+        calculateClaimRouteCost(game, {
+          cityIds: selectedCities.map(city => city.id),
+          mode: option.mode,
+        }),
+      )
       const routeSummaries =
         previewCard === null
           ? []
@@ -816,48 +1150,77 @@ export default function Board({
         previewCard === null || routeSummaries.length !== routePairs.length || totalTripDurationHours <= 0
           ? 0
           : Math.floor(getHoursPerWeek(game) / totalTripDurationHours)
+      const ownedFleetSize =
+        previewCard === null ? 0 : Math.max(0, currentPlayerOwnedVehicleCountsByCardId[previewCard.id] ?? 0)
+      const demandFleetSize =
+        previewCard === null
+          ? 0
+          : getFleetSizeForDemand(
+              game,
+              selectedCities.map(city => city.id),
+              previewCard,
+              maxTripsPerPeriod,
+            )
+      const tripFuelBurnReal =
+        routeSummaries.length === 0
+          ? 0
+          : routeSummaries.reduce((total, summary) => total + summary.tripFuelBurn, 0)
+      const fuelResource = routeSummaries[0]?.fuelResource ?? null
+      const fuelCostPerTrip =
+        fuelResource === null
+          ? 0
+          : tripFuelBurnReal *
+            game.operatingConfig.fuelPricePerRealUnit[fuelResource] *
+            getFuelPriceMultiplier(game, fuelResource)
+      const fixedCrewCostPerVehicle =
+        previewCard === null ? 0 : getCrewCostPerWeekPerVehicle(game, previewCard.type)
+      const fixedMaintenanceCostPerVehicle =
+        previewCard === null ? 0 : getMaintenanceCostPerWeekPerVehicle(game, previewCard.type)
+      const balanceAdjustmentPerTrip =
+        previewCard === null
+          ? 0
+          : getBalanceAdjustmentPerTrip(game, {
+              id: `preview:${option.mode}`,
+              cityA: selectedCities[0].id,
+              cityB: selectedCities[selectedCities.length - 1].id,
+              mode: option.mode,
+            })
+      const plannedFleetSize =
+        previewCard === null || getDemandCapacityForCityIds(game, selectedCities.map(city => city.id)) <= 0
+          ? 0
+          : getAffordableFleetSize({
+              targetFleetSize: Math.min(demandFleetSize, ownedFleetSize),
+              availableBudget: Math.max(0, (currentPlayer?.money ?? 0) - claimCost),
+              fixedCostPerVehicle: fixedCrewCostPerVehicle + fixedMaintenanceCostPerVehicle,
+              variableTripCost: balanceAdjustmentPerTrip + fuelCostPerTrip,
+              maxTrips: maxTripsPerPeriod,
+            })
       const passengersPerTrip =
         previewCard === null
           ? 0
-          : Math.min(
-              previewCard.totalPassengerCapacity,
-              combinedDemand * game.operatingConfig.passengersPerDemandPoint,
+          : getPassengersPerTripForCityIds(
+              game,
+              selectedCities.map(city => city.id),
+              previewCard,
+              plannedFleetSize,
             )
       const passengersPerPeriod = passengersPerTrip * maxTripsPerPeriod
       const revenuePerPeriod =
         totalDistanceMiles *
         passengersPerPeriod *
         game.operatingConfig.revenuePerPassengerMile[option.mode]
-      const tripFuelBurnReal =
-        routeSummaries.length === 0
-          ? 0
-          : routeSummaries.reduce((total, summary) => total + summary.tripFuelBurn, 0)
-      const fuelResource = routeSummaries[0]?.fuelResource ?? null
       const fuelCostPerPeriod =
         fuelResource === null
           ? 0
           : tripFuelBurnReal *
             maxTripsPerPeriod *
+            plannedFleetSize *
             game.operatingConfig.fuelPricePerRealUnit[fuelResource] *
             getFuelPriceMultiplier(game, fuelResource)
-      const fixedCrewCost =
-        previewCard === null ? 0 : getCrewCostPerWeekPerVehicle(game, previewCard.type) * previewCard.vehicleCount
+      const fixedCrewCost = fixedCrewCostPerVehicle * plannedFleetSize
       const fixedMaintenanceCost =
-        previewCard === null
-          ? 0
-          : game.operatingConfig.realWorldOperatingCosts.maintenanceCostPerWeekPerVehicle[previewCard.type] *
-            game.operatingConfig.weeksPerPeriod *
-            previewCard.vehicleCount
-      const balanceAdjustmentPerPeriod =
-        previewCard === null
-          ? 0
-          : maxTripsPerPeriod *
-            getBalanceAdjustmentPerTrip(game, {
-              id: `preview:${option.mode}`,
-              cityA: selectedCities[0].id,
-              cityB: selectedCities[selectedCities.length - 1].id,
-              mode: option.mode,
-            })
+        fixedMaintenanceCostPerVehicle * plannedFleetSize
+      const balanceAdjustmentPerPeriod = maxTripsPerPeriod * plannedFleetSize * balanceAdjustmentPerTrip
       const operatingCostPerPeriod =
         fixedCrewCost + fixedMaintenanceCost + balanceAdjustmentPerPeriod + fuelCostPerPeriod
       return {
@@ -867,16 +1230,13 @@ export default function Board({
         previewCard,
         totalDistanceMiles,
         combinedDemand,
-        claimCost: Math.ceil(
-          calculateClaimRouteCost(game, {
-            cityIds: selectedCities.map(city => city.id),
-            mode: option.mode,
-          }),
-        ),
+        claimCost,
         connectionBonus: connectionBonusPreview?.totalBonus ?? 0,
         newCityCount: connectionBonusPreview?.newlyConnectedCityIds.length ?? 0,
+        demandFleetSize,
+        plannedFleetSize,
         passengersPerTrip,
-        maxTripsPerPeriod,
+        maxTripsPerPeriod: maxTripsPerPeriod * plannedFleetSize,
         passengersPerPeriod,
         revenuePerPeriod,
         crewCostPerPeriod: fixedCrewCost,
@@ -887,7 +1247,7 @@ export default function Board({
         netPerPeriod: revenuePerPeriod - operatingCostPerPeriod,
       }
     })
-  }, [connectionBonusPreview, connectionOptions, currentPlayerOwnedVehicleCards, game, selectedCities])
+  }, [connectionBonusPreview, connectionOptions, currentPlayer, currentPlayerOwnedVehicleCards, game, selectedCities])
   const selectedClaimPreview =
     selectedRouteCard === null
       ? null
@@ -899,16 +1259,16 @@ export default function Board({
   const routeCardsByMode = useMemo(
     () => {
       return BUREAUCRACY_MODE_ORDER.map(mode => {
-        const cardIds = game.routeMarketCardIdsByMode[mode]
-        const visibleCardIds = cardIds.slice(0, ROUTE_MARKET_VISIBLE_COUNT)
+        const availableCardIds = getAvailableRouteMarketCardIds(game, mode)
+        const visibleCardIds = getVisibleRouteMarketCardIds(game, mode)
 
         return {
           mode,
           cards: visibleCardIds
             .map(cardId => routeCardMap[cardId])
             .filter((card): card is (typeof game.routeCatalog)[number] => card !== undefined),
-          deckCount: Math.max(0, cardIds.length - visibleCardIds.length),
-          totalCount: cardIds.length,
+          deckCount: Math.max(0, availableCardIds.length - visibleCardIds.length),
+          totalCount: availableCardIds.length,
           owned: currentPlayerOwnedModes.has(mode),
         }
       })
@@ -1049,10 +1409,15 @@ export default function Board({
       const ownedVehicleCards = player.ownedVehicleCardIds
         .map(cardId => vehicleCardMap[cardId])
         .filter((card): card is VehicleCard => card !== undefined)
-      const ownedVehicleCounts = {
+      const ownedVehicleCardCounts = {
         bus: ownedVehicleCards.filter(card => card.type === "bus").length,
         train: ownedVehicleCards.filter(card => card.type === "train").length,
         air: ownedVehicleCards.filter(card => card.type === "air").length,
+      }
+      const ownedVehicleCounts = {
+        bus: player.inventory.vehicles.buses,
+        train: player.inventory.vehicles.trains,
+        air: player.inventory.vehicles.planes,
       }
       const ownedRouteCount = ownedRoutes.length
       return {
@@ -1060,6 +1425,7 @@ export default function Board({
         connectedCities,
         connectedRoutes,
         ownedVehicleCards,
+        ownedVehicleCardCounts,
         ownedVehicleCounts,
         ownedRouteCount,
         weeklyNet,
@@ -1090,11 +1456,10 @@ export default function Board({
       })
     }, [game, game.resourceMarket])
   const visibleVehicleCards = useMemo(() => {
-    return game.vehicleMarketCardIds
-      .slice(0, 4)
+    return getVisibleVehicleMarketCardIds(game)
       .map(cardId => vehicleCardMap[cardId])
       .filter((card): card is VehicleCard => card !== undefined)
-  }, [game.vehicleMarketCardIds, vehicleCardMap])
+  }, [game, vehicleCardMap])
   const vehicleMarketCountsByType = useMemo(
     () => ({
       bus: game.vehicleMarketCardIds.reduce(
@@ -1138,14 +1503,62 @@ export default function Board({
       plans: currentPlayerBureaucracySummary.routePlans.filter(plan => plan.route.mode === mode),
     }))
   }, [currentPlayerBureaucracySummary])
+  const currentPlayerAssignedRouteLabelsByVehicleCardId = useMemo(() => {
+    const labelsByCardId: Record<string, string[]> = {}
+
+    currentPlayerBureaucracySummary?.routePlans.forEach(plan => {
+      if (!plan.vehicleCard) {
+        return
+      }
+
+      labelsByCardId[plan.vehicleCard.id] ??= []
+      labelsByCardId[plan.vehicleCard.id].push(plan.serviceLabel)
+    })
+
+    return labelsByCardId
+  }, [currentPlayerBureaucracySummary])
   const nextPlayer = currentPlayerIndex === -1
     ? game.players[0]
     : game.players[(currentPlayerIndex + 1) % game.players.length]
   const pendingVehiclePurchaseCard =
     (pendingVehiclePurchaseCardId && vehicleCardMap[pendingVehiclePurchaseCardId]) ?? null
+  const pendingVehiclePurchaseMaxQuantity = pendingVehiclePurchaseCard
+    ? Math.max(
+        1,
+        Math.min(
+          getVehiclePurchaseLimit(pendingVehiclePurchaseCard.type),
+          Math.floor((currentPlayer?.money ?? 0) / pendingVehiclePurchaseCard.purchasePrice),
+        ),
+      )
+    : 1
+  const pendingVehiclePurchaseTotalCost = pendingVehiclePurchaseCard
+    ? pendingVehiclePurchaseCard.purchasePrice * pendingVehiclePurchaseQuantity
+    : 0
+  const currentPlayerVehicleTotals = currentPlayer
+    ? [
+        currentPlayer.inventory.vehicles.buses > 0
+          ? `${currentPlayer.inventory.vehicles.buses} buses`
+          : null,
+        currentPlayer.inventory.vehicles.trains > 0
+          ? `${currentPlayer.inventory.vehicles.trains} trains`
+          : null,
+        currentPlayer.inventory.vehicles.planes > 0
+          ? `${currentPlayer.inventory.vehicles.planes} planes`
+          : null,
+      ]
+        .filter((value): value is string => value !== null)
+        .join(", ")
+    : ""
+  const areResizeHandlesVisible =
+    !isResourceMarketOpen && !isBureaucracyOpen && !isEconomicsOpen && !isWikiOpen
   const shouldAdvancePhase = isLastPlayerTurn(game)
   const isAdvanceBlocked =
     game.currentPhase === "claim-routes" && selectedRouteCard !== null
+  const advanceTurnLabel = game.isGameOver
+    ? "Game over"
+    : shouldAdvancePhase
+      ? "Next phase"
+      : "Next player"
 
   function getFuelInfoLabel(resource: PurchasableResource, units: number) {
     const realFuel = calculateRealFuelFromUnits(units, resource, game)
@@ -1166,10 +1579,17 @@ export default function Board({
   }, [game.currentPhase])
 
   useEffect(() => {
-    if (selectedRouteCardId && !routeCardMap[selectedRouteCardId]) {
+    if (!selectedRouteCardId || !routeCardMap[selectedRouteCardId]) {
+      setSelectedRouteCardId(null)
+      return
+    }
+
+    const selectedRouteCard = routeCardMap[selectedRouteCardId]
+
+    if (!getVisibleRouteMarketCardIds(game, selectedRouteCard.mode).includes(selectedRouteCardId)) {
       setSelectedRouteCardId(null)
     }
-  }, [routeCardMap, selectedRouteCardId])
+  }, [game, routeCardMap, selectedRouteCardId])
 
   useEffect(() => {
     const completedPeriod = game.isGameOver ? game.currentWeek : game.currentWeek - 1
@@ -1325,6 +1745,276 @@ export default function Board({
     resetSelection(nextStatusMessage)
   }
 
+  function beginResize(
+    target: ResizeTarget,
+    event: ReactMouseEvent<HTMLDivElement>,
+    startValue: number,
+  ) {
+    event.preventDefault()
+    setResizeState({
+      target,
+      startX: event.clientX,
+      startY: event.clientY,
+      startValue,
+    })
+  }
+
+  function getResizeHandleStyle(target: ResizeTarget) {
+    const sharedStyle = {
+      position: "absolute",
+      zIndex: 3,
+      borderRadius: 999,
+      background:
+        resizeState?.target === target ? "rgba(34, 48, 36, 0.28)" : "rgba(34, 48, 36, 0.12)",
+      transition: "background 120ms ease",
+    } as const
+
+    switch (target) {
+      case "left-panel":
+        return {
+          ...sharedStyle,
+          top: 16,
+          bottom: 16,
+          left: leftPanelWidth + PANEL_GAP / 2 - RESIZE_HANDLE_SIZE / 2,
+          width: RESIZE_HANDLE_SIZE,
+          cursor: "ew-resize",
+        } as const
+      case "right-rail":
+        return {
+          ...sharedStyle,
+          top: 16,
+          bottom: 16,
+          right: rightRailWidth + PANEL_GAP / 2 - RESIZE_HANDLE_SIZE / 2,
+          width: RESIZE_HANDLE_SIZE,
+          cursor: "ew-resize",
+        } as const
+      case "table-height":
+        return {
+          ...sharedStyle,
+          left: boardLeftInset,
+          right: boardRightInset,
+          bottom: tableZoneHeight + PANEL_GAP + PANEL_GAP / 2 - RESIZE_HANDLE_SIZE / 2,
+          height: RESIZE_HANDLE_SIZE,
+          cursor: "ns-resize",
+        } as const
+      case "table-preview":
+        return {
+          ...sharedStyle,
+          top: 12,
+          bottom: 12,
+          right: tablePreviewWidth + TABLE_ZONE_GAP / 2 - RESIZE_HANDLE_SIZE / 2,
+          width: RESIZE_HANDLE_SIZE,
+          cursor: "ew-resize",
+        } as const
+    }
+  }
+
+  function renderVehiclePurchaseCard(card: VehicleCard, section: "owned" | "market") {
+    const isOwnedModel = currentPlayerOwnedVehicleCards.some(ownedCard => ownedCard.id === card.id)
+    const ownedCount = currentPlayerOwnedVehicleCountsByCardId[card.id] ?? 0
+    const assignedRouteLabels = currentPlayerAssignedRouteLabelsByVehicleCardId[card.id] ?? []
+    const accentColor = currentPlayer?.color ?? "#457b9d"
+    const isOwnedSection = section === "owned"
+    const canBuy =
+      game.currentPhase === "purchase-equipment" &&
+      !game.hasPurchasedVehicleThisTurn &&
+      (currentPlayer?.money ?? 0) >= card.purchasePrice &&
+      (isOwnedSection ? isOwnedModel : visibleVehicleCards.some(visibleCard => visibleCard.id === card.id))
+    const buyLabel = isOwnedSection || isOwnedModel ? "Buy more" : "Buy model"
+    const cardBorderColor = isOwnedSection ? colorWithOpacity(accentColor, 0.55) : "#d8dfd5"
+    const cardBackground = isOwnedSection
+      ? `linear-gradient(180deg, ${colorWithOpacity(accentColor, 0.12)} 0%, #ffffff 42%)`
+      : "#ffffff"
+    const cardShadow = isOwnedSection
+      ? `0 0 0 1px ${colorWithOpacity(accentColor, 0.18)}, 0 0 18px ${colorWithOpacity(accentColor, 0.2)}, 0 10px 22px ${colorWithOpacity(accentColor, 0.18)}`
+      : "0 4px 12px rgba(0, 0, 0, 0.06)"
+    const stackedDiceValues = [ownedCount, ownedCount - 6, ownedCount - 12]
+      .filter(value => value > 0)
+      .map(value => Math.min(value, 6))
+
+    return (
+      <div
+        key={`${section}-${card.id}`}
+        style={{
+          border: `1px solid ${cardBorderColor}`,
+          borderRadius: 14,
+          padding: 10,
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+          background: cardBackground,
+          boxShadow: cardShadow,
+          fontSize: 12,
+          minWidth: 156,
+          maxWidth: 176,
+          minHeight: 218,
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
+          <strong style={{ lineHeight: 1.2 }}>
+            #{card.number} {getVehicleTypeIcon(card.type)} {getVehicleTypeLabel(card.type)}
+          </strong>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontSize: 12 }}>{formatCurrency(card.purchasePrice)}</span>
+            <button
+              type="button"
+              onClick={() =>
+                setRevealedVehicleFunFactCardId(current =>
+                  current === card.id ? null : card.id,
+                )
+              }
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 20,
+                height: 20,
+                borderRadius: "50%",
+                border: "1px solid #c7d0c4",
+                background: "#ffffff",
+                color: "#56635a",
+                fontSize: 12,
+                fontWeight: 700,
+                cursor: "pointer",
+                padding: 0,
+                flexShrink: 0,
+              }}
+              aria-label={`Toggle fun fact for ${card.name}`}
+              title="Show fun fact"
+            >
+              ?
+            </button>
+          </div>
+        </div>
+        <div
+          style={{
+            fontWeight: 700,
+            color: "#223024",
+            fontSize: 12,
+            lineHeight: 1.25,
+            whiteSpace: "normal",
+            overflowWrap: "anywhere",
+            textWrap: "pretty",
+          }}
+        >
+          {card.name}
+        </div>
+        {isOwnedModel && (
+          <div
+            style={{
+              color: isOwnedSection ? accentColor : "#5b7395",
+              fontSize: 11,
+              fontWeight: 700,
+            }}
+          >
+            {isOwnedSection ? "Owned fleet" : "Owned model"}
+          </div>
+        )}
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: "4px 8px",
+            color: "#324236",
+            fontSize: 11,
+            lineHeight: 1.25,
+          }}
+        >
+          <span>👥 {card.totalPassengerCapacity.toLocaleString()} seats</span>
+          <span>{card.speed}mph</span>
+          <span>⚙️{card.operatingCostMultiplier}</span>
+        </div>
+        {isOwnedSection && ownedCount > 0 && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-end",
+              gap: 6,
+              marginTop: 2,
+            }}
+          >
+            <div style={{ position: "relative", width: 36, height: 34 }}>
+              {stackedDiceValues.map((dieValue, index) => (
+                <div
+                  key={`${card.id}-die-${index}`}
+                  style={{
+                    position: "absolute",
+                    right: index * 7,
+                    top: Math.max(0, 10 - index * 5),
+                    width: 22,
+                    height: 22,
+                    borderRadius: 6,
+                    border: `1px solid ${colorWithOpacity(accentColor, 0.45)}`,
+                    background: "#ffffff",
+                    boxShadow: `0 4px 10px ${colorWithOpacity(accentColor, 0.18)}`,
+                  }}
+                >
+                  {getDiePipPositions(dieValue).map((pip, pipIndex) => (
+                    <span
+                      key={`${card.id}-die-${index}-pip-${pipIndex}`}
+                      style={{
+                        position: "absolute",
+                        top: pip.top,
+                        left: pip.left,
+                        width: 4,
+                        height: 4,
+                        borderRadius: "50%",
+                        background: accentColor,
+                        transform: "translate(-50%, -50%)",
+                      }}
+                    />
+                  ))}
+                </div>
+              ))}
+            </div>
+            <div
+              style={{
+                minWidth: 26,
+                padding: "2px 6px",
+                borderRadius: 999,
+                background: accentColor,
+                color: "#ffffff",
+                fontSize: 11,
+                fontWeight: 800,
+                textAlign: "center",
+                boxShadow: `0 4px 10px ${colorWithOpacity(accentColor, 0.24)}`,
+              }}
+            >
+              {ownedCount}
+            </div>
+          </div>
+        )}
+        {revealedVehicleFunFactCardId === card.id && (
+          <div style={{ color: "#56635a", fontSize: 11 }}>
+            {card.funFact}
+          </div>
+        )}
+        {isOwnedSection && assignedRouteLabels.length > 0 && (
+          <div style={{ color: "#56635a", fontSize: 11, lineHeight: 1.35 }}>
+            <strong>Assigned routes:</strong> {assignedRouteLabels.join("; ")}
+          </div>
+        )}
+        <button
+          type="button"
+          disabled={!canBuy}
+          onClick={() => handleBuyVehicleCardClick(card.id)}
+          style={{
+            marginTop: "auto",
+            padding: "6px 10px",
+            borderRadius: 999,
+            border: "1px solid #c7d0c4",
+            cursor: canBuy ? "pointer" : "not-allowed",
+            background: canBuy ? "#ffffff" : "#f2f2f2",
+            fontWeight: 700,
+            fontSize: 12,
+          }}
+        >
+          {buyLabel}
+        </button>
+      </div>
+    )
+  }
+
   function handleBuyResourceClick(resource: PurchasableResource, quantity: number) {
     const result = onBuyResource(resource, quantity)
 
@@ -1339,6 +2029,7 @@ export default function Board({
   }
 
   function handleBuyVehicleCardClick(cardId: string) {
+    setPendingVehiclePurchaseQuantity(1)
     setPendingVehiclePurchaseCardId(cardId)
   }
 
@@ -1347,20 +2038,22 @@ export default function Board({
       return
     }
 
-    const result = onBuyVehicleCard(pendingVehiclePurchaseCard.id)
+    const result = onBuyVehicleCard(pendingVehiclePurchaseCard.id, pendingVehiclePurchaseQuantity)
 
     if (!result.ok) {
       setStatusMessage(result.error)
       setPendingVehiclePurchaseCardId(null)
+      setPendingVehiclePurchaseQuantity(1)
       return
     }
 
     setStatusMessage(
       result.advancedPhase
-        ? `${currentPlayer?.name ?? "Current player"} bought vehicle card ${result.card.number} for ${formatCurrency(result.cost)}. Starting ${formatPhaseLabel(result.nextPhase).toLowerCase()}.`
-        : `${currentPlayer?.name ?? "Current player"} bought vehicle card ${result.card.number} for ${formatCurrency(result.cost)}. ${result.nextPlayerName} is up.`,
+        ? `${currentPlayer?.name ?? "Current player"} bought ${result.quantity} ${getVehiclePurchaseLabel(result.card.type, result.quantity)} from card ${result.card.number} for ${formatCurrency(result.cost)}. Starting ${formatPhaseLabel(result.nextPhase).toLowerCase()}.`
+        : `${currentPlayer?.name ?? "Current player"} bought ${result.quantity} ${getVehiclePurchaseLabel(result.card.type, result.quantity)} from card ${result.card.number} for ${formatCurrency(result.cost)}. ${result.nextPlayerName} is up.`,
     )
     setPendingVehiclePurchaseCardId(null)
+    setPendingVehiclePurchaseQuantity(1)
   }
 
   function handleSetBureaucracyVehicleCard(routeId: string, vehicleCardId: string | null) {
@@ -1425,7 +2118,7 @@ export default function Board({
       <div style={TOP_BAR_STYLE}>
         <div style={TOP_BAR_PLAYERS_STYLE}>
         {playerSummaries.map(
-          ({ player, connectedCities, weeklyNet, ownedVehicleCounts, ownedRouteCount }) => (
+          ({ player, connectedCities, weeklyNet, ownedVehicleCardCounts, ownedRouteCount }) => (
             <button
               key={`${player.id}-summary`}
               type="button"
@@ -1464,30 +2157,30 @@ export default function Board({
                 <span>👥 {formatDecimal(player.totalPassengersServed, 0)}</span>
                 <span>🏙 {connectedCities.length}</span>
                 <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
-                  {ownedVehicleCounts.bus > 0 && (
+                  {ownedVehicleCardCounts.bus > 0 && (
                     <CardStackPreview
                       compact
                       icon=""
                       label="Bus cards"
-                      count={ownedVehicleCounts.bus}
+                      count={ownedVehicleCardCounts.bus}
                       accent={{ border: "#8aa07f", face: "#f7fbf4", badge: "#68865b" }}
                     />
                   )}
-                  {ownedVehicleCounts.train > 0 && (
+                  {ownedVehicleCardCounts.train > 0 && (
                     <CardStackPreview
                       compact
                       icon=""
                       label="Train cards"
-                      count={ownedVehicleCounts.train}
+                      count={ownedVehicleCardCounts.train}
                       accent={{ border: "#7d8fa8", face: "#f4f7fb", badge: "#5b7395" }}
                     />
                   )}
-                  {ownedVehicleCounts.air > 0 && (
+                  {ownedVehicleCardCounts.air > 0 && (
                     <CardStackPreview
                       compact
                       icon=""
                       label="Air cards"
-                      count={ownedVehicleCounts.air}
+                      count={ownedVehicleCardCounts.air}
                       accent={{ border: "#9a88bb", face: "#f7f4fc", badge: "#7c66a7" }}
                     />
                   )}
@@ -1621,7 +2314,7 @@ export default function Board({
           </div>
         </div>
       </div>
-      <div style={ROW_TWO_STYLE}>
+      <div style={rowTwoStyle}>
         <div style={HUD_STYLE}>
           <div
             style={{
@@ -1665,7 +2358,10 @@ export default function Board({
             <strong>Selection:</strong> {selectionSummary}
           </div>
           <div>
-            <strong>Visible cities:</strong> size {minimumVisibleCitySize}+
+            <strong>Expanded cities:</strong>{" "}
+            {expandedCityIds.size > 0
+              ? `${expandedCityIds.size} on visible route cards`
+              : "none"}
           </div>
           <div>{statusMessage}</div>
           {(game.currentPhase === "purchase-equipment" || game.currentPhase === "claim-routes") && (
@@ -1692,7 +2388,7 @@ export default function Board({
               </div>
               {game.currentPhase === "purchase-equipment" && game.hasPurchasedVehicleThisTurn && (
                 <div style={{ color: "#9b1c1c", fontSize: 13 }}>
-                  You have already bought 1 vehicle this turn. Advance to the next player.
+                  You have already used your vehicle purchase this turn. Advance to the next player.
                 </div>
               )}
               {game.currentPhase === "claim-routes" && game.hasClaimedRouteThisTurn && (
@@ -1789,9 +2485,6 @@ export default function Board({
               const aCity = cityMap[route.cityA]
               const bCity = cityMap[route.cityB]
               if (!aCity || !bCity) return null
-              if (!visibleCityIds.has(aCity.id) || !visibleCityIds.has(bCity.id)) {
-                return null
-              }
 
               const a = latLngToWorld(aCity)
               const b = latLngToWorld(bCity)
@@ -1850,7 +2543,7 @@ export default function Board({
               />
             )}
 
-            {visibleCities.map(city => {
+            {expandedCities.map(city => {
               const { x, y } = latLngToWorld(city)
               const label = labelMap[city.id]
 
@@ -1885,30 +2578,26 @@ export default function Board({
               )
             })}
 
-            {hiddenCities.map(city => {
+            {game.cities.map(city => {
               const { x, y } = latLngToWorld(city)
-
-              return (
-                <circle
-                  key={`${city.id}-hint`}
-                  cx={x}
-                  cy={y}
-                  r={Math.max(1.6, city.size * 1.2)}
-                  fill="rgba(34, 48, 36, 0.38)"
-                  stroke="rgba(244, 241, 232, 0.55)"
-                  strokeWidth={0.8}
-                  pointerEvents="none"
-                />
-              )
-            })}
-
-            {visibleCities.map(city => {
-              const { x, y } = latLngToWorld(city)
-              const label = labelMap[city.id]
+              const isExpanded = expandedCityIds.has(city.id)
+              const radius = isExpanded ? city.size * 2.5 : CITY_DOT_RADIUS
+              const label = isExpanded ? labelMap[city.id] : undefined
               const isSelected = selectedCityIds.includes(city.id)
               const fill = isSelected
                 ? currentPlayer?.color ?? "#ffffff"
-                : "#ffffff"
+                : isExpanded
+                  ? "#ffffff"
+                  : "rgba(34, 48, 36, 0.7)"
+              const stroke = isExpanded
+                ? "#000000"
+                : "rgba(244, 241, 232, 0.75)"
+              const shouldShowDemandTokens = currentPlayerConnectedCityIds.has(city.id)
+              const demandPassengers =
+                shouldShowDemandTokens
+                  ? getCityDemandSize(game, city) *
+                    game.operatingConfig.passengersPerDemandPoint
+                  : 0
 
               return (
                 <g
@@ -1916,16 +2605,19 @@ export default function Board({
                   onClick={handleCityClick}
                   style={{ cursor: game.currentPhase === "claim-routes" ? "default" : "pointer" }}
                 >
+                  {renderCityDemandTokens(city.name, x, y, radius, demandPassengers)}
                   <circle
                     cx={x}
                     cy={y}
-                    r={city.size * 2.5}
+                    r={radius}
                     fill={fill}
-                    stroke="black"
-                    strokeWidth={isSelected ? 2.5 : 1.5}
+                    stroke={stroke}
+                    strokeWidth={
+                      isSelected ? 2.5 : isExpanded ? 1.5 : 1
+                    }
                   />
 
-                  {label && (
+                  {isExpanded && label && (
                     <text
                       x={label.textX}
                       y={label.textY}
@@ -2039,25 +2731,41 @@ export default function Board({
             >
               Undo
             </button>
-            <button
-              type="button"
-              onClick={handleAdvanceTurnClick}
-              disabled={game.isGameOver || isAdvanceBlocked}
-              style={{
-                padding: "8px 10px",
-                borderRadius: 10,
-                border: "1px solid #c7d0c4",
-                cursor: game.isGameOver || isAdvanceBlocked ? "not-allowed" : "pointer",
-                background: game.isGameOver || isAdvanceBlocked ? "#f2f2f2" : "#ffffff",
-                fontWeight: 700,
-                textAlign: "left",
-                fontSize: 13,
-              }}
-            >
-              {game.isGameOver ? "Game over" : shouldAdvancePhase ? "Next phase" : "Next player"}
-            </button>
+            {game.currentPhase !== "bureaucracy" && (
+              <button
+                type="button"
+                onClick={handleAdvanceTurnClick}
+                disabled={game.isGameOver || isAdvanceBlocked}
+                style={{
+                  padding: "8px 10px",
+                  borderRadius: 10,
+                  border: "1px solid #c7d0c4",
+                  cursor: game.isGameOver || isAdvanceBlocked ? "not-allowed" : "pointer",
+                  background: game.isGameOver || isAdvanceBlocked ? "#f2f2f2" : "#ffffff",
+                  fontWeight: 700,
+                  textAlign: "left",
+                  fontSize: 13,
+                }}
+              >
+                {advanceTurnLabel}
+              </button>
+            )}
           </div>
         </div>
+        {areResizeHandlesVisible && (
+          <>
+            <div
+              onMouseDown={event => beginResize("left-panel", event, leftPanelWidth)}
+              style={getResizeHandleStyle("left-panel")}
+              title="Resize left tray"
+            />
+            <div
+              onMouseDown={event => beginResize("right-rail", event, rightRailWidth)}
+              style={getResizeHandleStyle("right-rail")}
+              title="Resize right tray"
+            />
+          </>
+        )}
       </div>
       {isPeriodSummaryOpen && completedPeriod >= 1 && (
         <div
@@ -2220,7 +2928,7 @@ export default function Board({
         </div>
       )}
       {expandedPlayerSummary && (
-        <div style={PLAYER_PANEL_STYLE}>
+        <div style={playerPanelStyle}>
           <strong>Player ledger</strong>
           <div style={PLAYER_CARD_STYLE}>
             <div>
@@ -2346,7 +3054,7 @@ export default function Board({
         </div>
       )}
       {isBureaucracyOpen && (
-        <div style={RESOURCE_MARKET_PANEL_STYLE}>
+        <div style={resourceMarketPanelStyle}>
           <strong>Bureaucracy ledger</strong>
           <div style={{ color: "#56635a" }}>
             Assign vehicles to routes. Fuel is charged here as trips operate, and each route defaults to the maximum trips you can afford.
@@ -2399,9 +3107,9 @@ export default function Board({
                   Passengers served:{" "}
                   {currentPlayerBureaucracySummary.totalPassengersServed.toLocaleString()}
                 </div>
-                {currentPlayerBureaucracySummary.routePlans.length === 0 ? (
-                  <div style={{ color: "#56635a" }}>No routes to operate.</div>
-                ) : (
+                 {currentPlayerBureaucracySummary.routePlans.length === 0 ? (
+                   <div style={{ color: "#56635a" }}>No routes to operate.</div>
+                 ) : (
                   currentPlayerBureaucracyPlansByMode.map(({ mode, plans }) => (
                     <div
                       key={mode}
@@ -2444,7 +3152,7 @@ export default function Board({
                                 : `${MODE_LABELS[plan.route.mode]} `}
                               {plan.segmentCount > 1 ? `• ${plan.segmentCount} segments ` : ""}
                               {plan.vehicleCard
-                                ? `• #${plan.vehicleCard.number} ${plan.vehicleCard.name}`
+                                ? `• #${plan.vehicleCard.number} ${plan.vehicleCard.name} • Fleet ${plan.selectedFleetSize}${plan.selectedFleetSize < plan.demandFleetSize ? ` / ${plan.demandFleetSize} needed` : ""}`
                                 : "• No vehicle assigned"}
                             </div>
                             <label
@@ -2514,6 +3222,38 @@ export default function Board({
                                 </div>
                               </div>
                             )}
+                            {plan.cityCubeDemands.length > 0 && (
+                              <div
+                                style={{
+                                  display: "flex",
+                                  flexDirection: "column",
+                                  gap: 6,
+                                  fontSize: 12,
+                                  color: "#324236",
+                                }}
+                              >
+                                <div>
+                                  <strong>City cubes</strong>
+                                </div>
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 10px" }}>
+                                  {plan.cityCubeDemands.map(cityDemand => (
+                                    <div
+                                      key={`${plan.id}-${cityDemand.cityId}-cubes`}
+                                      style={{
+                                        border: "1px solid #e1e6df",
+                                        borderRadius: 999,
+                                        padding: "4px 8px",
+                                        background: "#fafcf9",
+                                      }}
+                                    >
+                                      <strong>{cityDemand.cityName}</strong>
+                                      {" • "}Out {cityDemand.outboundCubes}
+                                      {" • "}In {cityDemand.inboundCubes}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
                             {plan.canAddSplitService && (
                               <div>
                                 <button
@@ -2544,13 +3284,16 @@ export default function Board({
                               {plan.distanceMiles !== null && (
                                 <span>{formatDecimal(plan.distanceMiles)} mi</span>
                               )}
-                              <span>Demand {plan.combinedDemand}</span>
+                              <span>Demand {plan.movableDemandCubes} cubes</span>
+                              <span>{plan.cubeCapacityPerTrip} cubes/trip</span>
                               <span>max {plan.maxTripsByTime} trips</span>
+                              <span>Fleet {plan.selectedFleetSize}</span>
                               <span>👥 {plan.passengersPerTrip.toLocaleString()}</span>
                             </div>
                             {plan.vehicleCard ? (
                               <div style={{ color: "#56635a", fontSize: 12 }}>
                                 Trips: {plan.selectedTrips}
+                                {" • "}Cubes moved: {plan.movedCubes}
                                 {" • "}Passengers: {plan.passengersServed.toLocaleString()}
                                 {" • "}Revenue: {formatCurrency(plan.revenue)}
                                 {" • "}Crew: {formatCurrency(plan.crewCost)}
@@ -2570,7 +3313,25 @@ export default function Board({
                       )}
                     </div>
                   ))
-                )}
+                 )}
+                <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                  <button
+                    type="button"
+                    onClick={handleAdvanceTurnClick}
+                    disabled={game.isGameOver || isAdvanceBlocked}
+                    style={{
+                      padding: "8px 12px",
+                      borderRadius: 999,
+                      border: "1px solid #223024",
+                      cursor: game.isGameOver || isAdvanceBlocked ? "not-allowed" : "pointer",
+                      background: game.isGameOver || isAdvanceBlocked ? "#dfe5de" : "#223024",
+                      color: "#ffffff",
+                      fontWeight: 700,
+                    }}
+                  >
+                    {advanceTurnLabel}
+                  </button>
+                </div>
               </div>
             </div>
           ) : (
@@ -2639,9 +3400,8 @@ export default function Board({
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
                 {getVehicleTypeIcon(pendingVehiclePurchaseCard.type)}{" "}
-                {getVehicleTypeLabel(pendingVehiclePurchaseCard.type)} • x
-                {pendingVehiclePurchaseCard.vehicleCount} • 👥{" "}
-                {pendingVehiclePurchaseCard.totalPassengerCapacity.toLocaleString()} •{" "}
+                {getVehicleTypeLabel(pendingVehiclePurchaseCard.type)} • 👥{" "}
+                {pendingVehiclePurchaseCard.totalPassengerCapacity.toLocaleString()} seats •{" "}
                 {pendingVehiclePurchaseCard.speed}mph
               </div>
             </div>
@@ -2652,10 +3412,50 @@ export default function Board({
                 : nextPlayer?.name ?? "the next player"}
               .
             </div>
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+                color: "#324236",
+                fontSize: 13,
+              }}
+            >
+              <span>
+                Quantity (max {pendingVehiclePurchaseMaxQuantity} for this{" "}
+                {getVehiclePurchaseLabel(pendingVehiclePurchaseCard.type, 1)})
+              </span>
+              <select
+                value={pendingVehiclePurchaseQuantity}
+                onChange={event => setPendingVehiclePurchaseQuantity(Number(event.target.value))}
+                style={{
+                  minWidth: 96,
+                  padding: "6px 8px",
+                  borderRadius: 8,
+                  border: "1px solid #c7d0c4",
+                  background: "#ffffff",
+                }}
+              >
+                {Array.from({ length: pendingVehiclePurchaseMaxQuantity }, (_, index) => index + 1).map(
+                  quantity => (
+                    <option key={quantity} value={quantity}>
+                      {quantity}
+                    </option>
+                  ),
+                )}
+              </select>
+            </label>
+            <div style={{ color: "#56635a", fontSize: 13 }}>
+              Total cost: <strong>{formatCurrency(pendingVehiclePurchaseTotalCost)}</strong>
+            </div>
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
               <button
                 type="button"
-                onClick={() => setPendingVehiclePurchaseCardId(null)}
+                onClick={() => {
+                  setPendingVehiclePurchaseCardId(null)
+                  setPendingVehiclePurchaseQuantity(1)
+                }}
                 style={{
                   padding: "8px 12px",
                   borderRadius: 999,
@@ -2686,7 +3486,7 @@ export default function Board({
         </div>
       )}
       {isEconomicsOpen && (
-        <div style={RESOURCE_MARKET_PANEL_STYLE}>
+        <div style={resourceMarketPanelStyle}>
           <strong>Economics</strong>
           <div style={{ color: "#56635a" }}>
             Route pricing, operating costs, fuel pricing, and infrastructure costs for the current month.
@@ -2848,7 +3648,7 @@ export default function Board({
       {isWikiOpen && (
         <div
           style={{
-            ...RESOURCE_MARKET_PANEL_STYLE,
+            ...resourceMarketPanelStyle,
           }}
         >
           <strong>Game wiki</strong>
@@ -2900,13 +3700,16 @@ export default function Board({
             >
               <strong>How to play</strong>
               <div style={{ color: "#324236", fontSize: 13 }}>
-                1. <strong>Purchase Equipment</strong>: buy 1 vehicle card on your turn from the first 4 cards.
+                1. <strong>Purchase Equipment</strong>: make 1 vehicle purchase on your turn, either from the face-up market lineup or from a vehicle model you already own, buying up to 6 buses, 3 trains, or 1 plane.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
-                If nobody buys a card during the month, the most expensive visible card is discarded before the next phase.
+                At month end, each vehicle deck with no purchases discards its lowest-number remaining card before the next phase.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
                 2. <strong>Claim Routes</strong>: select cities and claim a bus, air, or rail connection.
+              </div>
+              <div style={{ color: "#324236", fontSize: 13 }}>
+                At month end, each route deck with no claims discards its right-most face-up card before bureaucracy.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
                 Your first successful route establishes your network. Every later claim must touch that
@@ -3109,9 +3912,8 @@ export default function Board({
                     </div>
                     <div style={{ color: "#223024", fontWeight: 600 }}>{card.name}</div>
                     <div style={{ color: "#324236", fontSize: 13 }}>
-                      {getVehicleTypeIcon(card.type)} x{card.vehicleCount} • 👤{" "}
-                      {card.capacityPerVehicle.toLocaleString()} • 👥{" "}
-                      {card.totalPassengerCapacity.toLocaleString()} • {card.speed}mph • ⚙️
+                      {getVehicleTypeIcon(card.type)} 👥{" "}
+                      {card.totalPassengerCapacity.toLocaleString()} seats • {card.speed}mph • ⚙️
                       {card.operatingCostMultiplier}
                     </div>
                     <div style={{ color: "#56635a", fontSize: 12 }}>{card.funFact}</div>
@@ -3185,7 +3987,7 @@ export default function Board({
         </div>
       )}
       {isResourceMarketOpen && (
-        <div style={RESOURCE_MARKET_PANEL_STYLE}>
+        <div style={resourceMarketPanelStyle}>
           <strong>Resource market</strong>
           <div style={{ color: "#56635a" }}>
             Buy only fuel your fleet can use. Diesel can be bought 1 or 10 units at a time; jet fuel stays at 1.
@@ -3329,7 +4131,7 @@ export default function Board({
         </div>
       )}
       {isActionLogOpen && (
-        <div style={ACTION_LOG_PANEL_STYLE}>
+        <div style={actionLogPanelStyle}>
           <strong>Action log</strong>
           {game.actionLog.length === 0 ? (
             <div style={{ color: "#56635a", fontSize: 13 }}>No actions yet.</div>
@@ -3366,7 +4168,7 @@ export default function Board({
           )}
         </div>
       )}
-      <div style={TABLE_ZONE_STYLE}>
+      <div style={tableZoneStyle}>
         <div style={TABLE_LANE_STYLE}>
           <div
             style={{
@@ -3392,15 +4194,18 @@ export default function Board({
               </div>
               {game.currentPhase === "purchase-equipment" && (
                 <div style={{ color: "#56635a", fontSize: 12 }}>
-                  Remaining deck: {remainingVehicleCardCount} card
-                  {remainingVehicleCardCount === 1 ? "" : "s"}. If nobody buys this month, the most
-                  expensive visible card is burned.
+                  {currentPlayerVehicleTotals
+                    ? `Owned vehicles: ${currentPlayerVehicleTotals}.`
+                    : "No owned vehicle models yet."}
+                  {" "}
+                  Remaining deck: {remainingVehicleCardCount} card{remainingVehicleCardCount === 1 ? "" : "s"}.
+                  If nobody buys this month, the most expensive visible card is burned.
                 </div>
               )}
             </div>
-            <div style={{ color: "#56635a", fontSize: 13 }}>
+              <div style={{ color: "#56635a", fontSize: 13 }}>
               {game.currentPhase === "purchase-equipment"
-                ? "Pick from the face-up market cards."
+                ? "Your current vehicle models appear first in one row, followed by market purchase options."
                 : game.currentPhase === "claim-routes"
                   ? "Lay out a route card, preview it on the board, then confirm."
                   : "The board stays clear while reference panels open over it."}
@@ -3411,114 +4216,68 @@ export default function Board({
                 <div
                   style={{
                     flex: 1,
-                  minHeight: 0,
-                  display: "flex",
-                  gap: 8,
-                  overflowY: "auto",
-                  overflowX: "auto",
-                  paddingRight: 2,
-                }}
-              >
-                {visibleVehicleCards.map(card => {
-                  const canBuy =
-                    game.currentPhase === "purchase-equipment" &&
-                    !game.hasPurchasedVehicleThisTurn &&
-                    (currentPlayer?.money ?? 0) >= card.purchasePrice
-
-                  return (
-                    <div
-                      key={card.id}
-                        style={{
-                          border: "1px solid #d8dfd5",
-                          borderRadius: 14,
-                          padding: 10,
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 4,
-                          background: "#ffffff",
-                          boxShadow: "0 4px 12px rgba(0, 0, 0, 0.06)",
-                          fontSize: 12,
-                        }}
-                      >
-                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                        <strong>
-                          #{card.number} {getVehicleTypeIcon(card.type)} {getVehicleTypeLabel(card.type)}
-                        </strong>
-                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                          <span style={{ fontSize: 12 }}>{formatCurrency(card.purchasePrice)}</span>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setRevealedVehicleFunFactCardId(current =>
-                                current === card.id ? null : card.id,
-                              )
-                            }
-                            style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              width: 20,
-                              height: 20,
-                              borderRadius: "50%",
-                              border: "1px solid #c7d0c4",
-                              background: "#ffffff",
-                              color: "#56635a",
-                              fontSize: 12,
-                              fontWeight: 700,
-                              cursor: "pointer",
-                              padding: 0,
-                              flexShrink: 0,
-                            }}
-                            aria-label={`Toggle fun fact for ${card.name}`}
-                            title="Show fun fact"
-                          >
-                            ?
-                          </button>
-                        </div>
-                      </div>
-                      <div style={{ fontWeight: 700, color: "#223024", fontSize: 12 }}>{card.name}</div>
+                    minHeight: 0,
+                    display: "flex",
+                    alignItems: "stretch",
+                    gap: 8,
+                    overflowX: "auto",
+                    paddingRight: 2,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "stretch",
+                      gap: 8,
+                      flexShrink: 0,
+                    }}
+                  >
+                    {currentPlayerOwnedVehicleCards.length === 0 ? (
                       <div
                         style={{
-                          display: "flex",
-                          flexWrap: "wrap",
-                          gap: "3px 8px",
-                          color: "#324236",
+                          border: "1px dashed #d8dfd5",
+                          borderRadius: 14,
+                          padding: 12,
+                          background: "#fafcf9",
+                          color: "#848484",
                           fontSize: 12,
                         }}
                       >
-                        <span>x{card.vehicleCount}</span>
-                        <span>👤 {card.capacityPerVehicle.toLocaleString()}</span>
-                        <span>👥 {card.totalPassengerCapacity.toLocaleString()}</span>
-                        <span>{card.speed}mph</span>
-                        <span>⚙️{card.operatingCostMultiplier}</span>
+                        You do not own any vehicle models yet.
                       </div>
-                      {revealedVehicleFunFactCardId === card.id && (
-                        <div style={{ color: "#56635a", fontSize: 11 }}>
-                          {card.funFact}
-                        </div>
-                      )}
-                      <button
-                        type="button"
-                        disabled={!canBuy}
-                        onClick={() => handleBuyVehicleCardClick(card.id)}
+                    ) : (
+                      currentPlayerOwnedVehicleCards.map(card => renderVehiclePurchaseCard(card, "owned"))
+                    )}
+                  </div>
+                  <div
+                    style={{
+                      borderLeft: "1px solid #d8dfd5",
+                      paddingLeft: 10,
+                      display: "flex",
+                      alignItems: "stretch",
+                      gap: 8,
+                      flexShrink: 0,
+                    }}
+                  >
+                    {visibleVehicleCards.length === 0 ? (
+                      <div
                         style={{
-                          marginTop: "auto",
-                          padding: "6px 10px",
-                          borderRadius: 999,
-                          border: "1px solid #c7d0c4",
-                          cursor: canBuy ? "pointer" : "not-allowed",
-                          background: canBuy ? "#ffffff" : "#f2f2f2",
-                          fontWeight: 700,
+                          border: "1px dashed #d8dfd5",
+                          borderRadius: 14,
+                          padding: 12,
+                          background: "#fafcf9",
+                          color: "#848484",
                           fontSize: 12,
                         }}
                       >
-                        Buy card
-                      </button>
-                    </div>
-                  )
-                })}
-              </div>
-            </>
+                        No face-up market cards are available right now.
+                      </div>
+                    ) : (
+                      visibleVehicleCards.map(card => renderVehiclePurchaseCard(card, "market"))
+                    )}
+                  </div>
+                </div>
+              </>
           ) : game.currentPhase === "claim-routes" ? (
             <>
               {routeCardsByMode.every(({ totalCount }) => totalCount === 0) ? (
@@ -3574,7 +4333,7 @@ export default function Board({
                                 fontSize: 12,
                               }}
                             >
-                            No face-up cards left in this deck.
+                            No face-up cards are available in this deck right now.
                           </div>
                         )}
                         {cards.map(card => {
@@ -3717,6 +4476,9 @@ export default function Board({
                   <div>
                     {MODE_LABELS[selectedClaimPreview.mode]} • {formatDecimal(selectedClaimPreview.totalDistanceMiles)} mi
                     {" • "}Demand {selectedClaimPreview.combinedDemand}
+                    {" • "}Fleet {selectedClaimPreview.plannedFleetSize}
+                    {selectedClaimPreview.plannedFleetSize < selectedClaimPreview.demandFleetSize &&
+                      ` / ${selectedClaimPreview.demandFleetSize} needed`}
                     {" • "}Capacity {selectedClaimPreview.passengersPerTrip.toLocaleString()} / trip
                   </div>
                   {selectedClaimPreview.previewCard && (
@@ -3879,7 +4641,7 @@ export default function Board({
                       color: "#56635a",
                     }}
                   >
-                    Pick any visible vehicle card on the table to open its confirmation.
+                    Pick any vehicle model shown on the table to open its confirmation.
                   </div>
                 )}
               </div>
@@ -3900,7 +4662,21 @@ export default function Board({
             </>
           )}
         </div>
+        {areResizeHandlesVisible && (
+          <div
+            onMouseDown={event => beginResize("table-preview", event, tablePreviewWidth)}
+            style={getResizeHandleStyle("table-preview")}
+            title="Resize table preview"
+          />
+        )}
       </div>
+      {areResizeHandlesVisible && (
+        <div
+          onMouseDown={event => beginResize("table-height", event, tableZoneHeight)}
+          style={getResizeHandleStyle("table-height")}
+          title="Resize table tray height"
+        />
+      )}
     </div>
   )
 }
