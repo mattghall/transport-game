@@ -295,6 +295,22 @@ function colorWithOpacity(color: string, opacity: number) {
   return color
 }
 
+function buildSegmentPath(
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  curve?: { x?: number; y?: number },
+) {
+  if (!curve?.x && !curve?.y) {
+    return `M ${a.x} ${a.y} L ${b.x} ${b.y}`
+  }
+
+  const midpointX = (a.x + b.x) / 2
+  const midpointY = (a.y + b.y) / 2
+  const segmentLength = Math.hypot(b.x - a.x, b.y - a.y)
+
+  return `M ${a.x} ${a.y} Q ${midpointX + segmentLength * (curve.x ?? 0)} ${midpointY - segmentLength * (curve.y ?? 0)} ${b.x} ${b.y}`
+}
+
 function getDiePipPositions(value: number) {
   switch (value) {
     case 1:
@@ -847,6 +863,8 @@ export default function Board({
   const [isLiveStagePulseOn, setIsLiveStagePulseOn] = useState(false)
   const [isPeriodSummaryOpen, setIsPeriodSummaryOpen] = useState(false)
   const [lastShownPeriodSummaryKey, setLastShownPeriodSummaryKey] = useState<string | null>(null)
+  const [showCityNames, setShowCityNames] = useState(true)
+  const [showCitySizeBubbles, setShowCitySizeBubbles] = useState(false)
   const [statusMessage, setStatusMessage] = useState<string>(
     getPhaseStatusMessage(game.currentPhase),
   )
@@ -971,6 +989,42 @@ export default function Board({
   const cityMap: Record<string, GameState["cities"][number]> = Object.fromEntries(
     game.cities.map(c => [c.id, c]),
   )
+  const adjacentRouteSegments = useMemo(() => {
+    const seenPairs = new Set<string>()
+
+    return game.cities.flatMap(city =>
+      (city.adjacentCities ?? []).flatMap(adjacentCity => {
+        const targetCity = cityMap[adjacentCity.id]
+
+        if (!targetCity) {
+          return []
+        }
+
+        const pairKey = [city.id, targetCity.id].sort().join("|")
+
+        if (seenPairs.has(pairKey)) {
+          return []
+        }
+
+        seenPairs.add(pairKey)
+        const reverseConnection = targetCity.adjacentCities?.find(candidate => candidate.id === city.id)
+
+        return [
+          {
+            id: pairKey,
+            cityA: city,
+            cityB: targetCity,
+            distance: adjacentCity.distance,
+            curve: adjacentCity.curve ?? reverseConnection?.curve,
+            allowRail:
+              adjacentCity.allowRail ??
+              reverseConnection?.allowRail ??
+              true,
+          },
+        ]
+      }),
+    )
+  }, [cityMap, game.cities])
   const playerMap: Record<string, GameState["players"][number]> = Object.fromEntries(
     game.players.map(player => [player.id, player]),
   )
@@ -1025,13 +1079,57 @@ export default function Board({
 
     return cardVisibleCityIds
   }, [game, routeCardMap, selectedCityIds])
-  const expandedCities = useMemo(
-    () => game.cities.filter(city => expandedCityIds.has(city.id)),
-    [expandedCityIds, game.cities],
-  )
+  const visibleCities = useMemo(() => {
+    const kept: Array<GameState["cities"][number] & { markerRadius: number; x: number; y: number }> = []
+
+    const orderedCities = [...game.cities].sort((a, b) => {
+      if (b.size !== a.size) {
+        return b.size - a.size
+      }
+
+      return a.name.localeCompare(b.name)
+    })
+
+    for (const city of orderedCities) {
+      const { x, y } = latLngToWorld(city)
+      const isExpanded = expandedCityIds.has(city.id)
+      const markerRadius = showCitySizeBubbles || isExpanded ? city.size * 2.5 : CITY_DOT_RADIUS
+      const overlapsExisting = kept.some(other => {
+        const dx = other.x - x
+        const dy = other.y - y
+        return Math.hypot(dx, dy) < other.markerRadius + markerRadius + 1
+      })
+
+      if (!overlapsExisting) {
+        kept.push({ ...city, markerRadius, x, y })
+      }
+    }
+
+    return kept.sort((a, b) => {
+      if (a.size !== b.size) {
+        return a.size - b.size
+      }
+
+      return a.name.localeCompare(b.name)
+    })
+  }, [expandedCityIds, game.cities, showCitySizeBubbles])
   const labels = useMemo(
-    () => computeLabels(expandedCities, zoomScale),
-    [expandedCities, zoomScale],
+    () =>
+      showCityNames
+        ? computeLabels(
+            visibleCities.map(city => {
+              const isExpanded = expandedCityIds.has(city.id)
+              const labelRadius = showCitySizeBubbles || isExpanded ? city.size * 2.5 : CITY_DOT_RADIUS
+
+              return {
+                ...city,
+                labelRadius,
+              }
+            }),
+            zoomScale,
+          )
+        : [],
+    [expandedCityIds, showCityNames, showCitySizeBubbles, visibleCities, zoomScale],
   )
   const labelMap = Object.fromEntries(
     labels.map(l => [l.cityId, l]),
@@ -2481,6 +2579,35 @@ export default function Board({
               opacity={MAP_OUTLINE_STYLE.opacity}
             />
 
+            {adjacentRouteSegments.map(segment => {
+              const a = latLngToWorld(segment.cityA)
+              const b = latLngToWorld(segment.cityB)
+              const d = buildSegmentPath(a, b, segment.curve)
+
+              return (
+                <g key={segment.id}>
+                  <path
+                    d={d}
+                    stroke="rgba(221, 155, 87, 0.42)"
+                    strokeWidth={2}
+                    fill="none"
+                    strokeLinecap="round"
+                    strokeDasharray={segment.allowRail ? undefined : "10 7"}
+                    opacity={0.9}
+                  />
+                  <path
+                    d={d}
+                    stroke="rgba(255, 221, 177, 0.72)"
+                    strokeWidth={0.9}
+                    fill="none"
+                    strokeLinecap="round"
+                    strokeDasharray={segment.allowRail ? "8 8" : "3 9"}
+                    opacity={0.85}
+                  />
+                </g>
+              )
+            })}
+
             {game.routes.map(route => {
               const aCity = cityMap[route.cityA]
               const bCity = cityMap[route.cityB]
@@ -2543,53 +2670,19 @@ export default function Board({
               />
             )}
 
-            {expandedCities.map(city => {
-              const { x, y } = latLngToWorld(city)
-              const label = labelMap[city.id]
-
-              if (!label) {
-                return null
-              }
-
-              const dx = label.connectorX - x
-              const dy = label.connectorY - y
-              const connectorLength = Math.sqrt(dx * dx + dy * dy)
-              const radius = city.size * 2.5
-
-              if (connectorLength <= radius + 8) {
-                return null
-              }
-
-              const unitX = dx / connectorLength
-              const unitY = dy / connectorLength
-
-              return (
-                <line
-                  key={`${city.id}-label-connector`}
-                  x1={x + unitX * (radius + 1)}
-                  y1={y + unitY * (radius + 1)}
-                  x2={label.connectorX}
-                  y2={label.connectorY}
-                  stroke="rgba(34, 48, 36, 0.28)"
-                  strokeWidth={1.25}
-                  strokeLinecap="round"
-                  pointerEvents="none"
-                />
-              )
-            })}
-
-            {game.cities.map(city => {
+            {visibleCities.map(city => {
               const { x, y } = latLngToWorld(city)
               const isExpanded = expandedCityIds.has(city.id)
-              const radius = isExpanded ? city.size * 2.5 : CITY_DOT_RADIUS
-              const label = isExpanded ? labelMap[city.id] : undefined
+              const usesBubbleRadius = showCitySizeBubbles || isExpanded
+              const radius = usesBubbleRadius ? city.size * 2.5 : CITY_DOT_RADIUS
+              const label = labelMap[city.id]
               const isSelected = selectedCityIds.includes(city.id)
               const fill = isSelected
                 ? currentPlayer?.color ?? "#ffffff"
-                : isExpanded
+                : usesBubbleRadius
                   ? "#ffffff"
                   : "rgba(34, 48, 36, 0.7)"
-              const stroke = isExpanded
+              const stroke = usesBubbleRadius
                 ? "#000000"
                 : "rgba(244, 241, 232, 0.75)"
               const shouldShowDemandTokens = currentPlayerConnectedCityIds.has(city.id)
@@ -2613,20 +2706,20 @@ export default function Board({
                     fill={fill}
                     stroke={stroke}
                     strokeWidth={
-                      isSelected ? 2.5 : isExpanded ? 1.5 : 1
+                      isSelected ? 2.5 : usesBubbleRadius ? 1.5 : 1
                     }
                   />
 
-                  {isExpanded && label && (
+                  {label && (
                     <text
                       x={label.textX}
                       y={label.textY}
-                      fontSize={12}
+                      fontSize={usesBubbleRadius ? 12 : 10}
                       textAnchor={label.textAnchor}
                       dominantBaseline="middle"
                       fill="#223024"
                       stroke="rgba(244, 241, 232, 0.95)"
-                      strokeWidth={4}
+                      strokeWidth={usesBubbleRadius ? 4 : 3.2}
                       strokeLinejoin="round"
                       paintOrder="stroke"
                       pointerEvents="none"
@@ -2644,6 +2737,50 @@ export default function Board({
         </div>
         <div style={BOTTOM_BAR_STYLE}>
           <div style={{ display: "grid", gap: 6 }}>
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "8px 10px",
+                borderRadius: 10,
+                border: "1px solid #c7d0c4",
+                background: "#ffffff",
+                color: "#324236",
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={showCityNames}
+                onChange={event => setShowCityNames(event.target.checked)}
+              />
+              <span>Show city names</span>
+            </label>
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "8px 10px",
+                borderRadius: 10,
+                border: "1px solid #c7d0c4",
+                background: "#ffffff",
+                color: "#324236",
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={showCitySizeBubbles}
+                onChange={event => setShowCitySizeBubbles(event.target.checked)}
+              />
+              <span>Show city size bubbles</span>
+            </label>
             <button
               type="button"
               onClick={() => {

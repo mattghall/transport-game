@@ -6,6 +6,8 @@ type City = {
   lat: number
   lng: number
   size: number
+  labelRadius?: number
+  labelSide?: "right" | "left" | "top" | "bottom"
 }
 
 type Label = {
@@ -44,81 +46,12 @@ type Candidate = {
   distance: number
 }
 
-const ALL_DIRECTIONS: CandidateDirection[] = [
-  "east",
-  "west",
-  "north",
-  "south",
-  "northEast",
-  "northWest",
-  "southEast",
-  "southWest",
-]
-
 function estimateLabelWidth(name: string) {
   return name.length * CHAR_WIDTH + LABEL_PADDING_X * 2
 }
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(value, max))
-}
-
-function uniqueDirections(directions: CandidateDirection[]) {
-  return directions.filter(
-    (direction, index) => directions.indexOf(direction) === index,
-  )
-}
-
-function getPreferredDirections(base: { x: number; y: number }): CandidateDirection[] {
-  const edgeDistances = [
-    { edge: "west", distance: base.x },
-    { edge: "east", distance: WORLD_WIDTH - base.x },
-    { edge: "north", distance: base.y },
-    { edge: "south", distance: WORLD_HEIGHT - base.y },
-  ].sort((a, b) => a.distance - b.distance)
-
-  const [primaryEdge, secondaryEdge] = edgeDistances
-
-  switch (primaryEdge.edge) {
-    case "west":
-      return uniqueDirections([
-        "west",
-        "northWest",
-        "southWest",
-        "north",
-        "south",
-        ...ALL_DIRECTIONS,
-      ])
-    case "east":
-      return uniqueDirections([
-        "east",
-        "northEast",
-        "southEast",
-        "north",
-        "south",
-        ...ALL_DIRECTIONS,
-      ])
-    case "north":
-      return uniqueDirections([
-        "north",
-        secondaryEdge.edge === "west" ? "northWest" : "northEast",
-        secondaryEdge.edge === "west" ? "west" : "east",
-        secondaryEdge.edge === "west" ? "northEast" : "northWest",
-        secondaryEdge.edge === "west" ? "east" : "west",
-        ...ALL_DIRECTIONS,
-      ])
-    case "south":
-      return uniqueDirections([
-        "south",
-        secondaryEdge.edge === "west" ? "southWest" : "southEast",
-        secondaryEdge.edge === "west" ? "west" : "east",
-        secondaryEdge.edge === "west" ? "southEast" : "southWest",
-        secondaryEdge.edge === "west" ? "east" : "west",
-        ...ALL_DIRECTIONS,
-      ])
-  }
-
-  return ALL_DIRECTIONS
 }
 
 function measureOverflow(label: Label) {
@@ -271,29 +204,53 @@ function intersects(a: Label, b: Label) {
 
 export function computeLabels(cities: City[], zoomScale = 1): Label[] {
   const labels: Label[] = []
-  const spreadFactor = 1 + Math.max(0, zoomScale - 1) * 0.45
+  const spreadFactor = Math.max(
+    0.45,
+    1 / (1 + Math.max(0, zoomScale - 1) * 0.6),
+  )
 
-  // city collision shapes
   const circles = cities.map(city => {
     const p = latLngToWorld(city)
     return {
       cityId: city.id,
       x: p.x,
       y: p.y,
-      r: city.size * 2.5,
+      r: city.labelRadius ?? city.size * 2.5,
     }
   })
+
+  const getPreferredDirection = (city: City): CandidateDirection => {
+    switch (city.labelSide) {
+      case "left":
+        return "west"
+      case "top":
+        return "north"
+      case "bottom":
+        return "south"
+      case "right":
+      default:
+        return "east"
+    }
+  }
 
   const getPenalty = (
     city: City,
     label: Label,
-    directionRank: number,
+    directionRank: number
   ) => {
     let penalty = measureOverflow(label) * 100
-    const distanceWeight = city.size <= 2 ? 24 : city.size <= 4 ? 16 : 10
-    const directionPenalty = directionRank * 40
+    const labelRadius = city.labelRadius ?? city.size * 2.5
+    const distanceWeight =
+      labelRadius <= CITY_CLEARANCE
+        ? 120
+        : city.size <= 2
+          ? 40
+          : city.size <= 4
+            ? 28
+            : 18
+    const directionPenalty = directionRank * 80
 
-    penalty += Math.max(0, label.distance - (city.size * 2.5 + 4)) * distanceWeight
+    penalty += Math.max(0, label.distance - (labelRadius + 3)) * distanceWeight
     penalty += directionPenalty
 
     for (const c of circles) {
@@ -325,46 +282,42 @@ export function computeLabels(cities: City[], zoomScale = 1): Label[] {
 
   for (const city of orderedCities) {
     const base = latLngToWorld(city)
-    const directions = getPreferredDirections(base)
-    const startDistance = (city.size * 2.5 + 4) * spreadFactor
-    const distanceSteps = city.size <= 2
-      ? [
-          startDistance,
-          startDistance + 6 * spreadFactor,
-          startDistance + 12 * spreadFactor,
-          startDistance + 18 * spreadFactor,
-          startDistance + 26 * spreadFactor,
-        ]
-      : [
-          startDistance,
-          startDistance + 8 * spreadFactor,
-          startDistance + 16 * spreadFactor,
-          startDistance + 26 * spreadFactor,
-          startDistance + 38 * spreadFactor,
-        ]
+    const direction = getPreferredDirection(city)
+    const labelRadius = city.labelRadius ?? city.size * 2.5
+    const startDistance = (labelRadius + 3) * spreadFactor
+    const distanceSteps =
+      labelRadius <= CITY_CLEARANCE
+        ? [
+            startDistance,
+            startDistance + 2 * spreadFactor,
+            startDistance + 4 * spreadFactor,
+            startDistance + 7 * spreadFactor,
+            startDistance + 11 * spreadFactor,
+          ]
+        : [
+            startDistance,
+            startDistance + 4 * spreadFactor,
+            startDistance + 8 * spreadFactor,
+            startDistance + 12 * spreadFactor,
+            startDistance + 18 * spreadFactor,
+          ]
 
     let bestLabel: Label | undefined
     let bestPenalty = Number.POSITIVE_INFINITY
 
     for (const distance of distanceSteps) {
-      for (const [directionRank, direction] of directions.entries()) {
-        const label = createLabel(city, base, { direction, distance })
-        const penalty = getPenalty(city, label, directionRank)
+      const label = createLabel(city, base, { direction, distance })
+      const penalty = getPenalty(city, label, 0)
 
-        if (penalty < bestPenalty) {
-          bestPenalty = penalty
-          bestLabel = label
-        }
-
-        if (penalty === 0) {
-          labels.push(label)
-          bestLabel = undefined
-          bestPenalty = 0
-          break
-        }
+      if (penalty < bestPenalty) {
+        bestPenalty = penalty
+        bestLabel = label
       }
 
-      if (bestPenalty === 0) {
+      if (penalty === 0) {
+        labels.push(label)
+        bestLabel = undefined
+        bestPenalty = 0
         break
       }
     }

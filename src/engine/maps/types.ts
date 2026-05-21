@@ -1,3 +1,17 @@
+export type ConnectionCurve = {
+  x?: number
+  y?: number
+}
+
+export type LabelSide = "right" | "left" | "top" | "bottom"
+
+export type AdjacentCity = {
+  id: string
+  distance: number
+  allowRail?: boolean
+  curve?: ConnectionCurve
+}
+
 export type City = {
   id: string
   name: string
@@ -6,6 +20,8 @@ export type City = {
   size: number
   population: number
   region?: string[]
+  labelSide?: LabelSide
+  adjacentCities?: AdjacentCity[]
 }
 
 export type GameMap = {

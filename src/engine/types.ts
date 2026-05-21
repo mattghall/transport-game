@@ -1,4 +1,4 @@
-import type { GameMap } from "./maps/types"
+import type { AdjacentCity, GameMap } from "./maps/types"
 
 export type PlayerInventory = {
   vehicles: {
@@ -125,6 +125,8 @@ export type City = {
   size: number
   population: number
   region?: string[]
+  labelSide?: "right" | "left" | "top" | "bottom"
+  adjacentCities?: AdjacentCity[]
 }
 
 export type Route = {
