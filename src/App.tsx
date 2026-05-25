@@ -7,6 +7,8 @@ import {
   buyResource,
   buyVehicleCard,
   claimRoute,
+  drawCityOffer,
+  setActiveCityOfferKeptCityIds,
   setBureaucracyServiceCities,
   setBureaucracyRouteVehicleCard,
   upgradeRailRoute,
@@ -87,26 +89,10 @@ function getPhaseDiscardLogMessage(previousGame: GameState, nextGame: GameState)
           .filter((card): card is NonNullable<typeof card> => card !== null)
           .sort((cardA, cardB) => cardA.type.localeCompare(cardB.type) || cardA.number - cardB.number)
       : []
-  const burnedRouteCards =
-    previousGame.currentPhase === "claim-routes" &&
-    nextGame.currentPhase === "bureaucracy"
-      ? (["bus", "rail", "air"] as const)
-          .flatMap(mode =>
-            previousGame.routeMarketCardIdsByMode[mode]
-              .filter(cardId => !nextGame.routeMarketCardIdsByMode[mode].includes(cardId))
-              .map(cardId => previousGame.routeCatalog.find(card => card.id === cardId) ?? null)
-              .filter((card): card is NonNullable<typeof card> => card !== null),
-          )
-          .sort((cardA, cardB) => cardA.mode.localeCompare(cardB.mode) || cardA.title.localeCompare(cardB.title))
-      : []
   const messages = [
     ...burnedVehicleCards.map(
       card =>
         `removed vehicle #${card.number} ${card.name} from the ${card.type} deck because nobody bought a ${card.type === "air" ? "plane" : card.type} this month`,
-    ),
-    ...burnedRouteCards.map(
-      card =>
-        `removed route ${card.title} from the ${card.mode} deck because nobody claimed a ${card.mode} route this month`,
     ),
   ]
 
@@ -125,7 +111,6 @@ export default function App() {
       players: DEFAULT_PLAYERS,
       vehicleCards: initialUserDecks.vehicleCards,
       chanceCards: initialUserDecks.chanceCards,
-      routeCards: initialUserDecks.routeCards,
       startingMoney: DEFAULT_STARTING_MONEY,
     })
   })
@@ -229,12 +214,11 @@ export default function App() {
         players: normalizedPlayers,
         vehicleCards: userDecks.vehicleCards,
         chanceCards: userDecks.chanceCards,
-        routeCards: userDecks.routeCards,
         startingMoney,
       }),
     )
     setHasStarted(true)
-  }, [setupPlayers, startingMoney, userDecks.chanceCards, userDecks.routeCards, userDecks.vehicleCards])
+  }, [setupPlayers, startingMoney, userDecks.chanceCards, userDecks.vehicleCards])
 
   const commitGame = useCallback(
     (nextGame: typeof game) => {
@@ -245,17 +229,8 @@ export default function App() {
   )
 
   const handleClaimRouteAndAdvance = useCallback(
-    (routeCardId: string) => {
-      const routeCard = game.routeCatalog.find(card => card.id === routeCardId)
-
-      if (!routeCard) {
-        return {
-          ok: false as const,
-          error: "That route card could not be found.",
-        }
-      }
-
-      const claimResult = claimRoute(game, { routeCardId })
+    (mode: "bus" | "rail" | "air", cityIds: string[], segmentPairs?: Array<[string, string]>) => {
+      const claimResult = claimRoute(game, { mode, cityIds, segmentPairs })
 
       if (!claimResult.ok) {
         return claimResult
@@ -272,8 +247,26 @@ export default function App() {
       const claimedGame = appendActionLog(
         game,
         claimResult.game,
-        `claimed ${routeCard.title} (${routeCard.mode}) across ${routeLabel}${claimResult.connectionBonus > 0 ? ` and earned ${Math.round(claimResult.connectionBonus).toLocaleString()}` : ""}`,
+        `claimed a ${mode} route across ${routeLabel}${claimResult.connectionBonus > 0 ? ` and earned ${Math.round(claimResult.connectionBonus).toLocaleString()}` : ""}`,
       )
+
+      if (game.currentPhase === "bureaucracy") {
+        commitGame(claimedGame)
+
+        return {
+          ok: true as const,
+          routes: claimResult.routes,
+          cost: claimResult.cost,
+          connectionBonus: claimResult.connectionBonus,
+          newCityIds: claimResult.newCityIds,
+          nextPhase: claimedGame.currentPhase,
+          nextPlayerName:
+            claimedGame.players.find(player => player.id === claimedGame.currentPlayerId)?.name ??
+            claimedGame.currentPlayerId,
+          advancedPhase: false,
+        }
+      }
+
       const advancedGame = advanceTurn(claimedGame)
       const finalGame = appendActionLog(
         claimedGame,
@@ -301,6 +294,27 @@ export default function App() {
     [commitGame, game],
   )
 
+  const handleDrawCityOffer = useCallback(
+    (region: NonNullable<GameState["activeCityOffer"]>["region"]) => {
+      const result = drawCityOffer(game, region)
+
+      if (!result.ok) {
+        return result
+      }
+
+      commitGame(
+        appendActionLog(
+          game,
+          result.game,
+          `drew ${result.cityIds.length} city cards from the ${region} deck`,
+        ),
+      )
+
+      return result
+    },
+    [commitGame, game],
+  )
+
   const handleAdvanceTurn = useCallback(() => {
     const nextGame = advanceTurn(game)
     const message = getAdvanceTurnLogMessage(game, nextGame)
@@ -310,6 +324,19 @@ export default function App() {
       : message
     commitGame(appendActionLog(game, nextGame, fullMessage))
   }, [commitGame, game])
+
+  const handleSetActiveCityOfferKeptCityIds = useCallback(
+    (cityIds: string[]) => {
+      const result = setActiveCityOfferKeptCityIds(game, cityIds)
+
+      if (result.ok) {
+        commitGame(result.game)
+      }
+
+      return result
+    },
+    [commitGame, game],
+  )
 
   const handleBuyResource = useCallback(
     (resource: PurchasableResource, quantity: number) => {
@@ -482,12 +509,13 @@ export default function App() {
           onStartGame={handleStartGame}
           userDecks={userDecks}
           onUserDecksChange={setUserDecks}
-          availableCities={usMap.cities}
         />
       ) : (
       <Board
         game={game}
         onClaimRoute={handleClaimRouteAndAdvance}
+        onDrawCityOffer={handleDrawCityOffer}
+        onSetActiveCityOfferKeptCityIds={handleSetActiveCityOfferKeptCityIds}
         onBuyResource={handleBuyResource}
         onBuyVehicleCard={handleBuyVehicleCardAndAdvance}
         onUpgradeRailRoute={handleUpgradeRailRoute}

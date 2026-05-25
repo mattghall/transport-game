@@ -46,6 +46,10 @@ export function getCityDemandSize(game: GameState, city: City) {
   return city.size + (activeChanceCard?.demandBoost?.bonusPerCity ?? 0)
 }
 
+export function getCityDemandAbsorptionSize(game: GameState, city: City) {
+  return Math.max(0, getCityDemandSize(game, city)) + 1
+}
+
 export function getCombinedDemandForCityIds(game: GameState, cityIds: string[]) {
   return cityIds.reduce((total, cityId) => {
     const city = game.cities.find(candidate => candidate.id === cityId)

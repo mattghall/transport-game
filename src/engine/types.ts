@@ -18,6 +18,15 @@ export type FuelBurnUnit = "gallons" | "pounds"
 export type RailTraction = "diesel" | "electric"
 export type VehiclePurchasesByType = Record<VehicleType, boolean>
 export type RouteClaimsByMode = Record<RouteMode, boolean>
+export const CITY_DECK_REGIONS = [
+  "Pacific",
+  "Mountain",
+  "South",
+  "Southeast",
+  "Midwest",
+  "Northeast",
+] as const
+export type CityDeckRegion = (typeof CITY_DECK_REGIONS)[number]
 
 export type ChanceDemandBoost = {
   regions: string[]
@@ -66,6 +75,12 @@ export type UserDeckData = {
 }
 
 export type RouteMarketByMode = Record<RouteMode, string[]>
+export type CityDecksByRegion = Record<CityDeckRegion, string[]>
+export type ActiveCityOffer = {
+  region: CityDeckRegion
+  cityIds: string[]
+  keptCityIds: string[]
+}
 
 export type OperatingConfig = {
   hoursPerDay: number
@@ -105,6 +120,7 @@ export type Player = {
   operatingCosts: number
   weeklyPayout: number
   lastPeriodPassengersServed: number
+  ownedCityCardIds: string[]
 }
 
 export type RouteMode = "rail" | "air" | "bus"
@@ -169,6 +185,8 @@ export type GameState = {
   vehicleMarketCardIds: string[]
   routeCatalog: RouteDeckCard[]
   routeMarketCardIdsByMode: RouteMarketByMode
+  cityDeckCardIdsByRegion: CityDecksByRegion
+  activeCityOffer: ActiveCityOffer | null
   hasPurchasedVehicleThisTurn: boolean
   hasPurchasedVehicleThisPhase: boolean
   purchasedVehicleTypesThisPhase: VehiclePurchasesByType

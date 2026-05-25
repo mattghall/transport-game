@@ -1,73 +1,33 @@
-# React + TypeScript + Vite
+# Matt's Transport Game
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Browser-based board game inspired by **Ticket to Ride** and **Power Grid**. The app uses a React + TypeScript UI with a deterministic engine layer for map, route, economy, and operating rules.
 
-Currently, two official plugins are available:
+## Demand cube rules
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+City size now affects **generation** and **absorption** differently:
 
-## React Compiler
+- A city generates outbound cubes equal to its `size`.
+- A city can absorb inbound cubes equal to `size + 1`.
+- A `size: 0` city generates no cubes, but it can still absorb **1** cube.
+- A `size: 1` city generates **1** cube and can absorb **2** cubes.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+This means demand transfer is no longer perfectly symmetric. Small cities can still act as sinks even when they do not create their own outbound demand.
 
-## Expanding the ESLint configuration
+## Board display
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+- Demand tokens render in stacks above each city.
+- Green cubes represent normal demand increments.
+- Yellow cylinders are reserved for very large demand totals and only appear once a city reaches higher capacity.
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+## Development
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Production build:
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm run build
 ```

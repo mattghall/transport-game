@@ -2,16 +2,11 @@ import { useMemo, useRef, useState, type ChangeEvent } from "react"
 import {
   coerceUserDecks,
   createEmptyChanceCard,
-  createEmptyRouteCard,
   createEmptyVehicleCard,
   createInitialUserDecks,
 } from "../data/deckData"
-import { calculateDistanceMiles } from "../engine/trips"
 import type {
   ChanceCard,
-  City,
-  RouteDeckCard,
-  RouteMode,
   UserDeckData,
   VehicleCard,
 } from "../engine/types"
@@ -28,23 +23,15 @@ type StartMenuProps = {
   onStartGame: () => void
   userDecks: UserDeckData
   onUserDecksChange: (nextUserDecks: UserDeckData) => void
-  availableCities: City[]
 }
 
-type StartMenuTab = "setup" | "vehicles" | "chance" | "routes"
+type StartMenuTab = "setup" | "vehicles" | "chance"
 
 const MAX_SETUP_PLAYERS = 4
 const TAB_LABELS: Record<StartMenuTab, string> = {
   setup: "Game setup",
   vehicles: "Vehicle deck",
   chance: "Chance deck",
-  routes: "Route decks",
-}
-const ROUTE_MODE_ORDER: RouteMode[] = ["bus", "rail", "air"]
-const ROUTE_MODE_LABELS: Record<RouteMode, string> = {
-  bus: "Bus",
-  rail: "Rail",
-  air: "Air",
 }
 const VEHICLE_FIELD_LABEL_STYLE = {
   fontSize: 12,
@@ -76,24 +63,11 @@ export default function StartMenu({
   onStartGame,
   userDecks,
   onUserDecksChange,
-  availableCities,
 }: StartMenuProps) {
   const [activeTab, setActiveTab] = useState<StartMenuTab>("setup")
   const [deckMessage, setDeckMessage] = useState("")
   const importInputRef = useRef<HTMLInputElement | null>(null)
 
-  const sortedCities = useMemo(
-    () => [...availableCities].sort((cityA, cityB) => cityA.name.localeCompare(cityB.name)),
-    [availableCities],
-  )
-  const cityNameById = useMemo(
-    () => Object.fromEntries(availableCities.map(city => [city.id, city.name])),
-    [availableCities],
-  )
-  const cityById = useMemo(
-    () => Object.fromEntries(availableCities.map(city => [city.id, city])),
-    [availableCities],
-  )
   const nextVehicleNumber = useMemo(
     () => userDecks.vehicleCards.reduce((highest, card) => Math.max(highest, card.number), 0) + 1,
     [userDecks.vehicleCards],
@@ -112,15 +86,6 @@ export default function StartMenu({
         .map(([key]) => key),
     )
   }, [userDecks.vehicleCards])
-  const routeCardsByMode = useMemo(
-    () =>
-      ROUTE_MODE_ORDER.map(mode => ({
-        mode,
-        cards: userDecks.routeCards.filter(card => card.mode === mode),
-      })),
-    [userDecks.routeCards],
-  )
-
   function setUserVehicleCards(nextVehicleCards: VehicleCard[]) {
     onUserDecksChange({
       ...userDecks,
@@ -132,13 +97,6 @@ export default function StartMenu({
     onUserDecksChange({
       ...userDecks,
       chanceCards: nextChanceCards,
-    })
-  }
-
-  function setUserRouteCards(nextRouteCards: RouteDeckCard[]) {
-    onUserDecksChange({
-      ...userDecks,
-      routeCards: nextRouteCards,
     })
   }
 
@@ -225,167 +183,6 @@ export default function StartMenu({
   function handleUpdateChanceCard(cardId: string, updater: (card: ChanceCard) => ChanceCard) {
     setUserChanceCards(
       userDecks.chanceCards.map(card => (card.id === cardId ? updater(card) : card)),
-    )
-  }
-
-  function handleUpdateRouteCard(cardId: string, updater: (card: RouteDeckCard) => RouteDeckCard) {
-    setUserRouteCards(
-      userDecks.routeCards.map(card => (card.id === cardId ? updater(card) : card)),
-    )
-  }
-
-  function moveRouteStop(card: RouteDeckCard, index: number, direction: -1 | 1) {
-    const nextIndex = index + direction
-
-    if (nextIndex < 0 || nextIndex >= card.cityIds.length) {
-      return
-    }
-
-    handleUpdateRouteCard(card.id, current => {
-      const nextCityIds = [...current.cityIds]
-      const [movedCityId] = nextCityIds.splice(index, 1)
-      nextCityIds.splice(nextIndex, 0, movedCityId)
-
-      return {
-        ...current,
-        cityIds: nextCityIds,
-      }
-    })
-  }
-
-  function getRouteCardDistance(card: RouteDeckCard) {
-    const totalSegmentDistance = card.cityIds.reduce((total, cityId, index) => {
-      if (index === 0) {
-        return total
-      }
-
-      const previousCity = cityById[card.cityIds[index - 1]]
-      const currentCity = cityById[cityId]
-
-      if (!previousCity || !currentCity) {
-        return total
-      }
-
-      return total + calculateDistanceMiles(previousCity, currentCity)
-    }, 0)
-    const closingLoopDistance =
-      card.isLoop && card.cityIds.length >= 2
-        ? (() => {
-            const firstCity = cityById[card.cityIds[0]]
-            const lastCity = cityById[card.cityIds[card.cityIds.length - 1]]
-
-            if (!firstCity || !lastCity) {
-              return 0
-            }
-
-            return calculateDistanceMiles(lastCity, firstCity)
-          })()
-        : 0
-
-    if (card.cityIds.length < 2) {
-      return 0
-    }
-
-    return card.isLoop
-      ? totalSegmentDistance + closingLoopDistance
-      : totalSegmentDistance * 2
-  }
-
-  function renderRouteShapePreview(card: RouteDeckCard) {
-    const previewCities = card.cityIds
-      .map(cityId => cityById[cityId])
-      .filter((city): city is City => city !== undefined)
-
-    if (previewCities.length < 2) {
-      return (
-        <div style={{ color: "#56635a", fontSize: 13 }}>
-          Add at least two stops to preview this route.
-        </div>
-      )
-    }
-
-    const previewWidth = 340
-    const previewHeight = 100
-    const previewPadding = 28
-    const lngValues = previewCities.map(city => city.lng)
-    const latValues = previewCities.map(city => city.lat)
-    const minLng = Math.min(...lngValues)
-    const maxLng = Math.max(...lngValues)
-    const minLat = Math.min(...latValues)
-    const maxLat = Math.max(...latValues)
-    const lngRange = Math.max(maxLng - minLng, 1)
-    const latRange = Math.max(maxLat - minLat, 1)
-    const drawableWidth = previewWidth - previewPadding * 2
-    const drawableHeight = previewHeight - previewPadding * 2
-    const scale = Math.min(drawableWidth / lngRange, drawableHeight / latRange)
-    const contentWidth = lngRange * scale
-    const contentHeight = latRange * scale
-    const xOffset = previewPadding + (drawableWidth - contentWidth) / 2
-    const yOffset = previewPadding + (drawableHeight - contentHeight) / 2
-    const previewPoints = previewCities.map(city => ({
-      city,
-      x: xOffset + (city.lng - minLng) * scale,
-      y: yOffset + (maxLat - city.lat) * scale,
-    }))
-    const polylinePoints = previewPoints.map(point => `${point.x},${point.y}`).join(" ")
-    const closedLoopPoints =
-      card.isLoop && previewPoints.length >= 2
-        ? `${polylinePoints} ${previewPoints[0].x},${previewPoints[0].y}`
-        : polylinePoints
-
-    return (
-      <div style={{ display: "grid", gap: 8 }}>
-        <svg
-          viewBox={`0 0 ${previewWidth} ${previewHeight}`}
-          style={{
-            width: "100%",
-            aspectRatio: `${previewWidth} / ${previewHeight}`,
-            borderRadius: 10,
-            background: "#f6faf5",
-            border: "1px solid #e1e6df",
-          }}
-        >
-          {card.isLoop ? (
-            <polygon
-              points={closedLoopPoints}
-              fill="rgba(69, 123, 157, 0.08)"
-              stroke="#457b9d"
-              strokeWidth={3}
-              strokeLinejoin="round"
-            />
-          ) : (
-            <polyline
-              points={polylinePoints}
-              fill="none"
-              stroke="#457b9d"
-              strokeWidth={4}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          )}
-          {previewPoints.map((point, index) => (
-            <g key={`${card.id}-${point.city.id}`}>
-              <circle cx={point.x} cy={point.y} r={7} fill="#223024" />
-              <circle cx={point.x} cy={point.y} r={5} fill="#ffffff" />
-              <text
-                x={point.x}
-                y={point.y - 10}
-                textAnchor="middle"
-                fontSize="11"
-                fontWeight="700"
-                fill="#223024"
-              >
-                {index + 1}
-              </text>
-            </g>
-          ))}
-        </svg>
-        <div style={{ color: "#56635a", fontSize: 13 }}>
-          {card.isLoop
-            ? "Loop preview closes from the last stop back to the first."
-            : "Out-and-back preview follows the selected stop order and returns on the same corridor."}
-        </div>
-      </div>
     )
   }
 
@@ -746,233 +543,6 @@ export default function StartMenu({
     )
   }
 
-  function renderRouteCard(card: RouteDeckCard) {
-    const totalRouteDistance = getRouteCardDistance(card)
-
-    return (
-      <div
-        key={card.id}
-        style={{
-          border: "1px solid #d8dfd5",
-          borderRadius: 12,
-          padding: 12,
-          background: "#ffffff",
-          display: "flex",
-          flexDirection: "column",
-          gap: 8,
-        }}
-      >
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
-            gap: 16,
-            alignItems: "start",
-          }}
-        >
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 120px auto", gap: 8 }}>
-              <input
-                type="text"
-                value={card.title}
-                onChange={event =>
-                  handleUpdateRouteCard(card.id, current => ({
-                    ...current,
-                    title: event.target.value,
-                  }))
-                }
-                style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #c7d0c4" }}
-              />
-              <select
-                value={card.mode}
-                onChange={event =>
-                  handleUpdateRouteCard(card.id, current => ({
-                    ...current,
-                    mode: event.target.value as RouteMode,
-                    cityIds:
-                      event.target.value === "air" ? current.cityIds.slice(0, 2) : current.cityIds,
-                    isLoop: event.target.value === "air" ? false : current.isLoop,
-                  }))
-                }
-                style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #c7d0c4" }}
-              >
-                <option value="bus">Bus</option>
-                <option value="rail">Rail</option>
-                <option value="air">Air</option>
-              </select>
-              <button
-                type="button"
-                onClick={() =>
-                  setUserRouteCards(userDecks.routeCards.filter(userCard => userCard.id !== card.id))
-                }
-                style={{
-                  padding: "8px 10px",
-                  borderRadius: 999,
-                  border: "1px solid #c7d0c4",
-                  background: "#ffffff",
-                  cursor: "pointer",
-                }}
-              >
-                Delete
-              </button>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {card.cityIds.map((cityId, index) => (
-                <div
-                  key={`${card.id}-${index}`}
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr auto auto auto",
-                    gap: 8,
-                    alignItems: "center",
-                  }}
-                >
-                  <select
-                    value={cityId}
-                    onChange={event =>
-                      handleUpdateRouteCard(card.id, current => ({
-                        ...current,
-                        cityIds: current.cityIds.map((candidate, candidateIndex) =>
-                          candidateIndex === index ? event.target.value : candidate,
-                        ),
-                      }))
-                    }
-                    style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #c7d0c4" }}
-                    >
-                      {sortedCities.map(city => (
-                        <option key={city.id} value={city.id}>
-                          {city.name}
-                        </option>
-                      ))}
-                    </select>
-                  <button
-                    type="button"
-                    onClick={() => moveRouteStop(card, index, -1)}
-                    disabled={index === 0}
-                    style={{
-                      padding: "8px 10px",
-                      borderRadius: 999,
-                      border: "1px solid #c7d0c4",
-                      background: index === 0 ? "#f2f2f2" : "#ffffff",
-                      cursor: index === 0 ? "not-allowed" : "pointer",
-                    }}
-                  >
-                    Up
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => moveRouteStop(card, index, 1)}
-                    disabled={index === card.cityIds.length - 1}
-                    style={{
-                      padding: "8px 10px",
-                      borderRadius: 999,
-                      border: "1px solid #c7d0c4",
-                      background: index === card.cityIds.length - 1 ? "#f2f2f2" : "#ffffff",
-                      cursor: index === card.cityIds.length - 1 ? "not-allowed" : "pointer",
-                    }}
-                  >
-                    Down
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      handleUpdateRouteCard(card.id, current => ({
-                        ...current,
-                        cityIds:
-                          current.cityIds.length <= 2
-                            ? current.cityIds
-                            : current.cityIds.filter((_, candidateIndex) => candidateIndex !== index),
-                      }))
-                    }
-                    disabled={card.cityIds.length <= 2}
-                    style={{
-                      padding: "8px 10px",
-                      borderRadius: 999,
-                      border: "1px solid #c7d0c4",
-                      background: card.cityIds.length <= 2 ? "#f2f2f2" : "#ffffff",
-                      cursor: card.cityIds.length <= 2 ? "not-allowed" : "pointer",
-                    }}
-                  >
-                    Remove stop
-                  </button>
-                </div>
-              ))}
-              <button
-                type="button"
-                onClick={() =>
-                  handleUpdateRouteCard(card.id, current => ({
-                    ...current,
-                    cityIds: [...current.cityIds, sortedCities[0]?.id ?? current.cityIds[0] ?? ""],
-                  }))
-                }
-                disabled={card.mode === "air" && card.cityIds.length >= 2}
-                style={{
-                  alignSelf: "flex-start",
-                  padding: "8px 10px",
-                  borderRadius: 999,
-                  border: "1px solid #c7d0c4",
-                  background: card.mode === "air" && card.cityIds.length >= 2 ? "#f2f2f2" : "#ffffff",
-                  cursor: card.mode === "air" && card.cityIds.length >= 2 ? "not-allowed" : "pointer",
-                }}
-              >
-                Add stop
-              </button>
-              <label
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  color: card.mode === "air" ? "#848484" : "#324236",
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={card.isLoop}
-                  onChange={event =>
-                    handleUpdateRouteCard(card.id, current => ({
-                      ...current,
-                      isLoop: current.mode === "air" ? false : event.target.checked,
-                    }))
-                  }
-                  disabled={card.mode === "air"}
-                />
-                Loop route
-              </label>
-              <div style={{ color: "#56635a", fontSize: 13 }}>
-                {card.mode === "air"
-                  ? "Air routes must stay as two-city pairs."
-                  : card.isLoop
-                    ? "Loop distance = all segments + last city back to first."
-                    : "Out-and-back distance = all segments x 2."}
-              </div>
-              <div style={{ color: "#324236", fontSize: 13 }}>
-                {card.cityIds.map(cityId => cityNameById[cityId] ?? cityId).join(" -> ")}
-              </div>
-              <div style={{ color: "#56635a", fontSize: 13 }}>
-                Total distance: {totalRouteDistance.toFixed(1)} mi
-              </div>
-              <textarea
-                value={card.notes ?? ""}
-                onChange={event =>
-                  handleUpdateRouteCard(card.id, current => ({
-                    ...current,
-                    notes: event.target.value,
-                  }))
-                }
-                rows={2}
-                placeholder="Notes"
-                style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #c7d0c4", resize: "vertical" }}
-              />
-            </div>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {renderRouteShapePreview(card)}
-          </div>
-        </div>
-      </div>
-    )
-  }
-
   return (
     <div
       style={{
@@ -1105,10 +675,6 @@ export default function StartMenu({
                   <strong>Chance deck</strong>
                   <div style={{ marginTop: 4 }}>{userDecks.chanceCards.length} cards</div>
                 </div>
-                <div style={{ border: "1px solid #d8dfd5", borderRadius: 12, padding: 12, background: "#ffffff" }}>
-                  <strong>Route deck library</strong>
-                  <div style={{ marginTop: 4 }}>{userDecks.routeCards.length} cards</div>
-                </div>
                 <label
                   style={{
                     border: "1px solid #d8dfd5",
@@ -1194,6 +760,9 @@ export default function StartMenu({
                   </div>
                 ))}
                 <div>
+                  <div style={{ color: "#56635a", fontSize: 14, marginBottom: 12 }}>
+                    Regional city decks are now generated automatically from the map by primary region.
+                  </div>
                   <button
                     type="button"
                     onClick={onAddSetupPlayer}
@@ -1248,43 +817,6 @@ export default function StartMenu({
               </div>
               <div style={{ display: "grid", gap: 12 }}>
                 {userDecks.chanceCards.map(card => renderChanceCard(card))}
-              </div>
-            </div>
-          )}
-          {activeTab === "routes" && (
-            <div style={{ display: "grid", gap: 18 }}>
-              <div style={{ display: "grid", gap: 18 }}>
-                <div style={{ color: "#56635a" }}>
-                  Route cards are grouped by transportation type. These are editable now and ready for later gameplay use.
-                </div>
-                {routeCardsByMode.map(({ mode, cards }) => (
-                  <div key={mode} style={{ display: "grid", gap: 12 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-                      <strong>{ROUTE_MODE_LABELS[mode]} routes</strong>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const starterCityIds = sortedCities.slice(0, 2).map(city => city.id)
-                          const newRouteCard = {
-                            ...createEmptyRouteCard(mode),
-                            cityIds: starterCityIds,
-                          }
-                          setUserRouteCards([...userDecks.routeCards, newRouteCard])
-                        }}
-                        style={{ padding: "10px 14px", borderRadius: 999, border: "1px solid #c7d0c4", background: "#ffffff", cursor: "pointer", fontWeight: 600 }}
-                      >
-                        Add {ROUTE_MODE_LABELS[mode].toLowerCase()} route
-                      </button>
-                    </div>
-                    <div style={{ display: "grid", gap: 12 }}>
-                      {cards.length === 0 ? (
-                        <div style={{ color: "#56635a" }}>No {ROUTE_MODE_LABELS[mode].toLowerCase()} route cards yet.</div>
-                      ) : (
-                        cards.map(card => renderRouteCard(card))
-                      )}
-                    </div>
-                  </div>
-                ))}
               </div>
             </div>
           )}

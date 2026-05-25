@@ -1,5 +1,6 @@
 import type {
   City,
+  CityDeckRegion,
   GameState,
   PurchasableResource,
   Route,
@@ -28,12 +29,49 @@ export type ConnectionOption = {
 }
 
 export type ClaimRouteInput = {
-  routeCardId: string
+  mode: RouteMode
+  cityIds: string[]
+  segmentPairs?: Array<[string, string]>
 }
+
+export type DrawCityOfferResult =
+  | {
+      ok: true
+      game: GameState
+      region: CityDeckRegion
+      cityIds: string[]
+    }
+  | {
+      ok: false
+      error: string
+    }
+
+export type CityOfferSelectionResult =
+  | {
+      ok: true
+      game: GameState
+      cityIds: string[]
+    }
+  | {
+      ok: false
+      error: string
+    }
+
+export type ResolvedRouteSelection =
+  | {
+      ok: true
+      cityIds: string[]
+      segmentPairs: Array<[string, string]>
+    }
+  | {
+      ok: false
+      error: string
+    }
 
 type ClaimRouteCostInput = {
   cityIds: string[]
   mode: RouteMode
+  segmentPairs?: Array<[string, string]>
 }
 
 export type ClaimRouteResult =
@@ -71,6 +109,7 @@ const WEEKLY_PHASES: WeeklyPhase[] = [
   "bureaucracy",
 ]
 const VISIBLE_ROUTE_CARD_COUNT = 3
+const CITY_DRAW_COUNT = 4
 const VEHICLE_PURCHASE_LIMITS: Record<VehicleType, number> = {
   bus: 6,
   train: 3,
@@ -336,27 +375,543 @@ function findExistingRoute(routes: Route[], cityAId: string, cityBId: string) {
   })
 }
 
-function getSharedConnectionError(
+function getPairConnectionMetadata(
   game: GameState,
   cityAId: string,
   cityBId: string,
 ) {
-  if (cityAId === cityBId) {
-    return "Choose two different cities."
-  }
-
   const cityA = getCityById(game.cities, cityAId)
   const cityB = getCityById(game.cities, cityBId)
 
   if (!cityA || !cityB) {
-    return "One or more selected cities could not be found."
+    return {
+      adjacent: false,
+      allowRail: false,
+      cityA,
+      cityB,
+    }
   }
 
-  if (findExistingRoute(game.routes, cityAId, cityBId)) {
-    return "That route has already been claimed."
+  const forwardConnection = cityA.adjacentCities?.find(adjacentCity => adjacentCity.id === cityBId)
+  const reverseConnection = cityB.adjacentCities?.find(adjacentCity => adjacentCity.id === cityAId)
+  const adjacent = Boolean(forwardConnection || reverseConnection)
+
+  return {
+    adjacent,
+    allowRail:
+      adjacent &&
+      (forwardConnection?.allowRail ??
+        reverseConnection?.allowRail ??
+        true),
+    cityA,
+    cityB,
+  }
+}
+
+function getRouteStructureError(
+  game: GameState,
+  cityIds: string[],
+  mode: RouteMode,
+) {
+  if (cityIds.length < 2) {
+    return "Choose at least two cities."
+  }
+
+  if (mode === "air") {
+    return cityIds.length === 2
+      ? undefined
+      : "Air routes can only connect two owned city cards."
+  }
+
+  const missingCity = cityIds.find(cityId => !getCityById(game.cities, cityId))
+
+  if (missingCity) {
+    return `The selected city ${missingCity} could not be found.`
+  }
+
+  if (cityIds.length === 2) {
+    const [cityAId, cityBId] = cityIds
+    const { adjacent, allowRail, cityA, cityB } = getPairConnectionMetadata(game, cityAId, cityBId)
+
+    if (!adjacent) {
+      return `${cityA?.name ?? cityAId} and ${cityB?.name ?? cityBId} are not adjacent.`
+    }
+
+    if (mode === "rail" && !allowRail) {
+      return `Rail is not allowed between ${cityA?.name ?? cityAId} and ${cityB?.name ?? cityBId}.`
+    }
   }
 
   return undefined
+}
+
+function buildSelectionGraph(
+  game: GameState,
+  cityIds: string[],
+  mode: RouteMode,
+) {
+  const adjacency = new Map<string, string[]>()
+
+  for (const cityId of cityIds) {
+    adjacency.set(cityId, [])
+  }
+
+  for (let index = 0; index < cityIds.length; index += 1) {
+    for (let otherIndex = index + 1; otherIndex < cityIds.length; otherIndex += 1) {
+      const cityAId = cityIds[index]
+      const cityBId = cityIds[otherIndex]
+      const { adjacent, allowRail } = getPairConnectionMetadata(game, cityAId, cityBId)
+
+      if (!adjacent || (mode === "rail" && !allowRail)) {
+        continue
+      }
+
+      adjacency.get(cityAId)?.push(cityBId)
+      adjacency.get(cityBId)?.push(cityAId)
+    }
+  }
+
+  return adjacency
+}
+
+function findHamiltonianPath(
+  cityIds: string[],
+  adjacency: Map<string, string[]>,
+) {
+  const normalizedCityIds = [...new Set(cityIds)]
+
+  const tryFrom = (currentPath: string[]): string[] | null => {
+    if (currentPath.length === normalizedCityIds.length) {
+      return currentPath
+    }
+
+    const currentCityId = currentPath[currentPath.length - 1]
+    const neighbors = adjacency.get(currentCityId) ?? []
+
+    for (const neighborId of neighbors) {
+      if (currentPath.includes(neighborId)) {
+        continue
+      }
+
+      const result = tryFrom([...currentPath, neighborId])
+
+      if (result) {
+        return result
+      }
+    }
+
+    return null
+  }
+
+  const orderedStarts = [...normalizedCityIds].sort((cityAId, cityBId) => {
+    const degreeDifference = (adjacency.get(cityAId)?.length ?? 0) - (adjacency.get(cityBId)?.length ?? 0)
+
+    if (degreeDifference !== 0) {
+      return degreeDifference
+    }
+
+    return cityAId.localeCompare(cityBId)
+  })
+
+  for (const startCityId of orderedStarts) {
+    const result = tryFrom([startCityId])
+
+    if (result) {
+      return result
+    }
+  }
+
+  return null
+}
+
+function buildSegmentPairs(
+  game: GameState,
+  cityIds: string[],
+  mode: RouteMode,
+) {
+  const segmentPairs: Array<[string, string]> = []
+
+  for (let index = 0; index < cityIds.length; index += 1) {
+    for (let otherIndex = index + 1; otherIndex < cityIds.length; otherIndex += 1) {
+      const cityAId = cityIds[index]
+      const cityBId = cityIds[otherIndex]
+      const { adjacent, allowRail } = getPairConnectionMetadata(game, cityAId, cityBId)
+
+      if (!adjacent || (mode === "rail" && !allowRail)) {
+        continue
+      }
+
+      segmentPairs.push(normalizeRoutePair(cityAId, cityBId))
+    }
+  }
+
+  return segmentPairs
+}
+
+function buildConnectivityGraph(
+  cityIds: string[],
+  segmentPairs: Array<[string, string]>,
+) {
+  const adjacency = new Map<string, string[]>()
+
+  for (const cityId of cityIds) {
+    adjacency.set(cityId, [])
+  }
+
+  for (const [cityAId, cityBId] of segmentPairs) {
+    adjacency.get(cityAId)?.push(cityBId)
+    adjacency.get(cityBId)?.push(cityAId)
+  }
+
+  return adjacency
+}
+
+function isConnectedSelection(
+  cityIds: string[],
+  adjacency: Map<string, string[]>,
+) {
+  if (cityIds.length === 0) {
+    return false
+  }
+
+  const visited = new Set<string>()
+  const queue = [cityIds[0]]
+
+  while (queue.length > 0) {
+    const cityId = queue.shift()
+
+    if (!cityId || visited.has(cityId)) {
+      continue
+    }
+
+    visited.add(cityId)
+
+    for (const neighborId of adjacency.get(cityId) ?? []) {
+      if (!visited.has(neighborId)) {
+        queue.push(neighborId)
+      }
+    }
+  }
+
+  return cityIds.every(cityId => visited.has(cityId))
+}
+
+function dedupeSegmentPairs(segmentPairs: Array<[string, string]>) {
+  const seen = new Set<string>()
+
+  return segmentPairs.filter(([cityAId, cityBId]) => {
+    const pairKey = normalizeRoutePair(cityAId, cityBId).join("|")
+
+    if (seen.has(pairKey)) {
+      return false
+    }
+
+    seen.add(pairKey)
+    return true
+  })
+}
+
+function getCurrentPlayerHandCityIds(game: GameState, currentPlayer = getCurrentPlayer(game)) {
+  return [
+    ...new Set([
+      ...(currentPlayer?.ownedCityCardIds ?? []),
+      ...(game.activeCityOffer?.keptCityIds ?? []),
+    ]),
+  ]
+}
+
+function applyKeptCityOfferToCurrentPlayer(game: GameState) {
+  const keptCityIds = game.activeCityOffer?.keptCityIds ?? []
+
+  if (keptCityIds.length !== 2) {
+    return game
+  }
+
+  return {
+    ...game,
+    players: game.players.map(player =>
+      player.id === game.currentPlayerId
+        ? {
+            ...player,
+            ownedCityCardIds: [...new Set([...player.ownedCityCardIds, ...keptCityIds])],
+          }
+        : player,
+    ),
+  }
+}
+
+function getOrderedCityIdsFromSegmentPairs(segmentPairs: Array<[string, string]>) {
+  const cityIds = [...new Set(segmentPairs.flat())]
+  const adjacency = buildConnectivityGraph(cityIds, segmentPairs)
+  const orderedStarts = [...cityIds].sort((cityAId, cityBId) => {
+    const degreeDifference = (adjacency.get(cityAId)?.length ?? 0) - (adjacency.get(cityBId)?.length ?? 0)
+
+    if (degreeDifference !== 0) {
+      return degreeDifference
+    }
+
+    return cityAId.localeCompare(cityBId)
+  })
+  const startCityId = orderedStarts[0]
+
+  if (!startCityId) {
+    return []
+  }
+
+  const visited = new Set<string>()
+  const orderedCityIds: string[] = []
+  const queue = [startCityId]
+
+  while (queue.length > 0) {
+    const cityId = queue.shift()
+
+    if (!cityId || visited.has(cityId)) {
+      continue
+    }
+
+    visited.add(cityId)
+    orderedCityIds.push(cityId)
+
+    for (const neighborId of [...(adjacency.get(cityId) ?? [])].sort((cityAId, cityBId) =>
+      cityAId.localeCompare(cityBId),
+    )) {
+      if (!visited.has(neighborId)) {
+        queue.push(neighborId)
+      }
+    }
+  }
+
+  return orderedCityIds
+}
+
+export function resolveSegmentSelection(
+  game: GameState,
+  segmentPairs: Array<[string, string]>,
+  mode: RouteMode,
+): ResolvedRouteSelection {
+  const normalizedSegmentPairs = dedupeSegmentPairs(
+    segmentPairs.map(([cityAId, cityBId]) => normalizeRoutePair(cityAId, cityBId)),
+  )
+
+  if (normalizedSegmentPairs.length === 0) {
+    return {
+      ok: false,
+      error: "Select at least one route segment.",
+    }
+  }
+
+  for (const [cityAId, cityBId] of normalizedSegmentPairs) {
+    const { adjacent, allowRail, cityA, cityB } = getPairConnectionMetadata(game, cityAId, cityBId)
+
+    if (!adjacent) {
+      return {
+        ok: false,
+        error: `${cityA?.name ?? cityAId} and ${cityB?.name ?? cityBId} are not adjacent.`,
+      }
+    }
+
+    if (mode === "rail" && !allowRail) {
+      return {
+        ok: false,
+        error: `Rail is not allowed between ${cityA?.name ?? cityAId} and ${cityB?.name ?? cityBId}.`,
+      }
+    }
+
+    if (findExistingRoute(game.routes, cityAId, cityBId)) {
+      return {
+        ok: false,
+        error: "One or more selected connections have already been claimed.",
+      }
+    }
+  }
+
+  const cityIds = [...new Set(normalizedSegmentPairs.flat())]
+  const connectivityGraph = buildConnectivityGraph(cityIds, normalizedSegmentPairs)
+
+  if (!isConnectedSelection(cityIds, connectivityGraph)) {
+    return {
+      ok: false,
+      error: `The selected ${mode === "rail" ? "rail" : mode} segments must form one connected route.`,
+    }
+  }
+
+  return {
+    ok: true,
+    cityIds: getOrderedCityIdsFromSegmentPairs(normalizedSegmentPairs),
+    segmentPairs: normalizedSegmentPairs,
+  }
+}
+
+export function getEffectiveClaimCityIds(
+  game: GameState,
+  mode: RouteMode,
+  cityIds: string[],
+) {
+  const normalizedCityIds = [...new Set(cityIds)]
+
+  if (mode !== "bus") {
+    return normalizedCityIds
+  }
+
+  const currentPlayer = getCurrentPlayer(game)
+  const handCityIds = getCurrentPlayerHandCityIds(game, currentPlayer)
+
+  if (!currentPlayer || handCityIds.length === 0) {
+    return normalizedCityIds
+  }
+
+  if (normalizedCityIds.length !== 1) {
+    return normalizedCityIds
+  }
+
+  const selectedCityId = normalizedCityIds[0]
+  const implicitOwnedAnchorId = handCityIds.find(ownedCityId => {
+    if (ownedCityId === selectedCityId) {
+      return false
+    }
+
+    const { adjacent } = getPairConnectionMetadata(game, ownedCityId, selectedCityId)
+
+    return adjacent && !findExistingRoute(game.routes, ownedCityId, selectedCityId)
+  })
+
+  if (!implicitOwnedAnchorId) {
+    return normalizedCityIds
+  }
+
+  return [selectedCityId, implicitOwnedAnchorId]
+}
+
+export function resolveRouteSelection(
+  game: GameState,
+  cityIds: string[],
+  mode: RouteMode,
+): ResolvedRouteSelection {
+  const normalizedCityIds = [...new Set(cityIds)]
+
+  if (normalizedCityIds.length !== cityIds.length) {
+    return {
+      ok: false,
+      error: "Each city can only be used once in the same route.",
+    }
+  }
+
+  const structureError = getRouteStructureError(game, normalizedCityIds, mode)
+
+  if (structureError) {
+    return {
+      ok: false,
+      error: structureError,
+    }
+  }
+
+  if (mode === "air") {
+    const [cityAId, cityBId] = normalizeRoutePair(normalizedCityIds[0], normalizedCityIds[1])
+
+    if (findExistingRoute(game.routes, cityAId, cityBId)) {
+      return {
+        ok: false,
+        error: "That route has already been claimed.",
+      }
+    }
+
+    return {
+      ok: true,
+      cityIds: [...normalizedCityIds].sort((cityAId, cityBId) => cityAId.localeCompare(cityBId)),
+      segmentPairs: [[cityAId, cityBId]],
+    }
+  }
+
+  const segmentPairs = buildSegmentPairs(game, normalizedCityIds, mode)
+  const blockedSegment = segmentPairs.find(([cityAId, cityBId]) =>
+    findExistingRoute(game.routes, cityAId, cityBId),
+  )
+
+  if (blockedSegment) {
+    return {
+      ok: false,
+      error: "One or more selected connections have already been claimed.",
+    }
+  }
+
+  if (segmentPairs.length === 0) {
+    return {
+      ok: false,
+      error: `The selected cities cannot form one contiguous ${mode === "rail" ? "rail" : "bus"} route.`,
+    }
+  }
+
+  const connectivityGraph = buildConnectivityGraph(normalizedCityIds, segmentPairs)
+
+  if (!isConnectedSelection(normalizedCityIds, connectivityGraph)) {
+    return {
+      ok: false,
+      error: `The selected cities cannot form one contiguous ${mode === "rail" ? "rail" : "bus"} route.`,
+    }
+  }
+
+  const adjacency = buildSelectionGraph(game, normalizedCityIds, mode)
+  const orderedCityIds = findHamiltonianPath(normalizedCityIds, adjacency)
+
+  return {
+    ok: true,
+    cityIds: orderedCityIds ?? normalizedCityIds,
+    segmentPairs,
+  }
+}
+
+function getImplicitBusHandSegmentPairs(
+  game: GameState,
+  selectedCityIds: string[],
+) {
+  const currentPlayer = getCurrentPlayer(game)
+  const handCityIds = getCurrentPlayerHandCityIds(game, currentPlayer)
+
+  if (!currentPlayer || handCityIds.length === 0) {
+    return []
+  }
+
+  const selectedCityIdSet = new Set(selectedCityIds)
+  const segmentPairs = handCityIds.flatMap(ownedCityId => {
+    if (selectedCityIdSet.has(ownedCityId)) {
+      return []
+    }
+
+    return selectedCityIds.flatMap(selectedCityId => {
+      const { adjacent } = getPairConnectionMetadata(game, ownedCityId, selectedCityId)
+      const segmentPair = normalizeRoutePair(ownedCityId, selectedCityId)
+
+      if (!adjacent || findExistingRoute(game.routes, segmentPair[0], segmentPair[1])) {
+        return []
+      }
+
+      return [segmentPair]
+    })
+  })
+
+  return dedupeSegmentPairs(segmentPairs)
+}
+
+export function getClaimSegmentPairs(
+  game: GameState,
+  mode: RouteMode,
+  cityIds: string[],
+) {
+  const effectiveCityIds = getEffectiveClaimCityIds(game, mode, cityIds)
+  const resolvedSelection = resolveRouteSelection(game, effectiveCityIds, mode)
+
+  if (!resolvedSelection.ok) {
+    return []
+  }
+
+  if (mode !== "bus") {
+    return resolvedSelection.segmentPairs
+  }
+
+  return dedupeSegmentPairs([
+    ...resolvedSelection.segmentPairs,
+    ...getImplicitBusHandSegmentPairs(game, cityIds),
+  ])
 }
 
 function getRoutePairs(cityIds: string[]) {
@@ -399,7 +954,20 @@ export function calculateClaimRouteCost(
     return 0
   }
 
-  return getRoutePairs(input.cityIds).reduce((total, [cityAId, cityBId]) => {
+  const resolvedSelection =
+    input.segmentPairs && input.segmentPairs.length > 0
+      ? resolveSegmentSelection(game, input.segmentPairs, input.mode)
+      : resolveRouteSelection(
+          game,
+          getEffectiveClaimCityIds(game, input.mode, input.cityIds),
+          input.mode,
+        )
+
+  if (!resolvedSelection.ok) {
+    return 0
+  }
+
+  return resolvedSelection.segmentPairs.reduce((total, [cityAId, cityBId]) => {
     const cityA = getCityById(game.cities, cityAId)
     const cityB = getCityById(game.cities, cityBId)
 
@@ -426,44 +994,43 @@ export function getConnectionOptions(
     }))
   }
 
-  if (game.currentPhase !== "claim-routes") {
+  if (game.currentPhase !== "bureaucracy") {
     return CONNECTION_MODES.map(mode => ({
       mode,
       valid: false,
-      reason: "Routes can only be claimed during the claim routes phase.",
+      reason: "Routes can only be claimed during the bureaucracy phase.",
     }))
   }
 
-  if (cityIds.length < 2) {
+  if (cityIds.length < 1) {
     return CONNECTION_MODES.map(mode => ({
       mode,
       valid: false,
-      reason: "Choose at least two cities.",
+      reason: "Choose at least one city.",
     }))
   }
 
-  const routePairs = getRoutePairs(cityIds)
-  const claimCost = calculateClaimRouteCost(game, { cityIds, mode: "rail" })
-  const sharedError = routePairs
-    .map(([cityAId, cityBId]) => getSharedConnectionError(game, cityAId, cityBId))
-    .find(error => error !== undefined)
   const currentPlayer = getCurrentPlayer(game)
   const ownedVehicleTypes = new Set(getOwnedVehicleCards(game).map(card => card.type))
 
   return CONNECTION_MODES.map(mode => {
-    if (sharedError) {
+    const effectiveCityIds = getEffectiveClaimCityIds(game, mode, cityIds)
+
+    if (effectiveCityIds.length < 2) {
       return {
         mode,
         valid: false,
-        reason: sharedError,
+        reason: "Choose at least two connected cities.",
       }
     }
 
-    if (mode === "air" && cityIds.length > 2) {
+    const resolvedSelection = resolveRouteSelection(game, effectiveCityIds, mode)
+
+    if (!resolvedSelection.ok) {
       return {
         mode,
         valid: false,
-        reason: "Plane routes can only connect two cities.",
+        reason: resolvedSelection.error,
       }
     }
 
@@ -474,6 +1041,8 @@ export function getConnectionOptions(
         reason: `Buy a ${mode === "rail" ? "train" : mode} vehicle card first.`,
       }
     }
+
+    const claimCost = Math.ceil(calculateClaimRouteCost(game, { cityIds: effectiveCityIds, mode: "rail" }))
 
     if (mode === "rail" && currentPlayer && currentPlayer.money < claimCost) {
       return {
@@ -542,17 +1111,114 @@ function getVehicleMarketBurnCardIds(game: GameState) {
   })
 }
 
-function getRouteMarketBurnCardIds(game: GameState) {
-  return (["bus", "rail", "air"] as RouteMode[]).flatMap(mode => {
-    if (game.claimedRouteModesThisPhase[mode]) {
-      return []
+export function drawCityOffer(
+  game: GameState,
+  region: CityDeckRegion,
+): DrawCityOfferResult {
+  if (isGameLocked(game)) {
+    return {
+      ok: false,
+      error: "The game is over.",
     }
+  }
 
-    const visibleCardIds = getVisibleRouteMarketCardIds(game, mode)
-    const rightMostVisibleCardId = visibleCardIds[visibleCardIds.length - 1]
+  if (game.currentPhase !== "claim-routes") {
+    return {
+      ok: false,
+      error: "City cards can only be drawn during the claim routes phase.",
+    }
+  }
 
-    return rightMostVisibleCardId ? [rightMostVisibleCardId] : []
-  })
+  if (game.hasClaimedRouteThisTurn) {
+    return {
+      ok: false,
+      error: "You already claimed a route this turn.",
+    }
+  }
+
+  if (game.activeCityOffer) {
+    return {
+      ok: false,
+      error: "Finish picking from the current city draw first.",
+    }
+  }
+
+  const deck = game.cityDeckCardIdsByRegion[region]
+  const cityIds = deck.slice(0, CITY_DRAW_COUNT)
+
+  if (cityIds.length < CITY_DRAW_COUNT) {
+    return {
+      ok: false,
+      error: `The ${region} deck does not have enough city cards left to draw from.`,
+    }
+  }
+
+  return {
+    ok: true,
+    region,
+    cityIds,
+    game: {
+      ...game,
+      cityDeckCardIdsByRegion: {
+        ...game.cityDeckCardIdsByRegion,
+        [region]: deck.slice(cityIds.length),
+      },
+      activeCityOffer: {
+        region,
+        cityIds,
+        keptCityIds: [],
+      },
+    },
+  }
+}
+
+export function setActiveCityOfferKeptCityIds(
+  game: GameState,
+  requestedCityIds: string[],
+): CityOfferSelectionResult {
+  if (isGameLocked(game)) {
+    return {
+      ok: false,
+      error: "The game is over.",
+    }
+  }
+
+  if (game.currentPhase !== "claim-routes") {
+    return {
+      ok: false,
+      error: "City cards can only be picked during the claim routes phase.",
+    }
+  }
+
+  if (!game.activeCityOffer) {
+    return {
+      ok: false,
+      error: "Draw from a region deck first.",
+    }
+  }
+
+  const cityIds = [...new Set(requestedCityIds)].filter(cityId =>
+    game.activeCityOffer?.cityIds.includes(cityId),
+  )
+
+  if (cityIds.length > 2) {
+    return {
+      ok: false,
+      error: "Keep exactly 2 city cards from the draw.",
+    }
+  }
+
+  return {
+    ok: true,
+    cityIds,
+    game: {
+      ...game,
+      activeCityOffer: {
+        ...game.activeCityOffer,
+        keptCityIds: cityIds,
+      },
+    },
+  }
 }
 
 export function advancePhase(game: GameState): GameState {
@@ -589,14 +1255,15 @@ export function advancePhase(game: GameState): GameState {
       hasClaimedRouteThisTurn: false,
       claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
       vehicleMarketCardIds: nextVehicleMarketCardIds,
+      activeCityOffer: null,
     }
   }
 
   if (game.currentPhase === "claim-routes") {
-    const burnedRouteCardIds = getRouteMarketBurnCardIds(game)
+    const gameWithKeptCityCards = applyKeptCityOfferToCurrentPlayer(game)
 
     return {
-      ...game,
+      ...gameWithKeptCityCards,
       currentWeek: wrappedWeek,
       currentPhase: WEEKLY_PHASES[nextPhaseIndex],
       leadPlayerIndex: nextLeadPlayerIndex,
@@ -606,11 +1273,7 @@ export function advancePhase(game: GameState): GameState {
       purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
       hasClaimedRouteThisTurn: false,
       claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
-      routeMarketCardIdsByMode: {
-        bus: game.routeMarketCardIdsByMode.bus.filter(cardId => !burnedRouteCardIds.includes(cardId)),
-        rail: game.routeMarketCardIdsByMode.rail.filter(cardId => !burnedRouteCardIds.includes(cardId)),
-        air: game.routeMarketCardIdsByMode.air.filter(cardId => !burnedRouteCardIds.includes(cardId)),
-      },
+      activeCityOffer: null,
     }
   }
 
@@ -628,6 +1291,7 @@ export function advancePhase(game: GameState): GameState {
         purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
         hasClaimedRouteThisTurn: false,
         claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
+        activeCityOffer: null,
       }
     }
 
@@ -676,6 +1340,7 @@ export function advancePhase(game: GameState): GameState {
       purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
       hasClaimedRouteThisTurn: false,
       claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
+      activeCityOffer: null,
       resourceMarket: {
         diesel: dieselRefill.counts,
         jetFuel: jetFuelRefill.counts,
@@ -698,6 +1363,7 @@ export function advancePhase(game: GameState): GameState {
     purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
     hasClaimedRouteThisTurn: false,
     claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
+    activeCityOffer: null,
   }
 }
 
@@ -899,11 +1565,15 @@ export function advanceTurn(game: GameState): GameState {
     return advancePhase(game)
   }
 
+  const gameWithKeptCityCards =
+    game.currentPhase === "claim-routes" ? applyKeptCityOfferToCurrentPlayer(game) : game
+
   return {
-    ...game,
+    ...gameWithKeptCityCards,
     currentPlayerId: getNextPlayerId(game),
     hasPurchasedVehicleThisTurn: false,
     hasClaimedRouteThisTurn: false,
+    activeCityOffer: null,
   }
 }
 
@@ -1257,33 +1927,14 @@ export function claimRoute(
   if (game.hasClaimedRouteThisTurn) {
     return {
       ok: false,
-      error: "You can claim at most 1 route card per turn.",
+      error: "You can claim at most 1 route per turn.",
     }
   }
 
-  const routeCard = game.routeCatalog.find(card => card.id === input.routeCardId)
-
-  if (!routeCard) {
+  if (game.currentPhase !== "bureaucracy") {
     return {
       ok: false,
-      error: "That route card could not be found.",
-    }
-  }
-
-  if (!getVisibleRouteMarketCardIds(game, routeCard.mode).includes(routeCard.id)) {
-    return {
-      ok: false,
-      error: "That route card is not currently dealt face-up on the table.",
-    }
-  }
-
-  const option = getConnectionOptions(game, routeCard.cityIds)
-    .find(connection => connection.mode === routeCard.mode)
-
-  if (!option?.valid) {
-    return {
-      ok: false,
-      error: option?.reason ?? "That connection type is not available.",
+      error: "Routes can only be claimed during the bureaucracy phase.",
     }
   }
 
@@ -1296,8 +1947,61 @@ export function claimRoute(
     }
   }
 
-  const cost = Math.ceil(calculateClaimRouteCost(game, { cityIds: routeCard.cityIds, mode: routeCard.mode }))
-  const connectionBonus = calculateConnectionBonus(game, currentPlayer.id, routeCard.cityIds)
+  const cityIds = input.cityIds
+
+  const effectiveCityIds = getEffectiveClaimCityIds(game, input.mode, cityIds)
+  const handCityIds = getCurrentPlayerHandCityIds(game, currentPlayer)
+
+  if (input.mode === "bus") {
+    const ownedCityIds = new Set(handCityIds)
+
+    if (cityIds.some(cityId => !ownedCityIds.has(cityId))) {
+      return {
+        ok: false,
+        error: "Bus routes must use city cards you already own.",
+      }
+    }
+  } else if (cityIds.some(cityId => !handCityIds.includes(cityId))) {
+    return {
+      ok: false,
+      error: `${input.mode === "air" ? "Air" : "Rail"} routes must use city cards you already own.`,
+    }
+  }
+
+  const resolvedSelection =
+    input.mode === "rail" && input.segmentPairs && input.segmentPairs.length > 0
+      ? resolveSegmentSelection(game, input.segmentPairs, input.mode)
+      : resolveRouteSelection(game, effectiveCityIds, input.mode)
+
+  if (!resolvedSelection.ok) {
+    return {
+      ok: false,
+      error: resolvedSelection.error,
+    }
+  }
+
+  const orderedCityIds = resolvedSelection.cityIds
+  const segmentPairs =
+    input.mode === "rail" && input.segmentPairs && input.segmentPairs.length > 0
+      ? resolvedSelection.segmentPairs
+      : getClaimSegmentPairs(game, input.mode, cityIds)
+  const ownedVehicleTypes = new Set(getOwnedVehicleCards(game).map(card => card.type))
+
+  if (!ownedVehicleTypes.has(getVehicleTypeForMode(input.mode))) {
+    return {
+      ok: false,
+      error: `Buy a ${input.mode === "rail" ? "train" : input.mode} vehicle card first.`,
+    }
+  }
+
+  const cost = Math.ceil(
+    calculateClaimRouteCost(game, {
+      cityIds: orderedCityIds,
+      mode: input.mode,
+      segmentPairs: input.segmentPairs,
+    }),
+  )
+  const connectionBonus = calculateConnectionBonus(game, currentPlayer.id, orderedCityIds)
 
   if (currentPlayer.money < cost) {
     return {
@@ -1306,15 +2010,15 @@ export function claimRoute(
     }
   }
 
-  const routes: Route[] = getRoutePairs(routeCard.cityIds).map(([cityAId, cityBId]) => {
+  const routes: Route[] = segmentPairs.map(([cityAId, cityBId]) => {
     const [cityA, cityB] = normalizeRoutePair(cityAId, cityBId)
 
     return {
-      id: buildRouteId(cityA, cityB, routeCard.mode),
+      id: buildRouteId(cityA, cityB, input.mode),
       cityA,
       cityB,
-      mode: routeCard.mode,
-      railTraction: routeCard.mode === "rail" ? ("diesel" as const) : undefined,
+      mode: input.mode,
+      railTraction: input.mode === "rail" ? ("diesel" as const) : undefined,
       ownerId: game.currentPlayerId,
     }
   })
@@ -1328,21 +2032,18 @@ export function claimRoute(
     game: {
       ...game,
       routes: [...game.routes, ...routes],
-      routeMarketCardIdsByMode: {
-        ...game.routeMarketCardIdsByMode,
-        [routeCard.mode]: game.routeMarketCardIdsByMode[routeCard.mode].filter(cardId => cardId !== routeCard.id),
-      },
+      activeCityOffer: null,
       hasClaimedRouteThisTurn: true,
       claimedRouteModesThisPhase: {
         ...game.claimedRouteModesThisPhase,
-        [routeCard.mode]: true,
+        [input.mode]: true,
       },
       players: game.players.map(player =>
         player.id === currentPlayer.id
           ? {
               ...player,
               money: player.money - cost + connectionBonus.totalBonus,
-              startingCityId: player.startingCityId ?? routeCard.cityIds[0],
+              startingCityId: player.startingCityId ?? orderedCityIds[0],
             }
           : player,
       ),
@@ -1361,10 +2062,10 @@ export function upgradeRailRoute(
     }
   }
 
-  if (game.currentPhase !== "claim-routes") {
+  if (game.currentPhase !== "bureaucracy") {
     return {
       ok: false,
-      error: "Rail upgrades can only be purchased during the claim routes phase.",
+      error: "Rail upgrades can only be purchased during the bureaucracy phase.",
     }
   }
 

@@ -1,24 +1,21 @@
 import type { GameMap } from "./maps/types"
-import { calculateDistanceMiles } from "./trips"
 import type {
   ChanceCard,
+  CityDeckRegion,
+  CityDecksByRegion,
   GameState,
   OperatingConfig,
   Player,
   RouteClaimsByMode,
-  RouteDeckCard,
-  RouteMarketByMode,
   ResourceMarket,
   ResourceSupply,
-  RouteMode,
   VehicleCard,
   VehiclePurchasesByType,
 } from "./types"
+import { CITY_DECK_REGIONS as CITY_DECK_REGION_LIST } from "./types"
 import { defaultDecks } from "../data/deckData"
 
 const OPENING_VEHICLE_POOL_SIZE = 5
-const OPENING_VISIBLE_TRAIN_COUNT = 2
-const OPENING_VISIBLE_ROUTE_COUNT = 3
 const EMPTY_VEHICLE_PURCHASES_BY_TYPE: VehiclePurchasesByType = {
   bus: false,
   train: false,
@@ -99,7 +96,6 @@ export type CreateGameStateOptions = {
   players?: GameSetupPlayer[]
   vehicleCards?: VehicleCard[]
   chanceCards?: ChanceCard[]
-  routeCards?: RouteDeckCard[]
   startingMoney?: number
 }
 
@@ -137,95 +133,44 @@ function shuffleChanceCards(cards: ChanceCard[]) {
   return shuffleCards(cards)
 }
 
-function shuffleRouteCards(cards: RouteDeckCard[]): RouteMarketByMode {
-  return (["bus", "rail", "air"] as RouteMode[]).reduce<RouteMarketByMode>(
-    (marketByMode, mode) => ({
-      ...marketByMode,
-      [mode]: shuffleCards(cards.filter(card => card.mode === mode)).map(card => card.id),
+function getPrimaryRegion(region: GameMap["cities"][number]["region"]): CityDeckRegion | null {
+  const primaryRegion = region?.[0]
+  return primaryRegion && CITY_DECK_REGION_LIST.includes(primaryRegion as CityDeckRegion)
+    ? (primaryRegion as CityDeckRegion)
+    : null
+}
+
+function shuffleCityDecks(map: GameMap): CityDecksByRegion {
+  const decks = CITY_DECK_REGION_LIST.reduce<CityDecksByRegion>(
+    (result, region) => ({
+      ...result,
+      [region]: [],
     }),
-    { bus: [], rail: [], air: [] },
+    {
+      Pacific: [],
+      Mountain: [],
+      South: [],
+      Southeast: [],
+      Midwest: [],
+      Northeast: [],
+    },
   )
-}
 
-function calculateOpeningRailRouteCost(
-  routeCard: RouteDeckCard,
-  map: GameMap,
-  railConstructionCostPerMile: number,
-) {
-  if (routeCard.mode !== "rail") {
-    return 0
-  }
+  for (const city of map.cities) {
+    const primaryRegion = getPrimaryRegion(city.region)
 
-  return routeCard.cityIds.slice(0, -1).reduce((total, cityId, index) => {
-    const cityA = map.cities.find(city => city.id === cityId)
-    const cityB = map.cities.find(city => city.id === routeCard.cityIds[index + 1])
-
-    if (!cityA || !cityB) {
-      return total
-    }
-
-    return total + calculateDistanceMiles(cityA, cityB) * railConstructionCostPerMile
-  }, 0)
-}
-
-function seedOpeningRouteMarket(
-  routeMarketByMode: RouteMarketByMode,
-  routeCards: RouteDeckCard[],
-  map: GameMap,
-  railConstructionCostPerMile: number,
-  startingMoney: number,
-  shuffledVehicleCards: VehicleCard[],
-) {
-  const openingTrainCards: VehicleCard[] = []
-
-  for (const card of shuffledVehicleCards) {
-    if (card.type !== "train") {
+    if (!primaryRegion) {
       continue
     }
 
-    openingTrainCards.push(card)
-
-    if (openingTrainCards.length >= OPENING_VISIBLE_TRAIN_COUNT) {
-      break
-    }
+    decks[primaryRegion].push(city.id)
   }
 
-  if (openingTrainCards.length === 0) {
-    return routeMarketByMode
+  for (const region of CITY_DECK_REGION_LIST) {
+    decks[region] = shuffleCards(decks[region])
   }
 
-  const openingRailBudget = startingMoney - Math.min(...openingTrainCards.map(card => card.purchasePrice))
-  const railRouteCardsById = new Map(routeCards.filter(card => card.mode === "rail").map(card => [card.id, card]))
-  const visibleRailIds = routeMarketByMode.rail.slice(0, OPENING_VISIBLE_ROUTE_COUNT)
-  const hasAffordableVisibleRail = visibleRailIds.some(cardId => {
-    const routeCard = railRouteCardsById.get(cardId)
-
-    return routeCard !== undefined &&
-      calculateOpeningRailRouteCost(routeCard, map, railConstructionCostPerMile) <= openingRailBudget
-  })
-
-  if (hasAffordableVisibleRail) {
-    return routeMarketByMode
-  }
-
-  const affordableRailCardId = routeMarketByMode.rail.find(cardId => {
-    const routeCard = railRouteCardsById.get(cardId)
-
-    return routeCard !== undefined &&
-      calculateOpeningRailRouteCost(routeCard, map, railConstructionCostPerMile) <= openingRailBudget
-  })
-
-  if (!affordableRailCardId) {
-    return routeMarketByMode
-  }
-
-  return {
-    ...routeMarketByMode,
-    rail: [
-      affordableRailCardId,
-      ...routeMarketByMode.rail.filter(cardId => cardId !== affordableRailCardId),
-    ],
-  }
+  return decks
 }
 
 function createPlayer(player: GameSetupPlayer, startingMoney: number): Player {
@@ -252,6 +197,49 @@ function createPlayer(player: GameSetupPlayer, startingMoney: number): Player {
     operatingCosts: 0,
     weeklyPayout: 0,
     lastPeriodPassengersServed: 0,
+    ownedCityCardIds: [],
+  }
+}
+
+function applyOpeningBusPurchases(
+  players: Player[],
+  vehicleCards: VehicleCard[],
+) {
+  const seededBusCards = [1, 2]
+    .map(number => vehicleCards.find(card => card.type === "bus" && card.number === number) ?? null)
+    .filter((card): card is VehicleCard => card !== null)
+
+  const nextPlayers = players.map(player => ({
+    ...player,
+    inventory: {
+      ...player.inventory,
+      vehicles: {
+        ...player.inventory.vehicles,
+      },
+      fuel: {
+        ...player.inventory.fuel,
+      },
+    },
+    ownedVehicleCardIds: [...player.ownedVehicleCardIds],
+    ownedVehicleCountsByCardId: { ...player.ownedVehicleCountsByCardId },
+  }))
+
+  seededBusCards.forEach((card, index) => {
+    const player = nextPlayers[index]
+
+    if (!player) {
+      return
+    }
+
+    player.money -= card.purchasePrice
+    player.ownedVehicleCardIds = [...new Set([...player.ownedVehicleCardIds, card.id])]
+    player.ownedVehicleCountsByCardId[card.id] = (player.ownedVehicleCountsByCardId[card.id] ?? 0) + 1
+    player.inventory.vehicles.buses += 1
+  })
+
+  return {
+    players: nextPlayers,
+    seededVehicleCardIds: seededBusCards.map(card => card.id),
   }
 }
 
@@ -261,29 +249,22 @@ export function createGameState(
 ): GameState {
   const vehicleCards = options.vehicleCards ?? defaultDecks.vehicleCards
   const chanceCards = options.chanceCards ?? defaultDecks.chanceCards
-  const routeCards = options.routeCards ?? defaultDecks.routeCards
   const shuffledVehicleCards = shuffleVehicleCards(vehicleCards)
   const shuffledChanceCards = shuffleChanceCards(chanceCards)
   const startingMoney = options.startingMoney ?? DEFAULT_STARTING_MONEY
-  const shuffledRouteMarketCardIdsByMode = seedOpeningRouteMarket(
-    shuffleRouteCards(routeCards),
-    routeCards,
-    map,
-    INITIAL_OPERATING_CONFIG.railConstructionCostPerMile,
-    startingMoney,
-    shuffledVehicleCards,
-  )
   const [activeChanceCard, ...chanceDeck] = shuffledChanceCards
-  const players = (options.players ?? DEFAULT_PLAYERS).map(player =>
+  const initialPlayers = (options.players ?? DEFAULT_PLAYERS).map(player =>
     createPlayer(player, startingMoney),
   )
-
+  const openingSetup = applyOpeningBusPurchases(initialPlayers, shuffledVehicleCards)
+  const players = openingSetup.players
+ 
   return {
     map,
     cities: map.cities,
     routes: [],
     currentWeek: 1,
-    currentPhase: "purchase-equipment",
+    currentPhase: "claim-routes",
     isGameOver: false,
     operatingConfig: INITIAL_OPERATING_CONFIG,
     chanceCatalog: chanceCards,
@@ -297,9 +278,13 @@ export function createGameState(
     resourceMarket: INITIAL_RESOURCE_MARKET,
     resourceSupply: INITIAL_RESOURCE_SUPPLY,
     vehicleCatalog: shuffledVehicleCards,
-    vehicleMarketCardIds: shuffledVehicleCards.map(card => card.id),
-    routeCatalog: routeCards,
-    routeMarketCardIdsByMode: shuffledRouteMarketCardIdsByMode,
+    vehicleMarketCardIds: shuffledVehicleCards
+      .filter(card => !openingSetup.seededVehicleCardIds.includes(card.id))
+      .map(card => card.id),
+    routeCatalog: [],
+    routeMarketCardIdsByMode: { bus: [], rail: [], air: [] },
+    cityDeckCardIdsByRegion: shuffleCityDecks(map),
+    activeCityOffer: null,
     hasPurchasedVehicleThisTurn: false,
     hasPurchasedVehicleThisPhase: false,
     purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,

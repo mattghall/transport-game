@@ -37,10 +37,10 @@ export const chanceCards: ChanceCard[] = [
   },
   {
     id: "chance-atlantic-business",
-    title: "Atlantic Business Travel",
-    description: "Corporate travel spikes along Atlantic cities and nearby corridors.",
+    title: "Southeast Business Travel",
+    description: "Corporate travel spikes across Southeast cities and nearby corridors.",
     demandBoost: {
-      regions: ["Atlantic"],
+      regions: ["Southeast"],
       bonusPerCity: 1,
     },
   },

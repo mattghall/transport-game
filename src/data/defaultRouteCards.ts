@@ -287,7 +287,7 @@ const railRouteCards: RouteDeckCard[] = [
   {
     id: "route-rail-midwest-east",
     mode: "rail",
-    title: "Midwest to Atlantic",
+    title: "Midwest to Southeast",
     cityIds: ["chicago", "cleveland", "pittsburgh", "new_york", "albany", "boston"],
     isLoop: false,
     notes: "Core eastern rail spine connecting major metros.",
@@ -423,7 +423,7 @@ const railRouteCards: RouteDeckCard[] = [
   {
     id: "route-rail-keystone-atlantic",
     mode: "rail",
-    title: "Keystone Atlantic",
+    title: "Keystone Southeast",
     cityIds: ["pittsburgh", "philadelphia", "new_york", "albany", "boston"],
     isLoop: false,
     notes: "A premium eastern rail build with stacked demand.",
@@ -455,7 +455,7 @@ const railRouteCards: RouteDeckCard[] = [
   {
     id: "route-rail-atlantic-seaboard",
     mode: "rail",
-    title: "Atlantic Seaboard",
+    title: "Southeast Seaboard",
     cityIds: ["hampton_roads", "raleigh_durham", "charlotte", "atlanta", "jacksonville"],
     isLoop: false,
     notes: "A long coastal-southern chain with solid growth potential.",
@@ -661,7 +661,7 @@ const airRouteCards: RouteDeckCard[] = [
     title: "Houston to Miami",
     cityIds: ["houston", "miami"],
     isLoop: false,
-    notes: "A Gulf-to-Atlantic jet route.",
+    notes: "A Gulf-to-Southeast jet route.",
   },
   {
     id: "route-air-dfw-atlanta",
