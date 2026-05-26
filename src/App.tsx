@@ -38,6 +38,8 @@ function formatPhaseLabel(phase: WeeklyPhase) {
       return "purchase equipment"
     case "claim-routes":
       return "claim routes"
+    case "operations":
+      return "operations"
     case "purchase-fuel":
       return "purchase fuel"
     case "bureaucracy":
@@ -250,7 +252,7 @@ export default function App() {
         `claimed a ${mode} route across ${routeLabel}${claimResult.connectionBonus > 0 ? ` and earned ${Math.round(claimResult.connectionBonus).toLocaleString()}` : ""}`,
       )
 
-      if (game.currentPhase === "bureaucracy") {
+      if (game.currentPhase === "operations") {
         commitGame(claimedGame)
 
         return {

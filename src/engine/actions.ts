@@ -107,6 +107,7 @@ const STEP_ONE_REFILL: Record<PurchasableResource, number> = {
 const WEEKLY_PHASES: WeeklyPhase[] = [
   "purchase-equipment",
   "claim-routes",
+  "operations",
   "bureaucracy",
 ]
 const VISIBLE_ROUTE_CARD_COUNT = 3
@@ -1096,11 +1097,11 @@ export function getConnectionOptions(
     }))
   }
 
-  if (game.currentPhase !== "bureaucracy") {
+  if (game.currentPhase !== "operations") {
     return CONNECTION_MODES.map(mode => ({
       mode,
       valid: false,
-      reason: "Routes can only be claimed during the bureaucracy phase.",
+      reason: "Routes can only be claimed during the operations phase.",
     }))
   }
 
@@ -1116,6 +1117,14 @@ export function getConnectionOptions(
   const ownedVehicleTypes = new Set(getOwnedVehicleCards(game).map(card => card.type))
 
   return CONNECTION_MODES.map(mode => {
+    if (mode === "bus") {
+      return {
+        mode,
+        valid: false,
+        reason: "Bus pods are automatic from connected owned city cards. No bus build is required.",
+      }
+    }
+
     const effectiveCityIds = getEffectiveClaimCityIds(game, mode, cityIds)
 
     if (effectiveCityIds.length < 2) {
@@ -1833,10 +1842,10 @@ export function setBureaucracyRouteFuelUnits(
     }
   }
 
-  if (game.currentPhase !== "bureaucracy") {
+  if (game.currentPhase !== "operations") {
     return {
       ok: false,
-      error: "Fuel units can only be planned during the bureaucracy phase.",
+      error: "Fuel units can only be planned during the operations phase.",
     }
   }
 
@@ -1879,10 +1888,10 @@ export function setBureaucracyRouteVehicleCard(
     }
   }
 
-  if (game.currentPhase !== "bureaucracy") {
+  if (game.currentPhase !== "operations") {
     return {
       ok: false,
-      error: "Vehicles can only be assigned during the bureaucracy phase.",
+      error: "Vehicles can only be assigned during the operations phase.",
     }
   }
 
@@ -1967,10 +1976,10 @@ export function setBureaucracyServiceCities(
     }
   }
 
-  if (game.currentPhase !== "bureaucracy") {
+  if (game.currentPhase !== "operations") {
     return {
       ok: false,
-      error: "Service cities can only be updated during the bureaucracy phase.",
+      error: "Service cities can only be updated during the operations phase.",
     }
   }
 
@@ -2010,10 +2019,10 @@ export function addBureaucracyServiceSplit(
     }
   }
 
-  if (game.currentPhase !== "bureaucracy") {
+  if (game.currentPhase !== "operations") {
     return {
       ok: false,
-      error: "Service splits can only be added during the bureaucracy phase.",
+      error: "Service splits can only be added during the operations phase.",
     }
   }
 
@@ -2048,10 +2057,10 @@ export function claimRoute(
     }
   }
 
-  if (game.currentPhase !== "bureaucracy") {
+  if (game.currentPhase !== "operations") {
     return {
       ok: false,
-      error: "Routes can only be claimed during the bureaucracy phase.",
+      error: "Routes can only be claimed during the operations phase.",
     }
   }
 
@@ -2066,19 +2075,17 @@ export function claimRoute(
 
   const cityIds = input.cityIds
 
+  if (input.mode === "bus") {
+    return {
+      ok: false,
+      error: "Bus pods are automatic from connected owned city cards. Build rail track or air links in Operations instead.",
+    }
+  }
+
   const effectiveCityIds = getEffectiveClaimCityIds(game, input.mode, cityIds)
   const handCityIds = getCurrentPlayerHandCityIds(game, currentPlayer)
 
-  if (input.mode === "bus") {
-    const ownedCityIds = new Set(handCityIds)
-
-    if (cityIds.some(cityId => !ownedCityIds.has(cityId))) {
-      return {
-        ok: false,
-        error: "Bus routes must use city cards you already own.",
-      }
-    }
-  } else if (cityIds.some(cityId => !handCityIds.includes(cityId))) {
+  if (cityIds.some(cityId => !handCityIds.includes(cityId))) {
     return {
       ok: false,
       error: `${input.mode === "air" ? "Air" : "Rail"} routes must use city cards you already own.`,
@@ -2179,10 +2186,10 @@ export function upgradeRailRoute(
     }
   }
 
-  if (game.currentPhase !== "bureaucracy") {
+  if (game.currentPhase !== "operations") {
     return {
       ok: false,
-      error: "Rail upgrades can only be purchased during the bureaucracy phase.",
+      error: "Rail upgrades can only be purchased during the operations phase.",
     }
   }
 

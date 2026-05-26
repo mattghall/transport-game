@@ -587,7 +587,7 @@ function buildImplicitBusRoutes(game: GameState, player: Player): Route[] {
 
 function buildOwnedServiceGroups(game: GameState, player: Player) {
   const explicitOwnedRoutes = game.routes
-    .filter(route => route.ownerId === player.id)
+    .filter(route => route.ownerId === player.id && route.mode !== "bus")
     .sort((routeA, routeB) => routeA.id.localeCompare(routeB.id))
   const implicitBusRoutes = buildImplicitBusRoutes(game, player)
   const ownedRoutes = [...explicitOwnedRoutes, ...implicitBusRoutes].sort((routeA, routeB) =>

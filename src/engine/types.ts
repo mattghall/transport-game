@@ -128,6 +128,7 @@ export type RouteMode = "rail" | "air" | "bus"
 export type WeeklyPhase =
   | "purchase-fuel"
   | "claim-routes"
+  | "operations"
   | "purchase-equipment"
   | "bureaucracy"
 

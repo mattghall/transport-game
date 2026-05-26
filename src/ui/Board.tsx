@@ -766,6 +766,7 @@ const MODE_ACCENT_COLORS: Record<RouteMode, { border: string; face: string; badg
 const TOP_BAR_PHASE_ORDER: WeeklyPhase[] = [
   "purchase-equipment",
   "claim-routes",
+  "operations",
   "bureaucracy",
 ]
 
@@ -1034,6 +1035,8 @@ function formatPhaseLabel(phase: WeeklyPhase) {
       return "Purchase equipment"
     case "claim-routes":
       return "Claim routes"
+    case "operations":
+      return "Operations"
     case "purchase-fuel":
       return "Purchase fuel"
     case "bureaucracy":
@@ -1046,6 +1049,8 @@ function getNextPhase(phase: WeeklyPhase): WeeklyPhase {
     case "purchase-equipment":
       return "claim-routes"
     case "claim-routes":
+      return "operations"
+    case "operations":
       return "bureaucracy"
     case "purchase-fuel":
       return "bureaucracy"
@@ -1055,9 +1060,9 @@ function getNextPhase(phase: WeeklyPhase): WeeklyPhase {
 }
 
 function getRouteInteractionMessage(phase: WeeklyPhase) {
-  return phase === "bureaucracy"
+  return phase === "operations"
     ? "Build routes from your hand or click highlighted rail segments on the map."
-    : "Routes can only be claimed during the bureaucracy phase."
+    : "Routes can only be claimed during the operations phase."
 }
 
 function getPhaseStatusMessage(phase: WeeklyPhase) {
@@ -1066,10 +1071,12 @@ function getPhaseStatusMessage(phase: WeeklyPhase) {
       return "Make 1 vehicle purchase this turn. Buses can buy up to 6, trains up to 3, planes 1."
     case "claim-routes":
       return "Draw 4 city cards and keep exactly 2. This step only adds cities to your hand."
+    case "operations":
+      return "Build tracks and routes, assign vehicles, and split services before running the month."
     case "purchase-fuel":
       return "Fuel purchasing is disabled."
     case "bureaucracy":
-      return "Build routes from your hand, assign vehicles, and operate the maximum affordable trips, then advance."
+      return "Review passenger flow and operating ledgers, then advance."
   }
 }
 
@@ -2173,12 +2180,13 @@ export default function Board({
   const areResizeHandlesVisible =
     !isResourceMarketOpen && !isBureaucracyOpen && !isEconomicsOpen && !isWikiOpen
   const shouldAdvancePhase = isLastPlayerTurn(game)
-  const hasPendingBureaucracyRouteSelection =
-    game.currentPhase === "bureaucracy" &&
+  const canEditOperations = game.currentPhase === "operations"
+  const hasPendingOperationsRouteSelection =
+    canEditOperations &&
     ((selectedRouteMode !== null && selectedCityIds.length >= 2) || selectedRailSegmentKeys.length > 0)
   const isAdvanceBlocked =
     (game.currentPhase === "claim-routes" && (game.activeCityOffer?.keptCityIds.length ?? 0) !== 2) ||
-    hasPendingBureaucracyRouteSelection
+    hasPendingOperationsRouteSelection
   const advanceTurnLabel = game.isGameOver
     ? "Game over"
     : shouldAdvancePhase
@@ -2233,7 +2241,7 @@ export default function Board({
   useEffect(() => {
     setIsResourceMarketOpen(false)
     setIsVehicleMarketOpen(game.currentPhase === "purchase-equipment")
-    setIsBureaucracyOpen(game.currentPhase === "bureaucracy")
+    setIsBureaucracyOpen(game.currentPhase === "operations" || game.currentPhase === "bureaucracy")
     setIsEconomicsOpen(false)
     setIsWikiOpen(false)
     setWikiPreviousPanel(null)
@@ -2242,7 +2250,7 @@ export default function Board({
   function restorePhasePanel() {
     setIsResourceMarketOpen(false)
     setIsVehicleMarketOpen(game.currentPhase === "purchase-equipment")
-    setIsBureaucracyOpen(game.currentPhase === "bureaucracy")
+    setIsBureaucracyOpen(game.currentPhase === "operations" || game.currentPhase === "bureaucracy")
     setIsEconomicsOpen(false)
   }
 
@@ -2306,7 +2314,7 @@ export default function Board({
       return
     }
 
-    if (game.currentPhase === "bureaucracy") {
+    if (game.currentPhase === "operations") {
       setStatusMessage("Use your city cards or click highlighted rail segments on the map to build a route.")
       return
     }
@@ -2408,8 +2416,26 @@ export default function Board({
     setStatusMessage("Selecting rail track segments on the map.")
   }
 
+  function handleSelectAirCity(slot: 0 | 1, cityId: string) {
+    setSelectedRouteMode("air")
+    setSelectedDrawCityIds([])
+    setSelectedRailSegmentKeys([])
+    setSelectedOwnedCityIds(current => {
+      const next: (string | undefined)[] = [current[0], current[1]]
+      next[slot] = cityId
+
+      const otherSlot = slot === 0 ? 1 : 0
+      if (next[otherSlot] === cityId) {
+        next[otherSlot] = undefined
+      }
+
+      return next.filter((candidate): candidate is string => typeof candidate === "string")
+    })
+    setStatusMessage("Selected air route endpoints from owned city cards.")
+  }
+
   function handleClaim() {
-    if (game.currentPhase !== "bureaucracy") {
+    if (game.currentPhase !== "operations") {
       setStatusMessage(getRouteInteractionMessage(game.currentPhase))
       return
     }
@@ -2468,7 +2494,7 @@ export default function Board({
       return
     }
 
-    if (game.currentPhase === "bureaucracy" && hasPendingBureaucracyRouteSelection) {
+    if (game.currentPhase === "operations" && hasPendingOperationsRouteSelection) {
       setStatusMessage("Build or clear the selected route before ending the turn.")
       return
     }
@@ -3014,7 +3040,10 @@ export default function Board({
                         background: "rgba(255, 255, 255, 0.28)",
                       }}
                     >
-                      {[2, 1, 0].map(requiredPhaseIndex => (
+                      {Array.from(
+                        { length: TOP_BAR_PHASE_ORDER.length },
+                        (_, index) => TOP_BAR_PHASE_ORDER.length - 1 - index,
+                      ).map(requiredPhaseIndex => (
                         <div
                           key={`${monthNumber}-band-${requiredPhaseIndex}`}
                           style={{
@@ -3130,6 +3159,7 @@ export default function Board({
           <div>{statusMessage}</div>
           {(game.currentPhase === "purchase-equipment" ||
             game.currentPhase === "claim-routes" ||
+            game.currentPhase === "operations" ||
             game.currentPhase === "bureaucracy") && (
             <div
               style={{
@@ -3147,26 +3177,30 @@ export default function Board({
                     ? "Vehicle deck on the table"
                     : game.currentPhase === "claim-routes"
                       ? "City decks on the table"
-                      : "Route building in bureaucracy"}
+                      : game.currentPhase === "operations"
+                        ? "Operations planning"
+                        : "Bureaucracy review"}
                 </strong>
               <div style={{ color: "#56635a", fontSize: 13 }}>
                 {game.currentPhase === "purchase-equipment"
                   ? "Choose from the cards laid out across the table below instead of opening a market menu."
                   : game.currentPhase === "claim-routes"
                     ? "Draw 4 city cards and keep exactly 2. This step only adds cities to your hand."
-                    : "Build routes from city cards already in your hand, then finish the rest of bureaucracy."}
+                    : game.currentPhase === "operations"
+                      ? "Build tracks, split pods, assign service, and set up routes."
+                      : "Review passenger flow and route ledgers before ending the month."}
               </div>
               {game.currentPhase === "purchase-equipment" && game.hasPurchasedVehicleThisTurn && (
                 <div style={{ color: "#9b1c1c", fontSize: 13 }}>
                   You have already used your vehicle purchase this turn. Advance to the next player.
                 </div>
               )}
-              {game.currentPhase === "bureaucracy" && game.hasClaimedRouteThisTurn && (
+              {game.currentPhase === "operations" && game.hasClaimedRouteThisTurn && (
                 <div style={{ color: "#9b1c1c", fontSize: 13 }}>
                   You have already claimed 1 route this turn. Advance to the next player.
                 </div>
               )}
-              {game.currentPhase === "bureaucracy" && currentPlayerOwnedModes.size === 0 && (
+              {game.currentPhase === "operations" && currentPlayerOwnedModes.size === 0 && (
                 <div style={{ color: "#848484", fontSize: 13 }}>
                   You do not own any vehicles that can claim routes yet.
                 </div>
@@ -3299,7 +3333,7 @@ export default function Board({
               )
             })}
 
-            {game.currentPhase === "bureaucracy" &&
+            {game.currentPhase === "operations" &&
               selectedRouteMode === "rail" &&
               currentPlayerOwnedModes.has("rail") &&
               adjacentRouteSegments.map(segment => {
@@ -3858,7 +3892,7 @@ export default function Board({
                 : "None yet"}
             </div>
             {expandedPlayerSummary.player.id === game.currentPlayerId &&
-            game.currentPhase === "bureaucracy" ? (
+            game.currentPhase === "operations" ? (
               <div
                 style={{
                   borderTop: "1px solid #e1e6df",
@@ -3904,13 +3938,15 @@ export default function Board({
                         <button
                           type="button"
                           onClick={() => handleUpgradeRailRoute(route.id)}
+                          disabled={!canEditOperations}
                           style={{
                             padding: "6px 10px",
                             borderRadius: 999,
                             border: "1px solid #c7d0c4",
-                            background: "#ffffff",
-                            cursor: "pointer",
+                            background: canEditOperations ? "#ffffff" : "#f2f2f2",
+                            cursor: canEditOperations ? "pointer" : "not-allowed",
                             fontWeight: 600,
+                            opacity: canEditOperations ? 1 : 0.6,
                           }}
                         >
                           Electrify
@@ -3935,9 +3971,11 @@ export default function Board({
       )}
       {isBureaucracyOpen && (
         <div style={resourceMarketPanelStyle}>
-          <strong>Bureaucracy ledger</strong>
+          <strong>{game.currentPhase === "operations" ? "Operations" : "Bureaucracy ledger"}</strong>
           <div style={{ color: "#56635a" }}>
-            Passenger cubes now flow toward the biggest city demand first. The detailed operating planner stays below as a reference view.
+            {game.currentPhase === "operations"
+              ? "Configure pods by mode, assign vehicles, and split services before running the month."
+              : "Passenger cubes now flow toward the biggest city demand first. The detailed operating planner stays below as a reference view."}
           </div>
           {currentPlayerBureaucracySummary ? (
             <div
@@ -4557,12 +4595,13 @@ export default function Board({
                                         event.target.value === "" ? null : event.target.value,
                                       )
                                     }
+                                    disabled={!canEditOperations}
                                     style={{
                                       minWidth: 220,
                                       padding: "6px 8px",
                                       borderRadius: 8,
                                       border: "1px solid #c7d0c4",
-                                      background: "#ffffff",
+                                      background: canEditOperations ? "#ffffff" : "#f2f2f2",
                                     }}
                                   >
                                     <option value="">No vehicle assigned</option>
@@ -4597,6 +4636,7 @@ export default function Board({
                                           <input
                                             type="checkbox"
                                             checked={plan.selectedCityIds.includes(cityId)}
+                                            disabled={!canEditOperations}
                                             onChange={() =>
                                               handleToggleServiceCity(plan.id, cityId, plan.selectedCityIds)
                                             }
@@ -4644,13 +4684,15 @@ export default function Board({
                                     <button
                                       type="button"
                                       onClick={() => handleAddSplitService(plan.corridorId)}
+                                      disabled={!canEditOperations}
                                       style={{
                                         padding: "6px 10px",
                                         borderRadius: 999,
                                         border: "1px solid #c7d0c4",
-                                        background: "#ffffff",
-                                        cursor: "pointer",
+                                        background: canEditOperations ? "#ffffff" : "#f2f2f2",
+                                        cursor: canEditOperations ? "pointer" : "not-allowed",
                                         fontSize: 12,
+                                        opacity: canEditOperations ? 1 : 0.6,
                                       }}
                                     >
                                       Add split service
@@ -5061,16 +5103,16 @@ export default function Board({
                 At month end, each vehicle deck with no purchases discards its lowest-number remaining card before the next phase.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
-                2. <strong>Claim Routes</strong>: select cities and claim a bus, air, or rail connection.
+                2. <strong>Claim Routes</strong>: each turn draw 4 city cards and keep exactly 2 to grow your hand.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
-                Each turn you draw 4 city cards and keep exactly 2. Bus routes can use those kept cards plus your hand, air uses any two city cards in hand, and rail is built by clicking eligible track segments on the map.
+                3. <strong>Operations</strong>: build rail/air links, assign vehicles, and split services. Bus pods follow connected owned cities automatically.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
-                Selection order does not matter.
+                Use <strong>Build Track</strong> in Operations to click highlighted adjacent segments on the map and lay rail.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
-                3. <strong>Bureaucracy</strong>: assign vehicles, set fuel caps if needed, and routes auto-run the maximum trips you can afford.
+                4. <strong>Bureaucracy</strong>: review passenger flow and monthly operating results after services auto-run.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
                 Real-world crew math uses <strong>{formatDecimal(game.operatingConfig.hoursPerDay)}</strong> hours/day for{" "}
@@ -5091,7 +5133,7 @@ export default function Board({
             >
               <strong>Route rules</strong>
               <div style={{ color: "#324236", fontSize: 13 }}>
-                <strong>Bus</strong>: can connect any city pair and uses diesel.
+                <strong>Bus</strong>: pods are built from connected owned city cards and use diesel.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
                 <strong>Air</strong>: can connect any city pair, but only between 2 cities at a time.
@@ -5103,7 +5145,7 @@ export default function Board({
                 Connecting a brand-new city pays a bonus based on that city&apos;s size.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
-                One vehicle card can operate one matching route at a time during bureaucracy, and fuel is charged as part of each trip&apos;s operating cost.
+                One vehicle card can operate one matching route at a time during operations, and fuel is charged as part of each trip&apos;s operating cost.
               </div>
             </div>
             <div
@@ -5543,8 +5585,10 @@ export default function Board({
                     ? "Vehicle market"
                     : game.currentPhase === "claim-routes"
                       ? "City Decks"
+                      : game.currentPhase === "operations"
+                        ? "Operations"
                       : game.currentPhase === "bureaucracy"
-                        ? "Route Builder"
+                        ? "Bureaucracy"
                         : "Player aid"}
                 </strong>
               </div>
@@ -5564,8 +5608,10 @@ export default function Board({
                 ? "Your current vehicle models appear first in one row, followed by market purchase options."
                 : game.currentPhase === "claim-routes"
                   ? "Draw regional city cards and keep exactly 2 to add them to your hand."
+                  : game.currentPhase === "operations"
+                    ? "Build tracks/routes and configure service pods by mode before running operations."
                   : game.currentPhase === "bureaucracy"
-                    ? "Use city cards in hand to build routes, then finish operating your network."
+                    ? "Review how passenger cubes moved and how each pod performed."
                   : "The board stays clear while reference panels open over it."}
             </div>
             </div>
@@ -5636,7 +5682,7 @@ export default function Board({
                   </div>
                 </div>
               </>
-          ) : game.currentPhase === "claim-routes" || game.currentPhase === "bureaucracy" ? (
+          ) : game.currentPhase === "claim-routes" || game.currentPhase === "operations" ? (
             <div
               style={{
                 flex: 1,
@@ -5784,28 +5830,25 @@ export default function Board({
                 >
                   Owned city cards
                 </div>
-                {game.currentPhase === "bureaucracy" && (
+                {game.currentPhase === "operations" && (
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     <button
                       type="button"
                       onClick={() => {
-                        setSelectedRouteMode("bus")
-                        setSelectedOwnedCityIds([])
-                        setSelectedDrawCityIds([])
-                        setSelectedRailSegmentKeys([])
+                        setStatusMessage("Bus pods are automatic from connected owned cities. No build step is needed.")
                       }}
-                      disabled={!currentPlayerOwnedModes.has("bus")}
+                      disabled
                       style={{
                         padding: "8px 12px",
                         borderRadius: 999,
-                        border: `1px solid ${selectedRouteMode === "bus" ? "#223024" : "#c7d0c4"}`,
-                        background: selectedRouteMode === "bus" ? "#223024" : "#ffffff",
-                        color: selectedRouteMode === "bus" ? "#ffffff" : "#223024",
-                        cursor: currentPlayerOwnedModes.has("bus") ? "pointer" : "not-allowed",
-                        opacity: currentPlayerOwnedModes.has("bus") ? 1 : 0.6,
+                        border: "1px solid #d8dfd5",
+                        background: "#f6f8f5",
+                        color: "#7b857d",
+                        cursor: "not-allowed",
+                        opacity: 0.9,
                       }}
                     >
-                      Bus
+                      Bus (auto)
                     </button>
                     <button
                       type="button"
@@ -5826,7 +5869,7 @@ export default function Board({
                         opacity: currentPlayerOwnedModes.has("rail") ? 1 : 0.6,
                       }}
                     >
-                      Rail
+                      Build Track
                     </button>
                     <button
                       type="button"
@@ -5882,7 +5925,7 @@ export default function Board({
                             ? "bus"
                             : "rail"
                       const disabled =
-                        game.currentPhase !== "bureaucracy" ||
+                        game.currentPhase !== "operations" ||
                         game.hasClaimedRouteThisTurn ||
                         mode === "rail" ||
                         !currentPlayerOwnedModes.has(mode)
@@ -5997,18 +6040,97 @@ export default function Board({
                 }}
               >
                 <div>Draw 4 city cards and keep exactly 2. Those cards are added to your hand when you confirm picks.</div>
-                <div>Route building happens later during bureaucracy.</div>
+                <div>Route building happens during Operations.</div>
               </div>
             </>
-          ) : game.currentPhase === "bureaucracy" ? (
+          ) : game.currentPhase === "operations" ? (
             <>
               <div>
                 <div style={{ color: "#56635a", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em" }}>
-                  ROUTE PREVIEW
+                  OPERATIONS PREVIEW
                 </div>
                 <strong>{selectionSummary}</strong>
               </div>
+              {selectedRouteMode === "air" && (
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(2, minmax(160px, 1fr))",
+                    gap: 8,
+                  }}
+                >
+                  <label style={{ display: "grid", gap: 4, fontSize: 12, color: "#324236" }}>
+                    Plane city A
+                    <select
+                      value={selectedOwnedCityIds[0] ?? ""}
+                      onChange={event => handleSelectAirCity(0, event.target.value)}
+                      style={{
+                        border: "1px solid #c7d0c4",
+                        borderRadius: 8,
+                        background: "#ffffff",
+                        padding: "6px 8px",
+                      }}
+                    >
+                      <option value="" disabled>
+                        Select city
+                      </option>
+                      {currentPlayerOwnedCityCards.map(city => (
+                        <option key={`air-a-${city.id}`} value={city.id}>
+                          {city.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label style={{ display: "grid", gap: 4, fontSize: 12, color: "#324236" }}>
+                    Plane city B
+                    <select
+                      value={selectedOwnedCityIds[1] ?? ""}
+                      onChange={event => handleSelectAirCity(1, event.target.value)}
+                      style={{
+                        border: "1px solid #c7d0c4",
+                        borderRadius: 8,
+                        background: "#ffffff",
+                        padding: "6px 8px",
+                      }}
+                    >
+                      <option value="" disabled>
+                        Select city
+                      </option>
+                      {currentPlayerOwnedCityCards
+                        .filter(city => city.id !== selectedOwnedCityIds[0])
+                        .map(city => (
+                          <option key={`air-b-${city.id}`} value={city.id}>
+                            {city.name}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                </div>
+              )}
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedRouteMode("rail")
+                    setSelectedOwnedCityIds([])
+                    setSelectedDrawCityIds([])
+                    setSelectedRailSegmentKeys([])
+                    setStatusMessage("Build Track is active. Click highlighted adjacent segments to lay rail.")
+                  }}
+                  disabled={!currentPlayerOwnedModes.has("rail")}
+                  style={{
+                    padding: "8px 12px",
+                    borderRadius: 999,
+                    border: "1px solid #c7d0c4",
+                    cursor: currentPlayerOwnedModes.has("rail") ? "pointer" : "not-allowed",
+                    background: selectedRouteMode === "rail" ? "#eff5ee" : "#ffffff",
+                    color: "#223024",
+                    fontWeight: 700,
+                    opacity: currentPlayerOwnedModes.has("rail") ? 1 : 0.6,
+                  }}
+                >
+                  Build Track
+                </button>
                 <button
                   type="button"
                   onClick={handleClaim}
@@ -6029,7 +6151,7 @@ export default function Board({
                     fontWeight: 700,
                   }}
                 >
-                  Build route
+                  {selectedRouteMode === "rail" ? "Build track" : "Build route"}
                 </button>
                 <button
                   type="button"
@@ -6194,7 +6316,7 @@ export default function Board({
                     fontSize: 13,
                   }}
                 >
-                  Select a route mode, pick city cards from your hand, or click rail segments on the map to preview a route.
+                  Select air or build track mode, then pick city cards from your hand or click highlighted rail segments to preview.
                 </div>
               )}
             </>
