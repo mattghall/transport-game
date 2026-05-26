@@ -198,6 +198,10 @@ function isVehicleCard(value: unknown): value is VehicleCard {
     typeof card.totalPassengerCapacity === "number" &&
     typeof card.operatingCostMultiplier === "number" &&
     typeof card.speed === "number" &&
+    (card.fuelResource === undefined ||
+      card.fuelResource === null ||
+      card.fuelResource === "diesel" ||
+      card.fuelResource === "jetFuel") &&
     typeof card.funFact === "string"
   )
 }

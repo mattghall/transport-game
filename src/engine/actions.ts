@@ -9,6 +9,7 @@ import type {
   VehicleType,
   WeeklyPhase,
 } from "./types"
+import { CITY_DECK_REGIONS } from "./types"
 import {
   applyBureaucracyFuelConsumption,
   findPlayerBureaucracyPlan,
@@ -620,6 +621,72 @@ function getCurrentPlayerHandCityIds(game: GameState, currentPlayer = getCurrent
   ]
 }
 
+function getPrimaryCityDeckRegion(city: Pick<City, "region">): CityDeckRegion | null {
+  const primaryRegion = city.region?.[0]
+
+  return primaryRegion && CITY_DECK_REGIONS.includes(primaryRegion as CityDeckRegion)
+    ? (primaryRegion as CityDeckRegion)
+    : null
+}
+
+function buildCityDeckRegionCenters(game: GameState) {
+  return Object.fromEntries(
+    CITY_DECK_REGIONS.map(region => {
+      const regionCities = game.cities.filter(city => getPrimaryCityDeckRegion(city) === region)
+
+      if (regionCities.length === 0) {
+        return [region, null]
+      }
+
+      const latTotal = regionCities.reduce((total, city) => total + city.lat, 0)
+      const lngTotal = regionCities.reduce((total, city) => total + city.lng, 0)
+
+      return [
+        region,
+        {
+          lat: latTotal / regionCities.length,
+          lng: lngTotal / regionCities.length,
+        },
+      ]
+    }),
+  ) as Record<CityDeckRegion, { lat: number; lng: number } | null>
+}
+
+function getCityDeckFallbackOrder(game: GameState, region: CityDeckRegion) {
+  const centers = buildCityDeckRegionCenters(game)
+  const originCenter = centers[region]
+
+  if (!originCenter) {
+    return CITY_DECK_REGIONS.filter(candidate => candidate !== region)
+  }
+
+  return CITY_DECK_REGIONS.filter(candidate => candidate !== region).sort((regionA, regionB) => {
+    const centerA = centers[regionA]
+    const centerB = centers[regionB]
+
+    if (!centerA && !centerB) {
+      return regionA.localeCompare(regionB)
+    }
+
+    if (!centerA) {
+      return 1
+    }
+
+    if (!centerB) {
+      return -1
+    }
+
+    const distanceA = Math.hypot(originCenter.lat - centerA.lat, originCenter.lng - centerA.lng)
+    const distanceB = Math.hypot(originCenter.lat - centerB.lat, originCenter.lng - centerB.lng)
+
+    if (distanceA !== distanceB) {
+      return distanceA - distanceB
+    }
+
+    return regionA.localeCompare(regionB)
+  })
+}
+
 function applyKeptCityOfferToCurrentPlayer(game: GameState) {
   const keptCityIds = game.activeCityOffer?.keptCityIds ?? []
 
@@ -638,6 +705,41 @@ function applyKeptCityOfferToCurrentPlayer(game: GameState) {
         : player,
     ),
   }
+}
+
+function returnUnkeptCityOfferCardsToDecks(game: GameState) {
+  const activeCityOffer = game.activeCityOffer
+
+  if (!activeCityOffer) {
+    return game
+  }
+
+  const keptCityIdSet = new Set(activeCityOffer.keptCityIds)
+  const nextDecks = { ...game.cityDeckCardIdsByRegion }
+  let changed = false
+
+  for (const cityId of activeCityOffer.cityIds) {
+    if (keptCityIdSet.has(cityId)) {
+      continue
+    }
+
+    const city = game.cities.find(candidate => candidate.id === cityId)
+    const region = city ? getPrimaryCityDeckRegion(city) : null
+
+    if (!region) {
+      continue
+    }
+
+    nextDecks[region] = [...nextDecks[region], cityId]
+    changed = true
+  }
+
+  return changed
+    ? {
+        ...game,
+        cityDeckCardIdsByRegion: nextDecks,
+      }
+    : game
 }
 
 function getOrderedCityIdsFromSegmentPairs(segmentPairs: Array<[string, string]>) {
@@ -1143,13 +1245,27 @@ export function drawCityOffer(
     }
   }
 
-  const deck = game.cityDeckCardIdsByRegion[region]
-  const cityIds = deck.slice(0, CITY_DRAW_COUNT)
+  const drawOrder = [region, ...getCityDeckFallbackOrder(game, region)]
+  const nextDecks = { ...game.cityDeckCardIdsByRegion }
+  const cityIds: string[] = []
+
+  for (const drawRegion of drawOrder) {
+    if (cityIds.length >= CITY_DRAW_COUNT) {
+      break
+    }
+
+    const deck = nextDecks[drawRegion]
+    const neededCards = CITY_DRAW_COUNT - cityIds.length
+    const drawnCards = deck.slice(0, neededCards)
+
+    cityIds.push(...drawnCards)
+    nextDecks[drawRegion] = deck.slice(drawnCards.length)
+  }
 
   if (cityIds.length < CITY_DRAW_COUNT) {
     return {
       ok: false,
-      error: `The ${region} deck does not have enough city cards left to draw from.`,
+      error: "There are not enough city cards left across the decks to draw 4 cards.",
     }
   }
 
@@ -1159,10 +1275,7 @@ export function drawCityOffer(
     cityIds,
     game: {
       ...game,
-      cityDeckCardIdsByRegion: {
-        ...game.cityDeckCardIdsByRegion,
-        [region]: deck.slice(cityIds.length),
-      },
+      cityDeckCardIdsByRegion: nextDecks,
       activeCityOffer: {
         region,
         cityIds,
@@ -1260,7 +1373,9 @@ export function advancePhase(game: GameState): GameState {
   }
 
   if (game.currentPhase === "claim-routes") {
-    const gameWithKeptCityCards = applyKeptCityOfferToCurrentPlayer(game)
+    const gameWithKeptCityCards = returnUnkeptCityOfferCardsToDecks(
+      applyKeptCityOfferToCurrentPlayer(game),
+    )
 
     return {
       ...gameWithKeptCityCards,
@@ -1566,7 +1681,9 @@ export function advanceTurn(game: GameState): GameState {
   }
 
   const gameWithKeptCityCards =
-    game.currentPhase === "claim-routes" ? applyKeptCityOfferToCurrentPlayer(game) : game
+    game.currentPhase === "claim-routes"
+      ? returnUnkeptCityOfferCardsToDecks(applyKeptCityOfferToCurrentPlayer(game))
+      : game
 
   return {
     ...gameWithKeptCityCards,

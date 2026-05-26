@@ -32,6 +32,7 @@ import {
   getBalanceAdjustmentPerTrip,
   getCityDemandSize,
   getCombinedDemandForCityIds,
+  getCrewCostForTrips,
   getDemandCapacityForCityIds,
   getCrewCostPerWeekPerVehicle,
   getFleetSizeForDemand,
@@ -351,8 +352,16 @@ function getPrimaryCityDeckRegion(region: GameState["cities"][number]["region"])
 function renderFillBoxes(
   totalBoxes: number,
   filledBoxes: number,
-  filledColor = "#5fbf72",
+  options: {
+    filledColor?: string
+    unfilledColor?: string
+    unfilledBorderColor?: string
+  } = {},
 ) {
+  const filledColor = options.filledColor ?? "#5fbf72"
+  const unfilledColor = options.unfilledColor ?? "transparent"
+  const unfilledBorderColor = options.unfilledBorderColor ?? "#92a097"
+
   return Array.from({ length: Math.max(totalBoxes, 0) }, (_, index) => (
     <span
       key={`fill-box-${totalBoxes}-${filledBoxes}-${index}`}
@@ -360,8 +369,8 @@ function renderFillBoxes(
         width: 12,
         height: 12,
         borderRadius: 3,
-        border: `1px solid ${index < filledBoxes ? filledColor : "#92a097"}`,
-        background: index < filledBoxes ? filledColor : "transparent",
+        border: `1px solid ${index < filledBoxes ? filledColor : unfilledBorderColor}`,
+        background: index < filledBoxes ? filledColor : unfilledColor,
         display: "inline-block",
         boxSizing: "border-box",
       }}
@@ -369,15 +378,24 @@ function renderFillBoxes(
   ))
 }
 
+type CityAdjacencyLabel = {
+  id: string
+  label: string
+  isInNetwork: boolean
+}
+
 function getCityAdjacencyLabels(
   city: GameState["cities"][number] | undefined,
   cityMap: Record<string, GameState["cities"][number]>,
+  networkCityIds: Set<string>,
 ) {
   return (city?.adjacentCities ?? [])
     .map(adjacentCity => ({
+      id: adjacentCity.id,
       label: `${cityMap[adjacentCity.id]?.name ?? adjacentCity.id} - ${adjacentCity.distance}mi (${getPayoutMultiplierForDistance(adjacentCity.distance)})`,
       distance: adjacentCity.distance,
       name: cityMap[adjacentCity.id]?.name ?? adjacentCity.id,
+      isInNetwork: networkCityIds.has(adjacentCity.id),
     }))
     .sort((entryA, entryB) => {
       if (entryA.distance !== entryB.distance) {
@@ -386,7 +404,6 @@ function getCityAdjacencyLabels(
 
       return entryA.name.localeCompare(entryB.name)
     })
-    .map(entry => entry.label)
 }
 
 function formatPopulation(population: number | undefined) {
@@ -419,7 +436,7 @@ function renderCitySelectionCard({
   city: GameState["cities"][number] | undefined
   cityRegion: CityDeckRegion | null
   regionStyle: { fill: string; stroke: string; surface: string; text: string }
-  adjacencyLabels: string[]
+  adjacencyLabels: CityAdjacencyLabel[]
   isSelected: boolean
   disabled: boolean
   onClick: () => void
@@ -513,15 +530,39 @@ function renderCitySelectionCard({
         </div>
         {adjacencyLabels.length > 0 ? (
           <div style={{ display: "grid", gap: 4 }}>
-            {adjacencyLabels.map(label => (
+            {adjacencyLabels.map(({ id, isInNetwork, label }) => (
               <div
-                key={`${cityId}-${label}`}
+                key={`${cityId}-${id}`}
                 style={{
-                  color: "#324236",
+                  color: isInNetwork ? regionStyle.text : "#324236",
                   fontSize: 10,
                   lineHeight: 1.3,
+                  fontWeight: isInNetwork ? 700 : 400,
+                  padding: isInNetwork ? "3px 6px" : 0,
+                  borderRadius: isInNetwork ? 999 : 0,
+                  background: isInNetwork
+                    ? colorWithOpacity(regionStyle.fill, 0.2)
+                    : "transparent",
+                  border: isInNetwork
+                    ? `1px solid ${colorWithOpacity(regionStyle.stroke, 0.28)}`
+                    : "none",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  justifySelf: "start",
                 }}
               >
+                {isInNetwork && (
+                  <span
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: "50%",
+                      background: regionStyle.stroke,
+                      flexShrink: 0,
+                    }}
+                  />
+                )}
                 {label}
               </div>
             ))}
@@ -1703,10 +1744,12 @@ export default function Board({
           : tripFuelBurnReal *
             game.operatingConfig.fuelPricePerRealUnit[fuelResource] *
             getFuelPriceMultiplier(game, fuelResource)
-      const fixedCrewCostPerVehicle =
-        previewCard === null ? 0 : getCrewCostPerWeekPerVehicle(game, previewCard.type)
       const fixedMaintenanceCostPerVehicle =
         previewCard === null ? 0 : getMaintenanceCostPerWeekPerVehicle(game, previewCard.type)
+      const crewCostPerTrip =
+        previewCard === null || totalTripDurationHours <= 0
+          ? 0
+          : getCrewCostForTrips(game, previewCard.type, totalTripDurationHours, 1)
       const balanceAdjustmentPerTrip =
         previewCard === null
           ? 0
@@ -1727,10 +1770,32 @@ export default function Board({
           : getAffordableFleetSize({
               targetFleetSize: Math.min(demandFleetSize, ownedFleetSize),
               availableBudget: Math.max(0, (currentPlayer?.money ?? 0) - claimCost),
-              fixedCostPerVehicle: fixedCrewCostPerVehicle + fixedMaintenanceCostPerVehicle,
-              variableTripCost: balanceAdjustmentPerTrip + fuelCostPerTrip,
+              fixedCostPerVehicle: fixedMaintenanceCostPerVehicle,
+              variableTripCost: balanceAdjustmentPerTrip + fuelCostPerTrip + crewCostPerTrip,
               maxTrips: maxTripsPerPeriod,
             })
+      const demandCapacity =
+        previewCard === null ? 0 : getDemandCapacityForCityIds(game, selectedCities.map(city => city.id))
+      const maxTripsByTime = maxTripsPerPeriod * plannedFleetSize
+      const maxUsefulTripsByDemand =
+        previewCard === null || previewCard.totalPassengerCapacity <= 0
+          ? 0
+          : Math.ceil(demandCapacity / Math.max(previewCard.totalPassengerCapacity, 1))
+      const fixedMaintenanceCost =
+        fixedMaintenanceCostPerVehicle * plannedFleetSize
+      const maxTripsByBudget =
+        plannedFleetSize <= 0
+          ? 0
+          : balanceAdjustmentPerTrip + fuelCostPerTrip + crewCostPerTrip <= 0
+            ? maxTripsByTime
+            : Math.floor(
+                (Math.max(0, (currentPlayer?.money ?? 0) - claimCost - fixedMaintenanceCost) + 1e-9) /
+                  Math.max(balanceAdjustmentPerTrip + fuelCostPerTrip + crewCostPerTrip, 0.000001),
+              )
+      const selectedTrips = Math.max(
+        0,
+        Math.min(maxTripsByTime, maxTripsByBudget, maxUsefulTripsByDemand),
+      )
       const passengersPerTrip =
         previewCard === null
           ? 0
@@ -1740,7 +1805,10 @@ export default function Board({
               previewCard,
               plannedFleetSize,
             )
-      const passengersPerPeriod = passengersPerTrip * maxTripsPerPeriod
+      const passengersPerPeriod =
+        previewCard === null
+          ? 0
+          : Math.min(selectedTrips * previewCard.totalPassengerCapacity, demandCapacity)
       const revenuePerPeriod =
         totalDistanceMiles *
         passengersPerPeriod *
@@ -1748,17 +1816,11 @@ export default function Board({
       const fuelCostPerPeriod =
         fuelResource === null
           ? 0
-          : tripFuelBurnReal *
-            maxTripsPerPeriod *
-            plannedFleetSize *
-            game.operatingConfig.fuelPricePerRealUnit[fuelResource] *
-            getFuelPriceMultiplier(game, fuelResource)
-      const fixedCrewCost = fixedCrewCostPerVehicle * plannedFleetSize
-      const fixedMaintenanceCost =
-        fixedMaintenanceCostPerVehicle * plannedFleetSize
-      const balanceAdjustmentPerPeriod = maxTripsPerPeriod * plannedFleetSize * balanceAdjustmentPerTrip
+          : fuelCostPerTrip * selectedTrips
+      const crewCostPerPeriod = crewCostPerTrip * selectedTrips
+      const balanceAdjustmentPerPeriod = selectedTrips * balanceAdjustmentPerTrip
       const operatingCostPerPeriod =
-        fixedCrewCost + fixedMaintenanceCost + balanceAdjustmentPerPeriod + fuelCostPerPeriod
+        crewCostPerPeriod + fixedMaintenanceCost + balanceAdjustmentPerPeriod + fuelCostPerPeriod
       return {
         mode: option.mode,
         valid: option.valid,
@@ -1772,10 +1834,10 @@ export default function Board({
         demandFleetSize,
         plannedFleetSize,
         passengersPerTrip,
-        maxTripsPerPeriod: maxTripsPerPeriod * plannedFleetSize,
+        maxTripsPerPeriod: selectedTrips,
         passengersPerPeriod,
         revenuePerPeriod,
-        crewCostPerPeriod: fixedCrewCost,
+        crewCostPerPeriod,
         maintenanceCostPerPeriod: fixedMaintenanceCost,
         fuelCostPerPeriod,
         balanceCostPerPeriod: balanceAdjustmentPerPeriod,
@@ -2034,6 +2096,45 @@ export default function Board({
 
     return labelsByCardId
   }, [currentPlayerBureaucracySummary])
+  const currentPlayerVehicleUtilizationByCardId = useMemo(() => {
+    const utilizationByCardId: Record<
+      string,
+      { percent: number; selectedTrips: number; maxTrips: number }
+    > = {}
+
+    currentPlayerBureaucracySummary?.routePlans.forEach(plan => {
+      if (!plan.vehicleCard) {
+        return
+      }
+
+      const current = utilizationByCardId[plan.vehicleCard.id] ?? {
+        percent: 0,
+        selectedTrips: 0,
+        maxTrips: 0,
+      }
+
+      current.selectedTrips += plan.selectedTrips
+      current.maxTrips += plan.maxTripsByTime
+      current.percent =
+        current.maxTrips <= 0
+          ? 0
+          : Math.max(0, Math.min(1, current.selectedTrips / current.maxTrips))
+
+      utilizationByCardId[plan.vehicleCard.id] = current
+    })
+
+    return utilizationByCardId
+  }, [currentPlayerBureaucracySummary])
+  const activeCityOfferRegions = useMemo(() => {
+    if (!activeCityOffer) {
+      return []
+    }
+
+    return [...new Set(
+      activeCityOffer.cityIds
+        .map(cityId => getPrimaryCityDeckRegion(cityMap[cityId]?.region) ?? activeCityOffer.region),
+    )]
+  }, [activeCityOffer, cityMap])
   const nextPlayer = currentPlayerIndex === -1
     ? game.players[0]
     : game.players[(currentPlayerIndex + 1) % game.players.length]
@@ -2448,6 +2549,7 @@ export default function Board({
     const isOwnedModel = currentPlayerOwnedVehicleCards.some(ownedCard => ownedCard.id === card.id)
     const ownedCount = currentPlayerOwnedVehicleCountsByCardId[card.id] ?? 0
     const assignedRouteLabels = currentPlayerAssignedRouteLabelsByVehicleCardId[card.id] ?? []
+    const utilization = currentPlayerVehicleUtilizationByCardId[card.id]
     const accentColor = currentPlayer?.color ?? "#457b9d"
     const isOwnedSection = section === "owned"
     const canBuy =
@@ -2537,12 +2639,31 @@ export default function Board({
         {isOwnedModel && (
           <div
             style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 8,
               color: isOwnedSection ? accentColor : "#5b7395",
               fontSize: 11,
               fontWeight: 700,
             }}
           >
-            {isOwnedSection ? "Owned fleet" : "Owned model"}
+            <span>{isOwnedSection ? "Owned fleet" : "Owned model"}</span>
+            {isOwnedSection && (
+              <span
+                style={{
+                  padding: "2px 6px",
+                  borderRadius: 999,
+                  background: colorWithOpacity(
+                    utilization && utilization.percent > 0 ? accentColor : "#7d8d80",
+                    utilization && utilization.percent > 0 ? 0.16 : 0.1,
+                  ),
+                  color: utilization && utilization.percent > 0 ? accentColor : "#5d6c61",
+                }}
+              >
+                {Math.round((utilization?.percent ?? 0) * 100)}%
+              </span>
+            )}
           </div>
         )}
         <div
@@ -2627,6 +2748,14 @@ export default function Board({
         {isOwnedSection && assignedRouteLabels.length > 0 && (
           <div style={{ color: "#56635a", fontSize: 11, lineHeight: 1.35 }}>
             <strong>Assigned routes:</strong> {assignedRouteLabels.join("; ")}
+          </div>
+        )}
+        {isOwnedSection && ownedCount > 0 && (
+          <div style={{ color: "#56635a", fontSize: 11, lineHeight: 1.35 }}>
+            <strong>Utilization:</strong>{" "}
+            {utilization
+              ? `${Math.round(utilization.percent * 100)}% of max trips`
+              : "0% of max trips"}
           </div>
         )}
         <button
@@ -3928,8 +4057,91 @@ export default function Board({
                           No {MODE_LABELS[mode].toLowerCase()} services to operate.
                         </div>
                       ) : (
-                        plans.map(plan => (
-                          <div
+                        plans.map(plan => {
+                          const hasCapacityShortfall =
+                            plan.selectedFleetSize < plan.demandFleetSize ||
+                            plan.movedCubes < plan.movableDemandCubes
+                          const unmetCapacityCubes = Math.max(
+                            0,
+                            plan.movableDemandCubes - plan.movedCubes,
+                          )
+                          const movedOutboundByCityId = Object.fromEntries(
+                            plan.simplifiedLedgerEntries.reduce(
+                              (totals, entry) => {
+                                totals.set(
+                                  entry.originCityId,
+                                  (totals.get(entry.originCityId) ?? 0) +
+                                    entry.cubeCount,
+                                )
+                                return totals
+                              },
+                              new Map<string, number>(),
+                            ),
+                          ) as Record<string, number>
+                          const podCities = plan.selectedCityIds
+                            .map(cityId => cityMap[cityId])
+                            .filter(
+                              (
+                                city,
+                              ): city is GameState["cities"][number] =>
+                                city !== undefined,
+                            )
+                          const podPoints = podCities.map(city => ({
+                            cityId: city.id,
+                            cityName: city.name,
+                            ...latLngToWorld(city),
+                          }))
+
+                          const flowColors = [
+                            "#2563eb",
+                            "#7c3aed",
+                            "#d97706",
+                            "#0f766e",
+                            "#db2777",
+                            "#1d4ed8",
+                          ]
+                          const markerPrefix = plan.id.replace(
+                            /[^a-zA-Z0-9_-]/g,
+                            "-",
+                          )
+                          const pointByCityId = Object.fromEntries(
+                            podPoints.map(point => [point.cityId, point]),
+                          )
+                          const minX = Math.min(
+                            ...(podPoints.length > 0
+                              ? podPoints.map(point => point.x)
+                              : [0]),
+                          )
+                          const maxX = Math.max(
+                            ...(podPoints.length > 0
+                              ? podPoints.map(point => point.x)
+                              : [120]),
+                          )
+                          const minY = Math.min(
+                            ...(podPoints.length > 0
+                              ? podPoints.map(point => point.y)
+                              : [0]),
+                          )
+                          const maxY = Math.max(
+                            ...(podPoints.length > 0
+                              ? podPoints.map(point => point.y)
+                              : [120]),
+                          )
+                          const previewPadding = 28
+                          const previewWidth = Math.max(
+                            120,
+                            maxX - minX + previewPadding * 2,
+                          )
+                          const previewHeight = Math.max(
+                            120,
+                            maxY - minY + previewPadding * 2,
+                          )
+                          const previewViewBox = `${minX - previewPadding} ${minY - previewPadding} ${previewWidth} ${previewHeight}`
+                          const shouldStretchFlowMap =
+                            plan.simplifiedLedgerEntries.length >= 5
+
+                          return (
+                            <div
                             key={plan.id}
                             style={{
                               border: "1px solid #e1e6df",
@@ -3949,7 +4161,29 @@ export default function Board({
                                 : `${MODE_LABELS[plan.route.mode]} `}
                               {plan.segmentCount > 1 ? `• ${plan.segmentCount} segments ` : ""}
                               {plan.vehicleCard
-                                ? `• #${plan.vehicleCard.number} ${plan.vehicleCard.name} • Fleet ${plan.selectedFleetSize}${plan.selectedFleetSize < plan.demandFleetSize ? ` / ${plan.demandFleetSize} needed` : ""}`
+                                ? (
+                                  <>
+                                    {`• #${plan.vehicleCard.number} ${plan.vehicleCard.name} • `}
+                                    <span
+                                      style={{
+                                        color:
+                                          plan.selectedFleetSize < plan.demandFleetSize
+                                            ? "#b42318"
+                                            : "#56635a",
+                                        fontWeight:
+                                          plan.selectedFleetSize < plan.demandFleetSize
+                                            ? 700
+                                            : 400,
+                                      }}
+                                    >
+                                      {`Fleet ${plan.selectedFleetSize}${
+                                        plan.selectedFleetSize < plan.demandFleetSize
+                                          ? ` / ${plan.demandFleetSize} needed`
+                                          : ""
+                                      }`}
+                                    </span>
+                                  </>
+                                )
                                 : "• No vehicle assigned"}
                             </div>
                             <div
@@ -3966,6 +4200,12 @@ export default function Board({
                               )}
                               <span>Demand {plan.movableDemandCubes} cubes</span>
                               <span>Filled {plan.simplifiedCityStatuses.reduce((total, city) => total + city.filledCubes, 0)} boxes</span>
+                              {hasCapacityShortfall && (
+                                <span style={{ color: "#b42318", fontWeight: 700 }}>
+                                  {unmetCapacityCubes}{" "}
+                                  cubes blocked by capacity
+                                </span>
+                              )}
                               <span>{plan.cubeCapacityPerTrip} cubes/trip</span>
                               <span>max {plan.maxTripsByTime} trips</span>
                               <span>Fleet {plan.selectedFleetSize}</span>
@@ -4007,13 +4247,55 @@ export default function Board({
                                       style={{
                                         display: "flex",
                                         flexWrap: "wrap",
-                                        gap: 4,
+                                        alignItems: "center",
+                                        justifyContent: "space-between",
+                                        gap: 8,
                                       }}
                                     >
-                                      {renderFillBoxes(cityStatus.inboundCubes, cityStatus.filledCubes)}
+                                      <div
+                                        style={{
+                                          display: "inline-flex",
+                                          flexWrap: "wrap",
+                                          gap: 4,
+                                        }}
+                                      >
+                                        {renderFillBoxes(
+                                          cityStatus.size + 1,
+                                          Math.min(
+                                            cityStatus.size + 1,
+                                            cityStatus.filledCubes,
+                                          ),
+                                        )}
+                                      </div>
+                                      <div
+                                        style={{
+                                          display: "inline-flex",
+                                          flexWrap: "wrap",
+                                          gap: 4,
+                                          justifyContent: "flex-end",
+                                        }}
+                                      >
+                                        {renderFillBoxes(
+                                          Math.max(
+                                            0,
+                                            cityStatus.outboundCubes -
+                                              (movedOutboundByCityId[
+                                                cityStatus.cityId
+                                              ] ?? 0),
+                                          ),
+                                          Math.max(
+                                            0,
+                                            cityStatus.outboundCubes -
+                                              (movedOutboundByCityId[
+                                                cityStatus.cityId
+                                              ] ?? 0),
+                                          ),
+                                          { filledColor: "#ef4444" },
+                                        )}
+                                      </div>
                                     </div>
                                     <div style={{ color: "#56635a", fontSize: 11 }}>
-                                      Filled {cityStatus.filledCubes} / {cityStatus.inboundCubes}
+                                      Filled {cityStatus.filledCubes} / {cityStatus.size + 1}
                                       {" • "}Out {cityStatus.outboundCubes}
                                     </div>
                                   </div>
@@ -4024,47 +4306,209 @@ export default function Board({
                               style={{
                                 display: "grid",
                                 gap: 8,
-                                border: "1px solid #e1e6df",
-                                borderRadius: 8,
-                                padding: 8,
-                                background: "#ffffff",
+                                gridTemplateColumns:
+                                  podPoints.length >= 2
+                                    ? "minmax(0, 1.25fr) minmax(0, 1fr)"
+                                    : "minmax(0, 1fr)",
+                                alignItems: shouldStretchFlowMap
+                                  ? "stretch"
+                                  : "start",
                               }}
                             >
-                              <div>
-                                <strong>Simplified passenger ledger</strong>
-                              </div>
-                              {plan.simplifiedLedgerEntries.length === 0 ? (
-                                <div style={{ color: "#56635a", fontSize: 12 }}>
-                                  No passenger cubes can be moved on this service with the current setup.
+                              <div
+                                style={{
+                                  display: "grid",
+                                  gap: 8,
+                                  border: "1px solid #e1e6df",
+                                  borderRadius: 8,
+                                  padding: 8,
+                                  background: "#ffffff",
+                                }}
+                              >
+                                <div>
+                                  <strong>Simplified passenger ledger</strong>
                                 </div>
-                              ) : (
-                                plan.simplifiedLedgerEntries.map(entry => (
-                                  <div
-                                    key={entry.id}
+                                {plan.simplifiedLedgerEntries.length === 0 ? (
+                                  <div style={{ color: "#56635a", fontSize: 12 }}>
+                                    No passenger cubes can be moved on this service with the current setup.
+                                  </div>
+                                ) : (
+                                  plan.simplifiedLedgerEntries.map(entry => (
+                                    <div
+                                      key={entry.id}
+                                      style={{
+                                        border: "1px solid #e1e6df",
+                                        borderRadius: 8,
+                                        padding: "8px 10px",
+                                        background: "#fafcf9",
+                                        display: "grid",
+                                        gap: 4,
+                                      }}
+                                    >
+                                      <div style={{ fontSize: 13 }}>
+                                        <strong>{entry.originCityName}</strong> to{" "}
+                                        <strong>{entry.destinationCityName}</strong>
+                                      </div>
+                                      <div style={{ color: "#324236", fontSize: 12 }}>
+                                        {entry.cubeCount} cube{entry.cubeCount === 1 ? "" : "s"}
+                                        {" • "}👥 {formatDecimal(entry.passengers, 0)}
+                                        {" • "}x{formatDecimal(entry.payoutMultiplier, 0)}
+                                        {" • "}Fare {formatCurrency(entry.farePerPassenger)}
+                                        {" • "}Payout {formatCurrency(entry.payout)}
+                                      </div>
+                                      <div style={{ color: "#56635a", fontSize: 11 }}>
+                                        {entry.pathLabels.join(" • ")}
+                                      </div>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                              {podPoints.length >= 2 && (
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    gap: 8,
+                                    border: "1px solid #e1e6df",
+                                    borderRadius: 8,
+                                    padding: 8,
+                                    background: "#ffffff",
+                                    minHeight: shouldStretchFlowMap ? 0 : 260,
+                                  }}
+                                >
+                                  <div>
+                                    <strong>Pod flow map</strong>
+                                  </div>
+                                  <svg
+                                    viewBox={previewViewBox}
                                     style={{
-                                      border: "1px solid #e1e6df",
+                                      width: "100%",
+                                      height: shouldStretchFlowMap
+                                        ? "100%"
+                                        : 240,
+                                      minHeight: shouldStretchFlowMap
+                                        ? 220
+                                        : 240,
+                                      flex: shouldStretchFlowMap ? 1 : "none",
                                       borderRadius: 8,
-                                      padding: "8px 10px",
-                                      background: "#fafcf9",
-                                      display: "grid",
-                                      gap: 4,
+                                      background: "#f7faf6",
                                     }}
                                   >
-                                    <div style={{ fontSize: 13 }}>
-                                      <strong>{entry.originCityName}</strong> to{" "}
-                                      <strong>{entry.destinationCityName}</strong>
-                                    </div>
-                                    <div style={{ color: "#324236", fontSize: 12 }}>
-                                      {entry.cubeCount} cube{entry.cubeCount === 1 ? "" : "s"}
-                                      {" • "}👥 {formatDecimal(entry.passengers, 0)}
-                                      {" • "}x{formatDecimal(entry.payoutMultiplier, 0)}
-                                      {" • "}Payout {formatCurrency(entry.payout)}
-                                    </div>
-                                    <div style={{ color: "#56635a", fontSize: 11 }}>
-                                      {entry.pathLabels.join(" • ")}
-                                    </div>
+                                    <defs>
+                                      {plan.simplifiedLedgerEntries.map((_, entryIndex) => {
+                                        const color =
+                                          flowColors[
+                                            entryIndex % flowColors.length
+                                          ]
+
+                                        return (
+                                          <marker
+                                            key={`${markerPrefix}-arrow-${entryIndex}`}
+                                            id={`${markerPrefix}-arrow-${entryIndex}`}
+                                            viewBox="0 0 10 10"
+                                            refX="8"
+                                            refY="5"
+                                            markerWidth="5"
+                                            markerHeight="5"
+                                            orient="auto"
+                                          >
+                                            <path d="M 0 0 L 10 5 L 0 10 z" fill={color} />
+                                          </marker>
+                                        )
+                                      })}
+                                    </defs>
+                                    {plan.routes.map(route => {
+                                      const a = pointByCityId[route.cityA]
+                                      const b = pointByCityId[route.cityB]
+
+                                      if (!a || !b) {
+                                        return null
+                                      }
+
+                                      return (
+                                        <path
+                                          key={`${plan.id}-pod-${route.id}`}
+                                          d={buildSegmentPath(
+                                            a,
+                                            b,
+                                            segmentMetadataByKey[
+                                              getSegmentKey(route.cityA, route.cityB)
+                                            ]?.curve,
+                                          )}
+                                          fill="none"
+                                          stroke="#d0d9d0"
+                                          strokeWidth={2}
+                                        />
+                                      )
+                                    })}
+                                    {plan.simplifiedLedgerEntries.flatMap(
+                                      (entry, entryIndex) =>
+                                        entry.pathCityIds
+                                          .slice(0, -1)
+                                          .map((startCityId, segmentIndex) => {
+                                            const endCityId =
+                                              entry.pathCityIds[segmentIndex + 1]
+                                            const a = pointByCityId[startCityId]
+                                            const b = pointByCityId[endCityId]
+
+                                            if (!a || !b) {
+                                              return null
+                                            }
+
+                                            const color =
+                                              flowColors[
+                                                entryIndex % flowColors.length
+                                              ]
+
+                                            return (
+                                              <path
+                                                key={`${plan.id}-flow-${entry.id}-${segmentIndex}`}
+                                                d={buildSegmentPath(
+                                                  a,
+                                                  b,
+                                                  segmentMetadataByKey[
+                                                    getSegmentKey(startCityId, endCityId)
+                                                  ]?.curve,
+                                                )}
+                                                fill="none"
+                                                stroke={color}
+                                                strokeWidth={Math.max(
+                                                  2.5,
+                                                  entry.cubeCount * 0.7,
+                                                )}
+                                                markerEnd={`url(#${markerPrefix}-arrow-${entryIndex})`}
+                                                strokeLinecap="round"
+                                                opacity={0.88}
+                                              />
+                                            )
+                                          }),
+                                    )}
+                                    {podPoints.map(point => (
+                                      <g key={`${plan.id}-city-${point.cityId}`}>
+                                        <circle
+                                          cx={point.x}
+                                          cy={point.y}
+                                          r={4.5}
+                                          fill="#ffffff"
+                                          stroke="#324236"
+                                          strokeWidth={1.5}
+                                        />
+                                        <text
+                                          x={point.x + 6}
+                                          y={point.y - 6}
+                                          fill="#324236"
+                                          fontSize={8}
+                                          fontWeight={600}
+                                        >
+                                          {point.cityName}
+                                        </text>
+                                      </g>
+                                    ))}
+                                  </svg>
+                                  <div style={{ color: "#56635a", fontSize: 11 }}>
+                                    Colored arrows show cube movement by ledger entry (arrow direction indicates destination).
                                   </div>
-                                ))
+                                </div>
                               )}
                             </div>
                             {plan.vehicleCard ? (
@@ -4216,7 +4660,8 @@ export default function Board({
                               </div>
                             </details>
                           </div>
-                        ))
+                          )
+                        })
                       )}
                     </div>
                   ))
@@ -4402,7 +4847,10 @@ export default function Board({
             Crew assumptions use {formatDecimal(game.operatingConfig.hoursPerDay)}h/day for{" "}
             {formatDecimal(game.operatingConfig.daysPerWeek, 0)} days/week across{" "}
             {formatDecimal(game.operatingConfig.weeksPerPeriod, 0)} weeks/month ={" "}
-            {formatDecimal(getHoursPerWeek(game), 0)}h/month per active vehicle.
+            {formatDecimal(getHoursPerWeek(game), 0)}h/month per fully utilized vehicle.
+          </div>
+          <div style={{ color: "#56635a", fontSize: 13 }}>
+            Actual crew cost scales with trips run; the table below shows the full-utilization ceiling for each vehicle.
           </div>
           {activeChanceCard && (
             <div
@@ -4454,7 +4902,7 @@ export default function Board({
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Mode</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Ticket / mile</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Crew / hr</th>
-                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Crew / month / vehicle</th>
+                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Crew / max month / vehicle</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Maint / month / vehicle</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Balance / trip</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Loading</th>
@@ -4627,7 +5075,7 @@ export default function Board({
               <div style={{ color: "#324236", fontSize: 13 }}>
                 Real-world crew math uses <strong>{formatDecimal(game.operatingConfig.hoursPerDay)}</strong> hours/day for{" "}
                 <strong>{formatDecimal(game.operatingConfig.daysPerWeek, 0)}</strong> days/week across{" "}
-                <strong>{formatDecimal(game.operatingConfig.weeksPerPeriod, 0)}</strong> weeks/month.
+                <strong>{formatDecimal(game.operatingConfig.weeksPerPeriod, 0)}</strong> weeks/month at full utilization; actual crew cost scales with trips run.
               </div>
             </div>
             <div
@@ -4689,17 +5137,17 @@ export default function Board({
               <div style={{ color: "#324236", fontSize: 13 }}>
                 Bus crew:{" "}
                 <strong>{formatUnitRate(game.operatingConfig.realWorldOperatingCosts.crewHourlyCostPerVehicle.bus, 0)}/h</strong>{" "}
-                • {formatCurrency(getCrewCostPerWeekPerVehicle(game, "bus"))}/month/vehicle
+                • up to {formatCurrency(getCrewCostPerWeekPerVehicle(game, "bus"))}/month/vehicle
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
                 Train crew:{" "}
                 <strong>{formatUnitRate(game.operatingConfig.realWorldOperatingCosts.crewHourlyCostPerVehicle.train, 0)}/h</strong>{" "}
-                • {formatCurrency(getCrewCostPerWeekPerVehicle(game, "train"))}/month/vehicle
+                • up to {formatCurrency(getCrewCostPerWeekPerVehicle(game, "train"))}/month/vehicle
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
                 Air crew:{" "}
                 <strong>{formatUnitRate(game.operatingConfig.realWorldOperatingCosts.crewHourlyCostPerVehicle.air, 0)}/h</strong>{" "}
-                • {formatCurrency(getCrewCostPerWeekPerVehicle(game, "air"))}/month/vehicle
+                • up to {formatCurrency(getCrewCostPerWeekPerVehicle(game, "air"))}/month/vehicle
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
                 Bus maintenance:{" "}
@@ -4740,7 +5188,7 @@ export default function Board({
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Mode</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Ticket / mile</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Crew / hr</th>
-                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Crew / month / vehicle</th>
+                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Crew / max month / vehicle</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Maint / month / vehicle</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Balance / trip</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Loading</th>
@@ -5214,12 +5662,12 @@ export default function Board({
                       Regional city decks
                     </div>
                     <div style={{ color: "#56635a", fontSize: 12 }}>
-                      Draw 4 city cards from one region each turn, then keep exactly 2. The 2 kept cards do not need to connect.
+                      Draw 4 city cards each turn starting from one region, filling from nearby decks if that region runs low, then keep exactly 2. The 2 kept cards do not need to connect.
                     </div>
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8 }}>
                       {cityDecksByRegion.map(({ region, remainingCount }) => {
                         const regionStyle = REGION_STYLES[region]
-                        const canDraw = !activeCityOffer && remainingCount >= 4
+                        const canDraw = !activeCityOffer && remainingCount > 0 && totalCityDeckCount >= 4
 
                         return (
                           <button
@@ -5241,10 +5689,15 @@ export default function Board({
                               display: "grid",
                               gap: 4,
                             }}
-                          >
-                            <strong style={{ fontSize: 13, color: regionStyle.text }}>{region}</strong>
-                            <span style={{ color: "#56635a", fontSize: 12 }}>{remainingCount} cards left</span>
-                          </button>
+                            >
+                              <strong style={{ fontSize: 13, color: regionStyle.text }}>{region}</strong>
+                              <span style={{ color: "#56635a", fontSize: 12 }}>
+                                {remainingCount} cards left
+                                {remainingCount > 0 && remainingCount < 4 && totalCityDeckCount >= 4
+                                  ? " • fills from nearby decks"
+                                  : ""}
+                              </span>
+                            </button>
                         )
                       })}
                     </div>
@@ -5265,13 +5718,22 @@ export default function Board({
                     {activeCityOffer ? (
                       <div style={{ display: "grid", gap: 8 }}>
                         <div style={{ color: "#56635a", fontSize: 12 }}>
-                          {activeCityOffer.region} deck • draw 4, then keep exactly 2. The 2 kept cards become part of your hand.
+                          {activeCityOfferRegions.length <= 1
+                            ? `${activeCityOffer.region} deck`
+                            : `${activeCityOffer.region} deck + ${activeCityOfferRegions
+                                .filter(region => region !== activeCityOffer.region)
+                                .join(", ")}`}{" "}
+                          • draw 4, then keep exactly 2. The 2 kept cards become part of your hand.
                         </div>
                         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                           {activeCityOffer.cityIds.map(cityId => {
                             const city = cityMap[cityId]
                             const isSelected = selectedDrawCityIds.includes(cityId)
-                            const adjacencyLabels = getCityAdjacencyLabels(city, cityMap)
+                            const adjacencyLabels = getCityAdjacencyLabels(
+                              city,
+                              cityMap,
+                              currentPlayerConnectedCityIds,
+                            )
                             const cityRegion = getPrimaryCityDeckRegion(city?.region) ?? activeCityOffer.region
                             const regionStyle = REGION_STYLES[cityRegion]
 
@@ -5406,7 +5868,11 @@ export default function Board({
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     {currentPlayerOwnedCityCards.map(city => {
                       const isSelected = selectedOwnedCityIds.includes(city.id)
-                      const adjacencyLabels = getCityAdjacencyLabels(city, cityMap)
+                      const adjacencyLabels = getCityAdjacencyLabels(
+                        city,
+                        cityMap,
+                        currentPlayerConnectedCityIds,
+                      )
                       const cityRegion = getPrimaryCityDeckRegion(city.region)
                       const regionStyle = cityRegion ? REGION_STYLES[cityRegion] : null
                       const mode =

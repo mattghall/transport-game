@@ -3,8 +3,8 @@ import {
   getBalanceAdjustmentPerTrip,
   getCityDemandAbsorptionSize,
   getCityDemandSize,
+  getCrewCostForTrips,
   getFuelPriceMultiplier,
-  getWeeklyCrewCostForCard,
   getWeeklyMaintenanceCostForCard,
 } from "./economy"
 import {
@@ -107,6 +107,7 @@ type SimplifiedFlowLedgerEntry = {
   cubeCount: number
   passengers: number
   payoutMultiplier: number
+  farePerPassenger: number
   payout: number
   pathCityIds: string[]
   pathLabels: string[]
@@ -261,6 +262,12 @@ export function getPayoutMultiplierForDistance(distanceMiles: number) {
   }
 
   return 6
+}
+
+const PAYOUT_DOLLARS_PER_WEIGHT = 7.5
+
+export function getPayoutFarePerPassengerForDistance(distanceMiles: number) {
+  return getPayoutMultiplierForDistance(distanceMiles) * PAYOUT_DOLLARS_PER_WEIGHT
 }
 
 function buildSimplifiedFlowPlan(
@@ -425,25 +432,28 @@ function buildSimplifiedFlowPlan(
 
       const pathLabels: string[] = []
       let payoutMultiplier = 0
+      let farePerPassenger = 0
 
       for (let index = 0; index < pathCityIds.length - 1; index += 1) {
         const startCityId = pathCityIds[index]
         const endCityId = pathCityIds[index + 1]
         const distanceMiles = getRouteDistanceMilesFromMap(game, startCityId, endCityId)
         const segmentMultiplier = getPayoutMultiplierForDistance(distanceMiles)
+        const segmentFarePerPassenger = getPayoutFarePerPassengerForDistance(distanceMiles)
         const startCityName =
           cityStatusMap.get(startCityId)?.cityName ?? getCityName(game, startCityId)
         const endCityName =
           cityStatusMap.get(endCityId)?.cityName ?? getCityName(game, endCityId)
 
         payoutMultiplier += segmentMultiplier
+        farePerPassenger += segmentFarePerPassenger
         pathLabels.push(
-          `${startCityName} -> ${endCityName} (${distanceMiles}mi x${segmentMultiplier})`,
+          `${startCityName} -> ${endCityName} (${distanceMiles}mi x${segmentMultiplier} = $${segmentFarePerPassenger.toFixed(0)})`,
         )
       }
 
       const passengers = cubeCount * passengersPerCube
-      const payout = passengers * payoutMultiplier
+      const payout = passengers * farePerPassenger
 
       ledgerEntries.push({
         id: `${originStatus.cityId}:${destinationStatus.cityId}:${ledgerEntries.length}`,
@@ -454,6 +464,7 @@ function buildSimplifiedFlowPlan(
         cubeCount,
         passengers,
         payoutMultiplier,
+        farePerPassenger,
         payout,
         pathCityIds,
         pathLabels,
@@ -529,10 +540,59 @@ function buildConnectedServiceGroup(routes: Route[]): ServiceGroup | null {
   }
 }
 
+function buildImplicitBusRouteId(cityAId: string, cityBId: string) {
+  return `implicit-bus:${[cityAId, cityBId].sort().join(":")}`
+}
+
+function buildImplicitBusRoutes(game: GameState, player: Player): Route[] {
+  const ownedCityIdSet = new Set(player.ownedCityCardIds)
+
+  if (ownedCityIdSet.size < 2) {
+    return []
+  }
+
+  const existingPairKeys = new Set(
+    game.routes
+      .filter(route => route.ownerId === player.id)
+      .map(route => [route.cityA, route.cityB].sort().join("|")),
+  )
+
+  return game.cities.flatMap(city =>
+    (city.adjacentCities ?? []).flatMap(adjacentCity => {
+      if (!ownedCityIdSet.has(city.id) || !ownedCityIdSet.has(adjacentCity.id)) {
+        return []
+      }
+
+      const pairKey = [city.id, adjacentCity.id].sort().join("|")
+
+      if (existingPairKeys.has(pairKey)) {
+        return []
+      }
+
+      existingPairKeys.add(pairKey)
+
+      return [
+        {
+          id: buildImplicitBusRouteId(city.id, adjacentCity.id),
+          cityA: city.id,
+          cityB: adjacentCity.id,
+          mode: "bus" as const,
+          railTraction: undefined,
+          ownerId: player.id,
+        },
+      ]
+    }),
+  )
+}
+
 function buildOwnedServiceGroups(game: GameState, player: Player) {
-  const ownedRoutes = game.routes
+  const explicitOwnedRoutes = game.routes
     .filter(route => route.ownerId === player.id)
     .sort((routeA, routeB) => routeA.id.localeCompare(routeB.id))
+  const implicitBusRoutes = buildImplicitBusRoutes(game, player)
+  const ownedRoutes = [...explicitOwnedRoutes, ...implicitBusRoutes].sort((routeA, routeB) =>
+    routeA.id.localeCompare(routeB.id),
+  )
   const airGroups = ownedRoutes
     .filter(route => route.mode === "air")
     .map(buildSingleRouteServiceGroup)
@@ -810,12 +870,14 @@ export function buildPlayerBureaucracySummary(
             )
       const ownedFleetSize =
         vehicleCard === null ? 0 : Math.max(0, player.ownedVehicleCountsByCardId[vehicleCard.id] ?? 0)
-      const weeklyCrewCostPerVehicle =
-        vehicleCard === null ? 0 : getWeeklyCrewCostForCard(game, vehicleCard, 1)
       const weeklyMaintenanceCostPerVehicle =
         vehicleCard === null ? 0 : getWeeklyMaintenanceCostForCard(game, vehicleCard, 1)
-      const fixedWeeklyCostPerVehicle = weeklyCrewCostPerVehicle + weeklyMaintenanceCostPerVehicle
-      const variableTripCost = balanceAdjustmentPerTrip + fuelCostPerTrip
+      const crewCostPerTrip =
+        vehicleCard === null || routeTripSummary === null
+          ? 0
+          : getCrewCostForTrips(game, vehicleCard.type, routeTripSummary.tripDurationHours, 1)
+      const fixedWeeklyCostPerVehicle = weeklyMaintenanceCostPerVehicle
+      const variableTripCost = balanceAdjustmentPerTrip + fuelCostPerTrip + crewCostPerTrip
       const selectedFleetSize =
         vehicleCard === null || routeDemandCubes <= 0
           ? 0
@@ -861,13 +923,11 @@ export function buildPlayerBureaucracySummary(
               ),
               maxFuelUnitsByTime,
             )
-      const weeklyCrewCost =
-        vehicleCard === null ? 0 : getWeeklyCrewCostForCard(game, vehicleCard, selectedFleetSize)
       const weeklyMaintenanceCost =
         vehicleCard === null
           ? 0
           : getWeeklyMaintenanceCostForCard(game, vehicleCard, selectedFleetSize)
-      const fixedWeeklyCost = weeklyCrewCost + weeklyMaintenanceCost
+      const fixedWeeklyCost = weeklyMaintenanceCost
       const maxTripsByBudget =
         routeTripSummary === null || selectedFleetSize === 0
           ? 0
@@ -928,7 +988,15 @@ export function buildPlayerBureaucracySummary(
       const totalFuelBurnReal = routeTripSummary?.fuelResource
         ? routeTripSummary.tripFuelBurn * selectedTrips
         : 0
-      const crewCost = selectedTrips > 0 ? weeklyCrewCost : 0
+      const crewCost =
+        vehicleCard === null || selectedTrips <= 0 || routeTripSummary === null
+          ? 0
+          : getCrewCostForTrips(
+              game,
+              vehicleCard.type,
+              routeTripSummary.tripDurationHours,
+              selectedTrips,
+            )
       const maintenanceCost = selectedTrips > 0 ? weeklyMaintenanceCost : 0
       const balanceAdjustmentCost = selectedTrips * balanceAdjustmentPerTrip
       const fuelCost = totalFuelBurnReal

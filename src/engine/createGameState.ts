@@ -53,14 +53,14 @@ const INITIAL_OPERATING_CONFIG: OperatingConfig = {
   railElectrificationCostPerMile: 8_000,
   realWorldOperatingCosts: {
     crewHourlyCostPerVehicle: {
-      bus: 30,
-      train: 45,
-      air: 120,
+      bus: 8,
+      train: 18,
+      air: 45,
     },
     maintenanceCostPerWeekPerVehicle: {
-      bus: 1_000,
-      train: 3_000,
-      air: 10_000,
+      bus: 150,
+      train: 600,
+      air: 2_500,
     },
   },
   balanceAdjustmentPerTrip: {
@@ -74,8 +74,8 @@ const INITIAL_OPERATING_CONFIG: OperatingConfig = {
     jetFuel: 120000,
   },
   fuelPricePerRealUnit: {
-    diesel: 3,
-    jetFuel: 0.6,
+    diesel: 0.6,
+    jetFuel: 0.15,
   },
   revenuePerPassengerMile: {
     air: 0.153,

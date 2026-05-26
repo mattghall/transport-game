@@ -30,6 +30,12 @@ function getRouteRailTraction(route: Route): RailTraction {
   return route.mode === "rail" ? route.railTraction ?? "diesel" : "diesel"
 }
 
+function getFuelResourceForVehicleCard(vehicleCard: VehicleCard) {
+  return vehicleCard.fuelResource === undefined
+    ? FUEL_RESOURCE_BY_TYPE[vehicleCard.type]
+    : vehicleCard.fuelResource
+}
+
 function toRadians(degrees: number) {
   return (degrees * Math.PI) / 180
 }
@@ -158,9 +164,7 @@ export function calculateRouteTripsPerWeek(
     route.mode === "rail" &&
     vehicleCard.type === "train" &&
     getRouteRailTraction(route) === "electric"
-  const fuelResource = usesElectricRail
-    ? null
-    : FUEL_RESOURCE_BY_TYPE[vehicleCard.type]
+  const fuelResource = usesElectricRail ? null : getFuelResourceForVehicleCard(vehicleCard)
   const fuelBurnUnit = usesElectricRail
     ? null
     : FUEL_BURN_UNIT_BY_TYPE[vehicleCard.type]

@@ -10,6 +10,7 @@
     "totalPassengerCapacity": 37,
     "operatingCostMultiplier": 0.81,
     "speed": 49,
+    "fuelResource": null,
     "funFact": "Utilizes proprietary iron-phosphate battery chemistry integrated directly into the chassis for an exceptionally low center of gravity."
   },
   {
@@ -23,6 +24,7 @@
     "totalPassengerCapacity": 37,
     "operatingCostMultiplier": 0.87,
     "speed": 46,
+    "fuelResource": null,
     "funFact": "Metro's Proterra battery buses were retired unusually early after parts availability became a problem across multiple agencies."
   },
   {
@@ -36,6 +38,7 @@
     "totalPassengerCapacity": 40,
     "operatingCostMultiplier": 0.82,
     "speed": 47,
+    "fuelResource": null,
     "funFact": "Metro's first XE40s entered service in 2022 after an inspection and testing program that began with unit 4700."
   },
   {
@@ -49,6 +52,7 @@
     "totalPassengerCapacity": 40,
     "operatingCostMultiplier": 0.78,
     "speed": 48,
+    "fuelResource": null,
     "funFact": "King County Metro became the first North American buyer of a Solaris bus with its Urbino 12 Electric order."
   },
   {
@@ -62,6 +66,7 @@
     "totalPassengerCapacity": 41,
     "operatingCostMultiplier": 0.79,
     "speed": 47,
+    "fuelResource": null,
     "funFact": "This became part of Metro's 2024-2025 battery-electric expansion, with the first buses entering service in early 2026."
   },
   {
@@ -75,6 +80,7 @@
     "totalPassengerCapacity": 40,
     "operatingCostMultiplier": 0.88,
     "speed": 52,
+    "fuelResource": null,
     "funFact": "This battery-electric bus can recharge through overhead pantograph bursts at route endpoints instead of sitting idle for long depot charges."
   },
   {
@@ -88,6 +94,7 @@
     "totalPassengerCapacity": 60,
     "operatingCostMultiplier": 0.8,
     "speed": 48,
+    "fuelResource": null,
     "funFact": "Metro's XE60 carries a 525 kWh battery pack and was advertised with a roughly 140-mile range."
   },
   {
@@ -101,6 +108,7 @@
     "totalPassengerCapacity": 62,
     "operatingCostMultiplier": 0.77,
     "speed": 49,
+    "fuelResource": null,
     "funFact": "This 60-foot Solaris order gave Metro an unusually distinctive articulated electric bus option for the fleet."
   },
   {
@@ -166,6 +174,7 @@
     "totalPassengerCapacity": 42,
     "operatingCostMultiplier": 0.85,
     "speed": 50,
+    "fuelResource": null,
     "funFact": "Metro's XT40 fleet was its first low-floor trolleybus line with air conditioning and batteries for short off-wire operation."
   },
   {
@@ -218,6 +227,7 @@
     "totalPassengerCapacity": 23,
     "operatingCostMultiplier": 0.6,
     "speed": 155,
+    "fuelResource": null,
     "funFact": "Designed in the Netherlands, this experimental aerodynamic electric high-speed vehicle features 16 gull-wing doors for direct cabin access."
   },
   {
@@ -231,6 +241,7 @@
     "totalPassengerCapacity": 41,
     "operatingCostMultiplier": 1.08,
     "speed": 38,
+    "fuelResource": null,
     "funFact": "Originally built in 1940, this preserved Seattle trolleybus was restored to operating condition and later returned to its original fleet number, 905."
   },
   {
@@ -296,6 +307,7 @@
     "totalPassengerCapacity": 64,
     "operatingCostMultiplier": 0.84,
     "speed": 50,
+    "fuelResource": null,
     "funFact": "This articulated trolleybus combines wire power with battery flexibility, giving Metro a modern 60-foot electric workhorse."
   },
   {
@@ -335,6 +347,7 @@
     "totalPassengerCapacity": 64,
     "operatingCostMultiplier": 0.88,
     "speed": 45,
+    "fuelResource": null,
     "funFact": "These were part of the first fleet of articulated trolleybuses to operate in the United States."
   },
   {
@@ -374,6 +387,7 @@
     "totalPassengerCapacity": 150,
     "operatingCostMultiplier": 0.74,
     "speed": 56,
+    "fuelResource": null,
     "funFact": "Features ultra-high-capacity layouts with dual-driven axles to maintain traction in extreme winter conditions across Europe."
   },
   {

@@ -127,6 +127,23 @@ export function getCrewCostPerWeekPerVehicle(
   )
 }
 
+export function getCrewCostForTrips(
+  game: Pick<GameState, "operatingConfig">,
+  type: VehicleType,
+  tripDurationHours: number,
+  tripCount: number,
+) {
+  if (tripDurationHours <= 0 || tripCount <= 0) {
+    return 0
+  }
+
+  return (
+    tripDurationHours *
+    tripCount *
+    game.operatingConfig.realWorldOperatingCosts.crewHourlyCostPerVehicle[type]
+  )
+}
+
 export function getMaintenanceCostPerWeekPerVehicle(
   game: Pick<GameState, "operatingConfig">,
   type: VehicleType,

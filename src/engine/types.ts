@@ -56,6 +56,7 @@ export type VehicleCard = {
   totalPassengerCapacity: number
   operatingCostMultiplier: number
   speed: number
+  fuelResource?: PurchasableResource | null
   funFact: string
 }
 
