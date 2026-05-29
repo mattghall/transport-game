@@ -32,6 +32,7 @@ import {
   calculateConnectionBonus,
   getActiveChanceCard,
   getBalanceAdjustmentPerTrip,
+  getCityDemandAbsorptionSize,
   getCityDemandSize,
   getCombinedDemandForCityIds,
   getCrewCostForTrips,
@@ -2134,6 +2135,38 @@ export default function Board({
       plans: currentPlayerBureaucracySummary.routePlans.filter(plan => plan.route.mode === mode),
     }))
   }, [currentPlayerBureaucracySummary])
+  const currentPlayerCombinedDemandFill = useMemo(() => {
+    if (!currentPlayerBureaucracySummary) {
+      return []
+    }
+
+    const filledByCityId = new Map<string, number>()
+    const movedOutboundByCityId = new Map<string, number>()
+
+    currentPlayerBureaucracySummary.routePlans.forEach(plan => {
+      plan.simplifiedCityStatuses.forEach(cityStatus => {
+        filledByCityId.set(
+          cityStatus.cityId,
+          (filledByCityId.get(cityStatus.cityId) ?? 0) + cityStatus.filledCubes,
+        )
+      })
+
+      plan.simplifiedLedgerEntries.forEach(entry => {
+        movedOutboundByCityId.set(
+          entry.originCityId,
+          (movedOutboundByCityId.get(entry.originCityId) ?? 0) + entry.cubeCount,
+        )
+      })
+    })
+
+    return currentPlayerOwnedCityCards.map(city => ({
+      city,
+      outboundCubes: Math.max(0, getCityDemandSize(game, city)),
+      inboundCubes: getCityDemandAbsorptionSize(game, city),
+      filledCubes: filledByCityId.get(city.id) ?? 0,
+      movedOutboundCubes: movedOutboundByCityId.get(city.id) ?? 0,
+    }))
+  }, [currentPlayerBureaucracySummary, currentPlayerOwnedCityCards, game])
   const currentPlayerPodGroups = useMemo(() => {
     if (!currentPlayerBureaucracySummary) {
       return []
@@ -4636,7 +4669,93 @@ export default function Board({
                       )}
                     </div>
                   ) : (
-                  currentPlayerBureaucracyPlansByMode.map(({ mode, plans }) => {
+                  <>
+                  {!canEditOperations && currentPlayerCombinedDemandFill.length > 0 && (
+                    <div
+                      style={{
+                        border: "1px solid #e1e6df",
+                        borderRadius: 10,
+                        padding: 10,
+                        background: "#ffffff",
+                        display: "grid",
+                        gap: 8,
+                      }}
+                    >
+                      <div>
+                        <strong>City demand fill</strong>
+                      </div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                        {currentPlayerCombinedDemandFill.map(
+                          ({
+                            city,
+                            outboundCubes,
+                            inboundCubes,
+                            filledCubes,
+                            movedOutboundCubes,
+                          }) => (
+                            <div
+                              key={`${city.id}-combined-fill`}
+                              style={{
+                                border: "1px solid #d8dfd5",
+                                borderRadius: 10,
+                                padding: "6px 8px",
+                                background: "#ffffff",
+                                display: "grid",
+                                gap: 4,
+                                minWidth: 150,
+                              }}
+                            >
+                              <div style={{ fontSize: 12 }}>
+                                <strong>{city.name}</strong>
+                                {" • "}size {city.size}
+                              </div>
+                              <div
+                                style={{
+                                  display: "flex",
+                                  flexWrap: "wrap",
+                                  alignItems: "center",
+                                  justifyContent: "space-between",
+                                  gap: 8,
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    display: "inline-flex",
+                                    flexWrap: "wrap",
+                                    gap: 4,
+                                  }}
+                                >
+                                  {renderFillBoxes(
+                                    inboundCubes,
+                                    Math.min(inboundCubes, filledCubes),
+                                  )}
+                                </div>
+                                <div
+                                  style={{
+                                    display: "inline-flex",
+                                    flexWrap: "wrap",
+                                    gap: 4,
+                                    justifyContent: "flex-end",
+                                  }}
+                                >
+                                  {renderFillBoxes(
+                                    Math.max(0, outboundCubes - movedOutboundCubes),
+                                    Math.max(0, outboundCubes - movedOutboundCubes),
+                                    { filledColor: "#ef4444" },
+                                  )}
+                                </div>
+                              </div>
+                              <div style={{ color: "#56635a", fontSize: 11 }}>
+                                Filled {filledCubes} / {inboundCubes}
+                                {" • "}Out {outboundCubes}
+                              </div>
+                            </div>
+                          ),
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  {currentPlayerBureaucracyPlansByMode.map(({ mode, plans }) => {
                     return (
                     <div
                       key={mode}
@@ -4666,19 +4785,6 @@ export default function Board({
                             0,
                             plan.movableDemandCubes - plan.movedCubes,
                           )
-                          const movedOutboundByCityId = Object.fromEntries(
-                            plan.simplifiedLedgerEntries.reduce(
-                              (totals, entry) => {
-                                totals.set(
-                                  entry.originCityId,
-                                  (totals.get(entry.originCityId) ?? 0) +
-                                    entry.cubeCount,
-                                )
-                                return totals
-                              },
-                              new Map<string, number>(),
-                            ),
-                          ) as Record<string, number>
                           const podCities = plan.selectedCityIds
                             .map(cityId => cityMap[cityId])
                             .filter(
@@ -4914,96 +5020,6 @@ export default function Board({
                               style={{
                                 display: "grid",
                                 gap: 8,
-                                border: "1px solid #e1e6df",
-                                borderRadius: 8,
-                                padding: 8,
-                                background: "#fafcf9",
-                              }}
-                            >
-                              <div>
-                                <strong>City demand fill</strong>
-                              </div>
-                              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                                {plan.simplifiedCityStatuses.map(cityStatus => (
-                                  <div
-                                    key={`${plan.id}-${cityStatus.cityId}-fill`}
-                                    style={{
-                                      border: "1px solid #d8dfd5",
-                                      borderRadius: 10,
-                                      padding: "6px 8px",
-                                      background: "#ffffff",
-                                      display: "grid",
-                                      gap: 4,
-                                      minWidth: 150,
-                                    }}
-                                  >
-                                    <div style={{ fontSize: 12 }}>
-                                      <strong>{cityStatus.cityName}</strong>
-                                      {" • "}size {cityStatus.size}
-                                    </div>
-                                    <div
-                                      style={{
-                                        display: "flex",
-                                        flexWrap: "wrap",
-                                        alignItems: "center",
-                                        justifyContent: "space-between",
-                                        gap: 8,
-                                      }}
-                                    >
-                                      <div
-                                        style={{
-                                          display: "inline-flex",
-                                          flexWrap: "wrap",
-                                          gap: 4,
-                                        }}
-                                      >
-                                        {renderFillBoxes(
-                                          cityStatus.size + 1,
-                                          Math.min(
-                                            cityStatus.size + 1,
-                                            cityStatus.filledCubes,
-                                          ),
-                                        )}
-                                      </div>
-                                      <div
-                                        style={{
-                                          display: "inline-flex",
-                                          flexWrap: "wrap",
-                                          gap: 4,
-                                          justifyContent: "flex-end",
-                                        }}
-                                      >
-                                        {renderFillBoxes(
-                                          Math.max(
-                                            0,
-                                            cityStatus.outboundCubes -
-                                              (movedOutboundByCityId[
-                                                cityStatus.cityId
-                                              ] ?? 0),
-                                          ),
-                                          Math.max(
-                                            0,
-                                            cityStatus.outboundCubes -
-                                              (movedOutboundByCityId[
-                                                cityStatus.cityId
-                                              ] ?? 0),
-                                          ),
-                                          { filledColor: "#ef4444" },
-                                        )}
-                                      </div>
-                                    </div>
-                                    <div style={{ color: "#56635a", fontSize: 11 }}>
-                                      Filled {cityStatus.filledCubes} / {cityStatus.size + 1}
-                                      {" • "}Out {cityStatus.outboundCubes}
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                            <div
-                              style={{
-                                display: "grid",
-                                gap: 8,
                                 gridTemplateColumns:
                                   podPoints.length >= 2
                                     ? "minmax(0, 1.25fr) minmax(0, 1fr)"
@@ -5232,7 +5248,8 @@ export default function Board({
                         })
                       )}
                     </div>
-                 )})
+                 )                 })}
+                 </>
                  )}
                 <div style={{ display: "flex", justifyContent: "flex-end" }}>
                   <button

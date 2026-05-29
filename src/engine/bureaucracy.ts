@@ -220,6 +220,17 @@ function getVehicleTypeForRouteMode(mode: RouteMode): VehicleType {
   }
 }
 
+function getBureaucracyPlanningPriority(mode: RouteMode) {
+  switch (mode) {
+    case "rail":
+      return 0
+    case "bus":
+      return 1
+    case "air":
+      return 2
+  }
+}
+
 function getCityName(game: GameState, cityId: string) {
   return game.cities.find(city => city.id === cityId)?.name ?? cityId
 }
@@ -234,11 +245,19 @@ function getOwnedVehicleCards(game: GameState, player: Player) {
 function buildCubeTransferDemand(
   game: GameState,
   cityIds: string[],
+  sharedDemandState?: {
+    outboundCubesByCityId: Map<string, number>
+    inboundCubesByCityId: Map<string, number>
+  },
 ): CubeTransferDemand {
   const cityCubeDemands = [...new Set(cityIds)].map(cityId => {
     const city = game.cities.find(candidate => candidate.id === cityId)
-    const outboundCubes = city ? Math.max(0, getCityDemandSize(game, city)) : 0
-    const inboundCubes = city ? getCityDemandAbsorptionSize(game, city) : 1
+    const outboundCubes =
+      sharedDemandState?.outboundCubesByCityId.get(cityId) ??
+      (city ? Math.max(0, getCityDemandSize(game, city)) : 0)
+    const inboundCubes =
+      sharedDemandState?.inboundCubesByCityId.get(cityId) ??
+      (city ? getCityDemandAbsorptionSize(game, city) : 1)
 
     return {
       cityId,
@@ -983,9 +1002,45 @@ export function buildPlayerBureaucracySummary(
 
   const ownedCards = getOwnedVehicleCards(game, player)
   let remainingBudget = player.money
+  const remainingOutboundCubesByCityId = new Map<string, number>()
+  const remainingInboundCubesByCityId = new Map<string, number>()
+  const ensureCityDemandState = (cityId: string) => {
+    if (
+      remainingOutboundCubesByCityId.has(cityId) &&
+      remainingInboundCubesByCityId.has(cityId)
+    ) {
+      return
+    }
 
-  const routePlans = assignVehicleCardsToServiceGroups(game, player, ownedCards).map(
-    ({ serviceSlot, vehicleCard }) => {
+    const city = game.cities.find(candidate => candidate.id === cityId)
+
+    remainingOutboundCubesByCityId.set(
+      cityId,
+      city ? Math.max(0, getCityDemandSize(game, city)) : 0,
+    )
+    remainingInboundCubesByCityId.set(
+      cityId,
+      city ? getCityDemandAbsorptionSize(game, city) : 1,
+    )
+  }
+
+  const routePlans = assignVehicleCardsToServiceGroups(game, player, ownedCards)
+    .map((assignment, originalIndex) => ({
+      ...assignment,
+      originalIndex,
+    }))
+    .sort((assignmentA, assignmentB) => {
+      const priorityDifference =
+        getBureaucracyPlanningPriority(assignmentA.serviceSlot.serviceGroup.mode) -
+        getBureaucracyPlanningPriority(assignmentB.serviceSlot.serviceGroup.mode)
+
+      if (priorityDifference !== 0) {
+        return priorityDifference
+      }
+
+      return assignmentA.originalIndex - assignmentB.originalIndex
+    })
+    .map(({ serviceSlot, vehicleCard, originalIndex }) => {
       const { serviceGroup } = serviceSlot
       const route = serviceGroup.routes[0]
       const defaultSelectedCityIds =
@@ -1007,6 +1062,7 @@ export function buildPlayerBureaucracySummary(
         routes: activeRoutes,
         cityIds: selectedCityIds,
       }
+      selectedCityIds.forEach(ensureCityDemandState)
       const statsVehicleCard =
         vehicleCard ??
         ownedCards.find(card => card.type === getVehicleTypeForRouteMode(route.mode)) ??
@@ -1020,7 +1076,10 @@ export function buildPlayerBureaucracySummary(
         statsVehicleCard === null || activeRoutes.length === 0
           ? null
           : calculateServiceGroupTripSummary(game, activeServiceGroup, statsVehicleCard)
-      const cubeTransferDemand = buildCubeTransferDemand(game, selectedCityIds)
+      const cubeTransferDemand = buildCubeTransferDemand(game, selectedCityIds, {
+        outboundCubesByCityId: remainingOutboundCubesByCityId,
+        inboundCubesByCityId: remainingInboundCubesByCityId,
+      })
       const routeDemandCubes = cubeTransferDemand.movableDemandCubes
       const statsCubeCapacityPerTrip = getCubeCapacityPerTrip(game, statsVehicleCard)
       const vehicleCubeCapacityPerTrip = getCubeCapacityPerTrip(game, vehicleCard)
@@ -1161,6 +1220,36 @@ export function buildPlayerBureaucracySummary(
         movedCubes,
         passengersServed,
       )
+      const movedOutboundByCityId = simplifiedFlowPlan.ledgerEntries.reduce(
+        (totals, entry) => {
+          totals.set(
+            entry.originCityId,
+            (totals.get(entry.originCityId) ?? 0) + entry.cubeCount,
+          )
+          return totals
+        },
+        new Map<string, number>(),
+      )
+
+      simplifiedFlowPlan.cityStatuses.forEach(cityStatus => {
+        ensureCityDemandState(cityStatus.cityId)
+        remainingOutboundCubesByCityId.set(
+          cityStatus.cityId,
+          Math.max(
+            0,
+            (remainingOutboundCubesByCityId.get(cityStatus.cityId) ?? 0) -
+              (movedOutboundByCityId.get(cityStatus.cityId) ?? 0),
+          ),
+        )
+        remainingInboundCubesByCityId.set(
+          cityStatus.cityId,
+          Math.max(
+            0,
+            (remainingInboundCubesByCityId.get(cityStatus.cityId) ?? 0) -
+              cityStatus.filledCubes,
+          ),
+        )
+      })
       const revenue = simplifiedFlowPlan.totalPayout
       const totalFuelBurnReal = routeTripSummary?.fuelResource
         ? routeTripSummary.tripFuelBurn * selectedTrips
@@ -1183,7 +1272,8 @@ export function buildPlayerBureaucracySummary(
       const operatingCost = baseOperatingCost + fuelCost
       remainingBudget = Math.max(0, remainingBudget - operatingCost)
 
-        return {
+      return {
+        originalIndex,
         id: serviceSlot.id,
         corridorId: serviceSlot.corridorId,
         slotIndex: serviceSlot.slotIndex,
@@ -1252,8 +1342,9 @@ export function buildPlayerBureaucracySummary(
         operatingCost,
         netRevenue: revenue - operatingCost,
       }
-    },
-  )
+    })
+    .sort((planA, planB) => planA.originalIndex - planB.originalIndex)
+    .map(({ originalIndex: _originalIndex, ...plan }) => plan)
 
   const fuelUsedUnits: Record<PurchasableResource, number> = {
     diesel: 0,
