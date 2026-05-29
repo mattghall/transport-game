@@ -99,11 +99,6 @@ export type CreateGameStateOptions = {
   startingMoney?: number
 }
 
-export const DEFAULT_PLAYERS: GameSetupPlayer[] = [
-  { id: "p1", name: "Matt", color: "#457b9d" },
-  { id: "p2", name: "Sarah", color: "#e96620" },
-]
-
 function shuffleCards<T>(cards: T[]) {
   const shuffledCards = [...cards]
 
@@ -201,6 +196,14 @@ function createPlayer(player: GameSetupPlayer, startingMoney: number): Player {
   }
 }
 
+function getSetupPlayers(players?: GameSetupPlayer[]) {
+  if (players && players.length > 0) {
+    return players
+  }
+
+  throw new Error("createGameState requires at least one setup player.")
+}
+
 function applyOpeningBusPurchases(
   players: Player[],
   vehicleCards: VehicleCard[],
@@ -253,7 +256,7 @@ export function createGameState(
   const shuffledChanceCards = shuffleChanceCards(chanceCards)
   const startingMoney = options.startingMoney ?? DEFAULT_STARTING_MONEY
   const [activeChanceCard, ...chanceDeck] = shuffledChanceCards
-  const initialPlayers = (options.players ?? DEFAULT_PLAYERS).map(player =>
+  const initialPlayers = getSetupPlayers(options.players).map(player =>
     createPlayer(player, startingMoney),
   )
   const openingSetup = applyOpeningBusPurchases(initialPlayers, shuffledVehicleCards)

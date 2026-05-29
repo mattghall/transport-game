@@ -28,6 +28,7 @@ export type BureaucracyRoutePlan = {
   corridorId: string
   slotIndex: number
   routes: Route[]
+  corridorSegmentPairs: Array<[string, string]>
   route: Route
   serviceLabel: string
   cityAName: string
@@ -141,6 +142,54 @@ type ServiceSlot = {
   slotIndex: number
   serviceGroup: ServiceGroup
   canAddSplitService: boolean
+}
+
+export function isValidServicePodSelection(
+  cityIds: string[],
+  corridorSegmentPairs: Array<[string, string]>,
+) {
+  const normalizedCityIds = [...new Set(cityIds)]
+
+  if (normalizedCityIds.length <= 1) {
+    return true
+  }
+
+  const cityIdSet = new Set(normalizedCityIds)
+  const adjacency = new Map<string, string[]>()
+
+  for (const cityId of normalizedCityIds) {
+    adjacency.set(cityId, [])
+  }
+
+  for (const [cityAId, cityBId] of corridorSegmentPairs) {
+    if (!cityIdSet.has(cityAId) || !cityIdSet.has(cityBId)) {
+      continue
+    }
+
+    adjacency.get(cityAId)?.push(cityBId)
+    adjacency.get(cityBId)?.push(cityAId)
+  }
+
+  const visited = new Set<string>()
+  const queue = [normalizedCityIds[0]]
+
+  while (queue.length > 0) {
+    const cityId = queue.shift()
+
+    if (!cityId || visited.has(cityId)) {
+      continue
+    }
+
+    visited.add(cityId)
+
+    for (const neighborId of adjacency.get(cityId) ?? []) {
+      if (!visited.has(neighborId)) {
+        queue.push(neighborId)
+      }
+    }
+  }
+
+  return normalizedCityIds.every(cityId => visited.has(cityId))
 }
 
 export type PlayerBureaucracySummary = {
@@ -553,7 +602,7 @@ function buildImplicitBusRoutes(game: GameState, player: Player): Route[] {
 
   const existingPairKeys = new Set(
     game.routes
-      .filter(route => route.ownerId === player.id)
+      .filter(route => route.ownerId === player.id && route.mode === "bus")
       .map(route => [route.cityA, route.cityB].sort().join("|")),
   )
 
@@ -661,19 +710,25 @@ function normalizeSelectedCityIds(availableCityIds: string[], requestedCityIds: 
 function buildServiceSlots(
   game: GameState,
   player: Player,
-  _ownedCards: VehicleCard[],
 ) {
   const serviceGroups = buildOwnedServiceGroups(game, player)
   const serviceSlots: ServiceSlot[] = []
 
   for (const serviceGroup of serviceGroups) {
-    serviceSlots.push({
-      id: buildServiceSlotId(serviceGroup.id, 0),
-      corridorId: serviceGroup.id,
-      slotIndex: 0,
-      serviceGroup,
-      canAddSplitService: false,
-    })
+    const slotCount = Math.max(
+      1,
+      game.bureaucracyServiceSlotCountsByCorridorId[serviceGroup.id] ?? 1,
+    )
+
+    for (let slotIndex = 0; slotIndex < slotCount; slotIndex += 1) {
+      serviceSlots.push({
+        id: buildServiceSlotId(serviceGroup.id, slotIndex),
+        corridorId: serviceGroup.id,
+        slotIndex,
+        serviceGroup,
+        canAddSplitService: serviceGroup.cityIds.length > slotCount,
+      })
+    }
   }
 
   return serviceSlots.sort((slotA, slotB) => slotA.id.localeCompare(slotB.id))
@@ -684,7 +739,7 @@ function assignVehicleCardsToServiceGroups(
   player: Player,
   ownedCards: VehicleCard[],
 ) {
-  const serviceSlots = buildServiceSlots(game, player, ownedCards)
+  const serviceSlots = buildServiceSlots(game, player)
   const cardsById = new Map(ownedCards.map(card => [card.id, card]))
   const cardsByType: Record<VehicleType, VehicleCard[]> = {
     air: [],
@@ -731,6 +786,127 @@ function assignVehicleCardsToServiceGroups(
         null,
     }
   })
+}
+
+type PersistedServiceSlotState = {
+  corridorId: string
+  slotIndex: number
+  mode: RouteMode
+  availableCityIds: string[]
+  selectedCityIds: string[]
+  assignedVehicleCardId: string | null
+}
+
+function buildPersistedServiceSlotStates(
+  game: GameState,
+  player: Player,
+): PersistedServiceSlotState[] {
+  return buildServiceSlots(game, player).map(serviceSlot => {
+    const defaultSelectedCityIds =
+      serviceSlot.slotIndex === 0 ? serviceSlot.serviceGroup.cityIds : []
+
+    return {
+      corridorId: serviceSlot.corridorId,
+      slotIndex: serviceSlot.slotIndex,
+      mode: serviceSlot.serviceGroup.mode,
+      availableCityIds: serviceSlot.serviceGroup.cityIds,
+      selectedCityIds: normalizeSelectedCityIds(
+        serviceSlot.serviceGroup.cityIds,
+        game.bureaucracyServiceCityIdsByRouteId[serviceSlot.id] ?? defaultSelectedCityIds,
+      ),
+      assignedVehicleCardId: game.bureaucracyVehicleCardIdsByRouteId[serviceSlot.id] ?? null,
+    }
+  })
+}
+
+export function migrateBureaucracyServiceState(
+  previousGame: GameState,
+  nextGame: GameState,
+) {
+  const bureaucracyServiceSlotCountsByCorridorId: Record<string, number> = {}
+  const bureaucracyServiceCityIdsByRouteId: Record<string, string[]> = {}
+  const bureaucracyVehicleCardIdsByRouteId: Record<string, string> = {}
+
+  for (const nextPlayer of nextGame.players) {
+    const previousPlayer = previousGame.players.find(player => player.id === nextPlayer.id)
+
+    if (!previousPlayer) {
+      continue
+    }
+
+    const previousSlotStates = buildPersistedServiceSlotStates(previousGame, previousPlayer)
+    const nextServiceGroups = buildOwnedServiceGroups(nextGame, nextPlayer)
+
+    for (const nextServiceGroup of nextServiceGroups) {
+      const matchingPreviousSlots = previousSlotStates
+        .filter(
+          slot =>
+            slot.mode === nextServiceGroup.mode &&
+            slot.availableCityIds.some(cityId => nextServiceGroup.cityIds.includes(cityId)),
+        )
+        .sort((slotA, slotB) => {
+          if (slotA.corridorId !== slotB.corridorId) {
+            return slotA.corridorId.localeCompare(slotB.corridorId)
+          }
+
+          return slotA.slotIndex - slotB.slotIndex
+        })
+
+      if (matchingPreviousSlots.length === 0) {
+        continue
+      }
+
+      const corridorSegmentPairs = nextServiceGroup.routes.map(
+        route => [route.cityA, route.cityB] as [string, string],
+      )
+      const migratedSlots = matchingPreviousSlots.map(slot => ({
+        selectedCityIds: slot.selectedCityIds.filter(cityId =>
+          nextServiceGroup.cityIds.includes(cityId),
+        ),
+        assignedVehicleCardId: slot.assignedVehicleCardId,
+      }))
+      const assignedCityIds = new Set(
+        migratedSlots.flatMap(slot => slot.selectedCityIds),
+      )
+
+      for (const cityId of nextServiceGroup.cityIds) {
+        if (assignedCityIds.has(cityId)) {
+          continue
+        }
+
+        const firstLegalSlot =
+          migratedSlots.find(slot =>
+            isValidServicePodSelection(
+              [...slot.selectedCityIds, cityId],
+              corridorSegmentPairs,
+            ),
+          ) ?? migratedSlots[0]
+
+        firstLegalSlot.selectedCityIds = [...firstLegalSlot.selectedCityIds, cityId]
+        assignedCityIds.add(cityId)
+      }
+
+      bureaucracyServiceSlotCountsByCorridorId[nextServiceGroup.id] = Math.max(
+        1,
+        migratedSlots.length,
+      )
+
+      migratedSlots.forEach((slot, slotIndex) => {
+        const nextSlotId = buildServiceSlotId(nextServiceGroup.id, slotIndex)
+        bureaucracyServiceCityIdsByRouteId[nextSlotId] = slot.selectedCityIds
+
+        if (slot.assignedVehicleCardId) {
+          bureaucracyVehicleCardIdsByRouteId[nextSlotId] = slot.assignedVehicleCardId
+        }
+      })
+    }
+  }
+
+  return {
+    bureaucracyServiceSlotCountsByCorridorId,
+    bureaucracyServiceCityIdsByRouteId,
+    bureaucracyVehicleCardIdsByRouteId,
+  }
 }
 
 function getFuelCostPerRealUnit(game: GameState, resource: PurchasableResource) {
@@ -812,7 +988,8 @@ export function buildPlayerBureaucracySummary(
     ({ serviceSlot, vehicleCard }) => {
       const { serviceGroup } = serviceSlot
       const route = serviceGroup.routes[0]
-      const defaultSelectedCityIds = serviceGroup.cityIds
+      const defaultSelectedCityIds =
+        serviceSlot.slotIndex === 0 ? serviceGroup.cityIds : []
       const selectedCityIds = normalizeSelectedCityIds(
         serviceGroup.cityIds,
         game.bureaucracyServiceCityIdsByRouteId[serviceSlot.id] ?? defaultSelectedCityIds,
@@ -1011,6 +1188,7 @@ export function buildPlayerBureaucracySummary(
         corridorId: serviceSlot.corridorId,
         slotIndex: serviceSlot.slotIndex,
         routes: activeRoutes,
+        corridorSegmentPairs: serviceGroup.routes.map(route => [route.cityA, route.cityB] as [string, string]),
         route,
         serviceLabel:
           selectedCityIds.length >= 2

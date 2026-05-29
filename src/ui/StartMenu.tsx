@@ -5,6 +5,7 @@ import {
   createEmptyVehicleCard,
   createInitialUserDecks,
 } from "../data/deckData"
+import { MAX_SETUP_PLAYERS } from "../gameSetup/defaultPlayers"
 import type {
   ChanceCard,
   UserDeckData,
@@ -26,8 +27,6 @@ type StartMenuProps = {
 }
 
 type StartMenuTab = "setup" | "vehicles" | "chance"
-
-const MAX_SETUP_PLAYERS = 4
 const TAB_LABELS: Record<StartMenuTab, string> = {
   setup: "Game setup",
   vehicles: "Vehicle deck",

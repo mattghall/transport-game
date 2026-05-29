@@ -40,10 +40,6 @@ const INITIAL_OPERATING_CONFIG = {
         bus: 0.15,
     },
 };
-const DEFAULT_PLAYERS = [
-    { id: "p1", name: "Matt", color: "#457b9d" },
-    { id: "p2", name: "Sarah", color: "#e96620" },
-];
 function isVehicleType(type) {
     return type === "bus" || type === "train" || type === "air";
 }
@@ -97,11 +93,17 @@ function createPlayer(player) {
         weeklyPayout: 0,
     };
 }
+function getSetupPlayers(players) {
+    if (players && players.length > 0) {
+        return players;
+    }
+    throw new Error("createGameState requires at least one setup player.");
+}
 export function createGameState(map, options = {}) {
     const shuffledVehicleCards = shuffleVehicleCards();
     const shuffledChanceCards = shuffleChanceCards();
     const [activeChanceCard, ...chanceDeck] = shuffledChanceCards;
-    const players = (options.players ?? DEFAULT_PLAYERS).map(createPlayer);
+    const players = getSetupPlayers(options.players).map(createPlayer);
     return {
         map,
         cities: map.cities,

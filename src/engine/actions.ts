@@ -12,9 +12,12 @@ import type {
 import { CITY_DECK_REGIONS } from "./types"
 import {
   applyBureaucracyFuelConsumption,
+  buildPlayerBureaucracySummary,
   findPlayerBureaucracyPlan,
   getMaxFuelUnitsCapacityForPlayer,
   getMaxFuelUnitsForRoute,
+  isValidServicePodSelection,
+  migrateBureaucracyServiceState,
 } from "./bureaucracy"
 import {
   calculateConnectionBonus,
@@ -205,6 +208,19 @@ export type BureaucracyServiceSplitResult =
       ok: true
       game: GameState
       corridorId: string
+    }
+  | {
+      ok: false
+      error: string
+    }
+
+export type BureaucracyServiceCityMoveResult =
+  | {
+      ok: true
+      game: GameState
+      corridorId: string
+      routeId: string
+      cityId: string
     }
   | {
       ok: false
@@ -1385,9 +1401,14 @@ export function advancePhase(game: GameState): GameState {
     const gameWithKeptCityCards = returnUnkeptCityOfferCardsToDecks(
       applyKeptCityOfferToCurrentPlayer(game),
     )
+    const migratedBureaucracyState = migrateBureaucracyServiceState(
+      game,
+      gameWithKeptCityCards,
+    )
 
     return {
       ...gameWithKeptCityCards,
+      ...migratedBureaucracyState,
       currentWeek: wrappedWeek,
       currentPhase: WEEKLY_PHASES[nextPhaseIndex],
       leadPlayerIndex: nextLeadPlayerIndex,
@@ -2039,6 +2060,74 @@ export function addBureaucracyServiceSplit(
   }
 }
 
+export function moveBureaucracyServiceCity(
+  game: GameState,
+  corridorId: string,
+  cityId: string,
+  routeId: string,
+): BureaucracyServiceCityMoveResult {
+  if (isGameLocked(game)) {
+    return {
+      ok: false,
+      error: "The game is over.",
+    }
+  }
+
+  if (game.currentPhase !== "operations") {
+    return {
+      ok: false,
+      error: "Pod cities can only be moved during the operations phase.",
+    }
+  }
+
+  const summary = buildPlayerBureaucracySummary(game, game.currentPlayerId)
+  const corridorPlans =
+    summary?.routePlans.filter(plan => plan.corridorId === corridorId) ?? []
+  const targetPlan = corridorPlans.find(plan => plan.id === routeId)
+
+  if (!targetPlan) {
+    return {
+      ok: false,
+      error: "That target pod could not be found.",
+    }
+  }
+
+  if (!targetPlan.availableCityIds.includes(cityId)) {
+    return {
+      ok: false,
+      error: "That city does not belong to this pod group.",
+    }
+  }
+
+  const nextSelections = { ...game.bureaucracyServiceCityIdsByRouteId }
+
+  for (const plan of corridorPlans) {
+    nextSelections[plan.id] = plan.selectedCityIds.filter(
+      selectedCityId => selectedCityId !== cityId,
+    )
+  }
+
+  nextSelections[routeId] = [...new Set([...(nextSelections[routeId] ?? []), cityId])]
+
+  if (!isValidServicePodSelection(nextSelections[routeId] ?? [], targetPlan.corridorSegmentPairs)) {
+    return {
+      ok: false,
+      error: "That destination pod would be disconnected. Pods with 2+ cities must stay connected.",
+    }
+  }
+
+  return {
+    ok: true,
+    corridorId,
+    routeId,
+    cityId,
+    game: {
+      ...game,
+      bureaucracyServiceCityIdsByRouteId: nextSelections,
+    },
+  }
+}
+
 export function claimRoute(
   game: GameState,
   input: ClaimRouteInput,
@@ -2146,6 +2235,26 @@ export function claimRoute(
       ownerId: game.currentPlayerId,
     }
   })
+  const claimedGame = {
+    ...game,
+    routes: [...game.routes, ...routes],
+    activeCityOffer: null,
+    hasClaimedRouteThisTurn: true,
+    claimedRouteModesThisPhase: {
+      ...game.claimedRouteModesThisPhase,
+      [input.mode]: true,
+    },
+    players: game.players.map(player =>
+      player.id === currentPlayer.id
+        ? {
+            ...player,
+            money: player.money - cost + connectionBonus.totalBonus,
+            startingCityId: player.startingCityId ?? orderedCityIds[0],
+          }
+        : player,
+    ),
+  }
+  const migratedBureaucracyState = migrateBureaucracyServiceState(game, claimedGame)
 
   return {
     ok: true,
@@ -2154,23 +2263,8 @@ export function claimRoute(
     newCityIds: connectionBonus.newlyConnectedCityIds,
     routes,
     game: {
-      ...game,
-      routes: [...game.routes, ...routes],
-      activeCityOffer: null,
-      hasClaimedRouteThisTurn: true,
-      claimedRouteModesThisPhase: {
-        ...game.claimedRouteModesThisPhase,
-        [input.mode]: true,
-      },
-      players: game.players.map(player =>
-        player.id === currentPlayer.id
-          ? {
-              ...player,
-              money: player.money - cost + connectionBonus.totalBonus,
-              startingCityId: player.startingCityId ?? orderedCityIds[0],
-            }
-          : player,
-      ),
+      ...claimedGame,
+      ...migratedBureaucracyState,
     },
   }
 }

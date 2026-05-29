@@ -2,35 +2,31 @@ import { useCallback, useEffect, useState } from "react"
 import { loadUserDecks, saveUserDecks } from "./data/deckData"
 import { usMap } from "./data/maps/usMap"
 import {
+  createDefaultSetupPlayers,
+  MAX_SETUP_PLAYERS,
+  PLAYER_SETUP_PRESETS,
+} from "./gameSetup/defaultPlayers"
+import {
   addBureaucracyServiceSplit,
   advanceTurn,
   buyResource,
   buyVehicleCard,
   claimRoute,
   drawCityOffer,
+  moveBureaucracyServiceCity,
   setActiveCityOfferKeptCityIds,
-  setBureaucracyServiceCities,
   setBureaucracyRouteVehicleCard,
   upgradeRailRoute,
 } from "./engine/actions"
 import { findPlayerBureaucracyPlan } from "./engine/bureaucracy"
 import {
   createGameState,
-  DEFAULT_PLAYERS,
   DEFAULT_STARTING_MONEY,
   type GameSetupPlayer,
 } from "./engine/createGameState"
 import type { GameActionLogEntry, GameState, PurchasableResource, UserDeckData, WeeklyPhase } from "./engine/types"
 import Board from "./ui/Board"
 import StartMenu from "./ui/StartMenu"
-
-const MAX_SETUP_PLAYERS = 4
-const PLAYER_SETUP_PRESETS: GameSetupPlayer[] = [
-  { id: "p1", name: "Matt", color: "#457b9d" },
-  { id: "p2", name: "Sarah", color: "#e96620" },
-  { id: "p3", name: "Avery", color: "#6f42c1" },
-  { id: "p4", name: "Jordan", color: "#2a9d8f" },
-]
 
 function formatPhaseLabel(phase: WeeklyPhase) {
   switch (phase) {
@@ -102,15 +98,16 @@ function getPhaseDiscardLogMessage(previousGame: GameState, nextGame: GameState)
 }
 
 export default function App() {
-  const [setupPlayers, setSetupPlayers] = useState<GameSetupPlayer[]>(() => DEFAULT_PLAYERS)
+  const [setupPlayers, setSetupPlayers] = useState<GameSetupPlayer[]>(() => createDefaultSetupPlayers())
   const [startingMoney, setStartingMoney] = useState(DEFAULT_STARTING_MONEY)
   const [userDecks, setUserDecks] = useState<UserDeckData>(() => loadUserDecks())
   const [hasStarted, setHasStarted] = useState(false)
   const [game, setGame] = useState(() => {
     const initialUserDecks = loadUserDecks()
+    const initialPlayers = createDefaultSetupPlayers()
 
     return createGameState(usMap, {
-      players: DEFAULT_PLAYERS,
+      players: initialPlayers,
       vehicleCards: initialUserDecks.vehicleCards,
       chanceCards: initialUserDecks.chanceCards,
       startingMoney: DEFAULT_STARTING_MONEY,
@@ -420,29 +417,6 @@ export default function App() {
     [commitGame, game],
   )
 
-  const handleSetBureaucracyServiceCities = useCallback(
-    (routeId: string, cityIds: string[]) => {
-      const result = setBureaucracyServiceCities(game, routeId, cityIds)
-
-      if (result.ok) {
-        const plan = findPlayerBureaucracyPlan(game, game.currentPlayerId, routeId)
-        const cityLabel = result.cityIds
-          .map(cityId => game.cities.find(city => city.id === cityId)?.name ?? cityId)
-          .join(" - ")
-        commitGame(
-          appendActionLog(
-            game,
-            result.game,
-            `set service cities for ${plan?.serviceLabel ?? routeId} to ${cityLabel || "none"}`,
-          ),
-        )
-      }
-
-      return result
-    },
-    [commitGame, game],
-  )
-
   const handleAddBureaucracyServiceSplit = useCallback(
     (corridorId: string) => {
       const result = addBureaucracyServiceSplit(game, corridorId)
@@ -453,6 +427,27 @@ export default function App() {
             game,
             result.game,
             `added split service on corridor ${corridorId}`,
+          ),
+        )
+      }
+
+      return result
+    },
+    [commitGame, game],
+  )
+
+  const handleMoveBureaucracyServiceCity = useCallback(
+    (corridorId: string, cityId: string, routeId: string) => {
+      const result = moveBureaucracyServiceCity(game, corridorId, cityId, routeId)
+
+      if (result.ok) {
+        const cityName = game.cities.find(city => city.id === cityId)?.name ?? cityId
+        const plan = findPlayerBureaucracyPlan(game, game.currentPlayerId, routeId)
+        commitGame(
+          appendActionLog(
+            game,
+            result.game,
+            `moved ${cityName} into ${plan?.serviceLabel ?? routeId}`,
           ),
         )
       }
@@ -522,8 +517,8 @@ export default function App() {
         onBuyVehicleCard={handleBuyVehicleCardAndAdvance}
         onUpgradeRailRoute={handleUpgradeRailRoute}
         onSetBureaucracyRouteVehicleCard={handleSetBureaucracyRouteVehicleCard}
-        onSetBureaucracyServiceCities={handleSetBureaucracyServiceCities}
         onAddBureaucracyServiceSplit={handleAddBureaucracyServiceSplit}
+        onMoveBureaucracyServiceCity={handleMoveBureaucracyServiceCity}
         onAdvanceTurn={handleAdvanceTurn}
         onUndo={handleUndo}
         canUndo={history.length > 0}

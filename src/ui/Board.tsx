@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react"
 import {
   type RailUpgradeResult,
+  type BureaucracyServiceCityMoveResult,
   calculateClaimRouteCost,
-  type BureaucracyServiceCitiesResult,
   type BureaucracyServiceSplitResult,
   type BureaucracyVehicleCardResult,
   getVisibleVehicleMarketCardIds,
@@ -21,8 +21,10 @@ import {
 } from "../engine/actions"
 import {
   buildBureaucracySummaries,
+  findPlayerBureaucracyPlan,
   getMaxFuelUnitsCapacityForPlayer,
   getPayoutMultiplierForDistance,
+  isValidServicePodSelection,
 } from "../engine/bureaucracy"
 import {
   getAffordableFleetSize,
@@ -118,11 +120,12 @@ type Props = {
     routeId: string,
     vehicleCardId: string | null,
   ) => BureaucracyVehicleCardResult
-  onSetBureaucracyServiceCities: (
-    routeId: string,
-    cityIds: string[],
-  ) => BureaucracyServiceCitiesResult
   onAddBureaucracyServiceSplit: (corridorId: string) => BureaucracyServiceSplitResult
+  onMoveBureaucracyServiceCity: (
+    corridorId: string,
+    cityId: string,
+    routeId: string,
+  ) => BureaucracyServiceCityMoveResult
   onAdvanceTurn: () => void
   onUndo: () => void
   canUndo: boolean
@@ -143,6 +146,12 @@ type PreviewSegment = {
   curve: { x?: number; y?: number } | undefined
 }
 
+type DraggedPodCity = {
+  corridorId: string
+  routeId: string
+  cityId: string
+}
+
 const MIN_TRAY_SIZE = 200
 const DEFAULT_TABLE_ZONE_HEIGHT = 390
 const DEFAULT_LEFT_PANEL_WIDTH = 280
@@ -155,6 +164,18 @@ const RESIZE_HANDLE_SIZE = 12
 const CITY_DOT_RADIUS = 2.4
 const DEMAND_CUBE_PASSENGERS = 50
 const DEMAND_CYLINDER_PASSENGERS = 500
+const POD_COLOR_PALETTE = [
+  "#2563eb",
+  "#db2777",
+  "#16a34a",
+  "#d97706",
+  "#7c3aed",
+  "#0891b2",
+  "#dc2626",
+  "#4f46e5",
+] as const
+const BUS_POD_COLOR_PALETTE = ["#2563eb", "#0f766e", "#7c3aed", "#db2777"] as const
+const RAIL_POD_COLOR_PALETTE = ["#b45309", "#dc2626", "#7c2d12", "#ea580c"] as const
 
 const BOARD_SHELL_STYLE = {
   position: "fixed",
@@ -1061,7 +1082,7 @@ function getNextPhase(phase: WeeklyPhase): WeeklyPhase {
 
 function getRouteInteractionMessage(phase: WeeklyPhase) {
   return phase === "operations"
-    ? "Build routes from your hand or click highlighted rail segments on the map."
+    ? "Build tracks from the Operations list or highlighted map segments, then assign vehicles and split pods."
     : "Routes can only be claimed during the operations phase."
 }
 
@@ -1072,7 +1093,7 @@ function getPhaseStatusMessage(phase: WeeklyPhase) {
     case "claim-routes":
       return "Draw 4 city cards and keep exactly 2. This step only adds cities to your hand."
     case "operations":
-      return "Build tracks and routes, assign vehicles, and split services before running the month."
+      return "Build tracks, assign vehicles, and split service pods before running the month."
     case "purchase-fuel":
       return "Fuel purchasing is disabled."
     case "bureaucracy":
@@ -1157,8 +1178,8 @@ export default function Board({
   onBuyVehicleCard,
   onUpgradeRailRoute,
   onSetBureaucracyRouteVehicleCard,
-  onSetBureaucracyServiceCities,
   onAddBureaucracyServiceSplit,
+  onMoveBureaucracyServiceCity,
   onAdvanceTurn,
   onUndo,
   canUndo,
@@ -1169,6 +1190,7 @@ export default function Board({
   const [selectedDrawCityIds, setSelectedDrawCityIds] = useState<string[]>([])
   const [selectedOwnedCityIds, setSelectedOwnedCityIds] = useState<string[]>([])
   const [selectedRailSegmentKeys, setSelectedRailSegmentKeys] = useState<string[]>([])
+  const [draggedPodCity, setDraggedPodCity] = useState<DraggedPodCity | null>(null)
   const [expandedPlayerId, setExpandedPlayerId] = useState<string | null>(null)
   const [isResourceMarketOpen, setIsResourceMarketOpen] = useState(false)
   const [isVehicleMarketOpen, setIsVehicleMarketOpen] = useState(false)
@@ -1611,6 +1633,17 @@ export default function Board({
         .map(segment => segment.id),
     )
   }, [adjacentRouteSegments, currentPlayer, game.routes])
+  const claimableRailSegments = useMemo(
+    () =>
+      adjacentRouteSegments
+        .filter(segment => claimableRailSegmentKeys.has(segment.id))
+        .sort((segmentA, segmentB) => {
+          const labelA = `${segmentA.cityA.name} ${segmentA.cityB.name}`
+          const labelB = `${segmentB.cityA.name} ${segmentB.cityB.name}`
+          return labelA.localeCompare(labelB)
+        }),
+    [adjacentRouteSegments, claimableRailSegmentKeys],
+  )
   const previewSegments = useMemo(
     () =>
       selectedSegmentPairs
@@ -1857,9 +1890,21 @@ export default function Board({
     selectedRouteMode === null
       ? null
       : routePreviewSummaries.find(summary => summary.mode === selectedRouteMode) ?? null
+  const canAffordSelectedClaim =
+    selectedClaimPreview === null
+      ? false
+      : selectedClaimPreview.claimCost <= (currentPlayer?.money ?? 0)
+  const canConfirmSelectedClaim =
+    Boolean(selectedClaimPreview?.valid) &&
+    canAffordSelectedClaim &&
+    !game.hasClaimedRouteThisTurn
   const optionMessage =
-    selectedRouteMode !== null && selectedClaimPreview && !selectedClaimPreview.valid
-      ? selectedClaimPreview.reason ?? "That route is not available."
+    selectedRouteMode !== null && selectedClaimPreview && !canConfirmSelectedClaim
+      ? !selectedClaimPreview.valid
+        ? selectedClaimPreview.reason ?? "That route is not available."
+        : game.hasClaimedRouteThisTurn
+          ? "You already built a route this turn."
+          : `That selection costs ${formatCurrency(selectedClaimPreview.claimCost)}, but you only have ${formatCurrency(currentPlayer?.money ?? 0)}.`
       : ""
   const canBuyFuelByResource = useMemo(
     () => ({
@@ -2089,6 +2134,101 @@ export default function Board({
       plans: currentPlayerBureaucracySummary.routePlans.filter(plan => plan.route.mode === mode),
     }))
   }, [currentPlayerBureaucracySummary])
+  const currentPlayerPodGroups = useMemo(() => {
+    if (!currentPlayerBureaucracySummary) {
+      return []
+    }
+
+    const groups = new Map<
+      string,
+      {
+        corridorId: string
+        mode: RouteMode
+        availableCityIds: string[]
+        canAddSplitService: boolean
+        plans: typeof currentPlayerBureaucracySummary.routePlans
+      }
+    >()
+
+    currentPlayerBureaucracySummary.routePlans.forEach(plan => {
+      const existingGroup = groups.get(plan.corridorId)
+
+      if (existingGroup) {
+        existingGroup.canAddSplitService =
+          existingGroup.canAddSplitService || plan.canAddSplitService
+        existingGroup.plans.push(plan)
+        return
+      }
+
+      groups.set(plan.corridorId, {
+        corridorId: plan.corridorId,
+        mode: plan.route.mode,
+        availableCityIds: plan.availableCityIds,
+        canAddSplitService: plan.canAddSplitService,
+        plans: [plan],
+      })
+    })
+
+    return [...groups.values()]
+      .map(group => ({
+        ...group,
+        plans: [...group.plans].sort((planA, planB) => planA.slotIndex - planB.slotIndex),
+      }))
+      .sort((groupA, groupB) =>
+        `${groupA.mode}:${groupA.availableCityIds.join("|")}`.localeCompare(
+          `${groupB.mode}:${groupB.availableCityIds.join("|")}`,
+        ),
+      )
+  }, [currentPlayerBureaucracySummary])
+  const currentPlayerPodPreviewLines = useMemo(() => {
+    if (game.currentPhase !== "operations") {
+      return []
+    }
+
+    return currentPlayerPodGroups.flatMap(group =>
+      group.plans.flatMap((plan, planIndex) => {
+        if (plan.selectedCityIds.length < 2) {
+          return []
+        }
+
+        const selectedCityIdSet = new Set(plan.selectedCityIds)
+        const segmentPairs =
+          plan.route.mode === "air"
+            ? [plan.selectedCityIds.slice(0, 2) as [string, string]]
+            : plan.corridorSegmentPairs.filter(
+                ([cityAId, cityBId]) =>
+                  selectedCityIdSet.has(cityAId) && selectedCityIdSet.has(cityBId),
+              )
+
+        return segmentPairs.flatMap(([cityAId, cityBId]) => {
+          const cityA = cityMap[cityAId]
+          const cityB = cityMap[cityBId]
+
+          if (!cityA || !cityB) {
+            return []
+          }
+
+          return [
+            {
+              id: `${plan.id}:${cityAId}:${cityBId}`,
+              cityA,
+              cityB,
+              color:
+                plan.route.mode === "rail"
+                  ? RAIL_POD_COLOR_PALETTE[planIndex % RAIL_POD_COLOR_PALETTE.length]
+                  : plan.route.mode === "bus"
+                    ? BUS_POD_COLOR_PALETTE[planIndex % BUS_POD_COLOR_PALETTE.length]
+                    : POD_COLOR_PALETTE[planIndex % POD_COLOR_PALETTE.length],
+              dasharray: plan.route.mode === "air" ? "10 8" : undefined,
+              haloWidth: plan.route.mode === "rail" ? 16 : 12,
+              lineWidth: plan.route.mode === "rail" ? 7 : 5,
+              curve: segmentMetadataByKey[getSegmentKey(cityAId, cityBId)]?.curve,
+            },
+          ]
+        })
+      }),
+    )
+  }, [cityMap, currentPlayerPodGroups, game.currentPhase, segmentMetadataByKey])
   const currentPlayerAssignedRouteLabelsByVehicleCardId = useMemo(() => {
     const labelsByCardId: Record<string, string[]> = {}
 
@@ -2132,6 +2272,22 @@ export default function Board({
 
     return utilizationByCardId
   }, [currentPlayerBureaucracySummary])
+  const invalidCurrentPlayerPodRouteIds = useMemo(
+    () =>
+      new Set(
+        currentPlayerBureaucracySummary?.routePlans
+          .filter(
+            plan =>
+              plan.selectedCityIds.length > 1 &&
+              !isValidServicePodSelection(
+                plan.selectedCityIds,
+                plan.corridorSegmentPairs,
+              ),
+          )
+          .map(plan => plan.id) ?? [],
+      ),
+    [currentPlayerBureaucracySummary],
+  )
   const activeCityOfferRegions = useMemo(() => {
     if (!activeCityOffer) {
       return []
@@ -2181,17 +2337,254 @@ export default function Board({
     !isResourceMarketOpen && !isBureaucracyOpen && !isEconomicsOpen && !isWikiOpen
   const shouldAdvancePhase = isLastPlayerTurn(game)
   const canEditOperations = game.currentPhase === "operations"
+  const hasInvalidOperationsPods =
+    canEditOperations && invalidCurrentPlayerPodRouteIds.size > 0
   const hasPendingOperationsRouteSelection =
     canEditOperations &&
     ((selectedRouteMode !== null && selectedCityIds.length >= 2) || selectedRailSegmentKeys.length > 0)
   const isAdvanceBlocked =
     (game.currentPhase === "claim-routes" && (game.activeCityOffer?.keptCityIds.length ?? 0) !== 2) ||
-    hasPendingOperationsRouteSelection
+    hasPendingOperationsRouteSelection ||
+    hasInvalidOperationsPods
   const advanceTurnLabel = game.isGameOver
     ? "Game over"
     : shouldAdvancePhase
       ? "Next phase"
       : "Next player"
+
+  function renderOperationsPodEditor(
+    groups = currentPlayerPodGroups,
+    options?: { emptyMessage?: string },
+  ) {
+    if (!canEditOperations) {
+      return null
+    }
+
+    if (groups.length === 0) {
+      return (
+        <div
+          style={{
+            border: "1px solid #e1e6df",
+            borderRadius: 10,
+            padding: 10,
+            background: "#fafcf9",
+            display: "grid",
+            gap: 4,
+          }}
+        >
+          <strong>Pod editor</strong>
+          <div style={{ color: "#56635a", fontSize: 12 }}>
+            {options?.emptyMessage ?? "No editable pods are available in this section yet."}
+          </div>
+        </div>
+      )
+    }
+
+    return (
+      <div
+        style={{
+          border: "1px solid #e1e6df",
+          borderRadius: 10,
+          padding: 10,
+          background: "#ffffff",
+          display: "grid",
+          gap: 10,
+        }}
+      >
+        <div style={{ display: "grid", gap: 4 }}>
+          <strong>Pod editor</strong>
+          <div style={{ color: "#56635a", fontSize: 12 }}>
+            Split a corridor into smaller pods, then drag cities between pod boxes.
+          </div>
+        </div>
+        {hasInvalidOperationsPods && (
+          <div
+            style={{
+              border: "1px solid #e7b4b4",
+              borderRadius: 10,
+              padding: "8px 10px",
+              background: "#fff5f5",
+              color: "#9b1c1c",
+              fontSize: 12,
+              fontWeight: 600,
+            }}
+          >
+            Fix the red pods before leaving Operations.
+          </div>
+        )}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-start" }}>
+          {groups.map(group => (
+            <div
+              key={`pod-group-${group.corridorId}`}
+              style={{
+                border: "1px solid #e7ece5",
+                borderRadius: 10,
+                padding: 10,
+                display: "grid",
+                gap: 8,
+                background: "#fafcf9",
+                flex: "1 1 320px",
+                minWidth: 280,
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: 8,
+                  alignItems: "baseline",
+                  flexWrap: "wrap",
+                }}
+              >
+                <div style={{ fontSize: 12, color: "#324236" }}>
+                  <strong>{MODE_LABELS[group.mode]} pod</strong>
+                  {" • "}
+                  {group.availableCityIds
+                    .map(cityId => cityMap[cityId]?.name ?? cityId)
+                    .join(", ")}
+                </div>
+                {group.canAddSplitService && (
+                  <button
+                    type="button"
+                    onClick={() => handleAddSplitService(group.corridorId)}
+                    style={{
+                      padding: "6px 10px",
+                      borderRadius: 999,
+                      border: "1px solid #c7d0c4",
+                      background: "#ffffff",
+                      cursor: "pointer",
+                      fontSize: 12,
+                    }}
+                  >
+                    New pod
+                  </button>
+                )}
+              </div>
+              <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 2 }}>
+                {group.plans.map(plan => {
+                  const isInvalidPod = invalidCurrentPlayerPodRouteIds.has(plan.id)
+                  const dropError =
+                    draggedPodCity && draggedPodCity.corridorId === group.corridorId
+                      ? getPodMoveError(group.plans, draggedPodCity.cityId, plan.id)
+                      : null
+                  const canDrop =
+                    draggedPodCity !== null &&
+                    draggedPodCity.corridorId === group.corridorId &&
+                    dropError === null
+
+                  return (
+                    <div
+                      key={`pod-editor-slot-${plan.id}`}
+                      onDragOver={event => {
+                        if (canDrop) {
+                          event.preventDefault()
+                        }
+                      }}
+                      onDrop={event => {
+                        event.preventDefault()
+
+                        if (!draggedPodCity || draggedPodCity.corridorId !== group.corridorId) {
+                          return
+                        }
+
+                        if (dropError) {
+                          setStatusMessage(dropError)
+                          setDraggedPodCity(null)
+                          return
+                        }
+
+                        handleMoveServiceCity(
+                          draggedPodCity.corridorId,
+                          draggedPodCity.cityId,
+                          plan.id,
+                        )
+                        setDraggedPodCity(null)
+                      }}
+                      title={
+                        dropError ??
+                        (isInvalidPod
+                          ? "Illegal pod: cities in this pod are not all connected."
+                          : undefined)
+                      }
+                      style={{
+                        minWidth: 180,
+                        minHeight: 72,
+                        border: `1px dashed ${
+                          draggedPodCity?.corridorId === group.corridorId
+                            ? canDrop
+                              ? "#86a889"
+                              : "#d2a4a4"
+                            : isInvalidPod
+                              ? "#c53030"
+                              : "#b9c5ba"
+                        }`,
+                        borderRadius: 10,
+                        padding: 8,
+                        background:
+                          draggedPodCity?.corridorId === group.corridorId
+                            ? canDrop
+                              ? "#f7faf6"
+                              : "#fff7f7"
+                            : isInvalidPod
+                              ? "#fff5f5"
+                              : "#ffffff",
+                        display: "grid",
+                        alignContent: "start",
+                        gap: 6,
+                        flex: "0 0 180px",
+                      }}
+                    >
+                      <div style={{ color: "#56635a", fontSize: 11, fontWeight: 700 }}>
+                        POD {plan.slotIndex + 1}
+                      </div>
+                      {isInvalidPod && (
+                        <div style={{ color: "#9b1c1c", fontSize: 11, fontWeight: 700 }}>
+                          Illegal pod
+                        </div>
+                      )}
+                      {plan.selectedCityIds.length === 0 ? (
+                        <div style={{ color: "#8b948d", fontSize: 12 }}>
+                          Drop city here
+                        </div>
+                      ) : (
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                          {plan.selectedCityIds.map(cityId => (
+                            <div
+                              key={`pod-editor-city-${plan.id}-${cityId}`}
+                              draggable
+                              onDragStart={() =>
+                                setDraggedPodCity({
+                                  corridorId: group.corridorId,
+                                  routeId: plan.id,
+                                  cityId,
+                                })
+                              }
+                              onDragEnd={() => setDraggedPodCity(null)}
+                              style={{
+                                border: "1px solid #d8dfd5",
+                                borderRadius: 999,
+                                padding: "4px 8px",
+                                background: "#ffffff",
+                                color: "#324236",
+                                fontSize: 12,
+                                cursor: "grab",
+                              }}
+                            >
+                              {cityMap[cityId]?.name ?? cityId}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
 
   function getFuelInfoLabel(resource: PurchasableResource, units: number) {
     const realFuel = calculateRealFuelFromUnits(units, resource, game)
@@ -2241,7 +2634,7 @@ export default function Board({
   useEffect(() => {
     setIsResourceMarketOpen(false)
     setIsVehicleMarketOpen(game.currentPhase === "purchase-equipment")
-    setIsBureaucracyOpen(game.currentPhase === "operations" || game.currentPhase === "bureaucracy")
+    setIsBureaucracyOpen(game.currentPhase === "bureaucracy")
     setIsEconomicsOpen(false)
     setIsWikiOpen(false)
     setWikiPreviousPanel(null)
@@ -2250,7 +2643,7 @@ export default function Board({
   function restorePhasePanel() {
     setIsResourceMarketOpen(false)
     setIsVehicleMarketOpen(game.currentPhase === "purchase-equipment")
-    setIsBureaucracyOpen(game.currentPhase === "operations" || game.currentPhase === "bureaucracy")
+    setIsBureaucracyOpen(game.currentPhase === "bureaucracy")
     setIsEconomicsOpen(false)
   }
 
@@ -2467,7 +2860,7 @@ export default function Board({
         : ""
 
     resetSelection(
-      `${currentPlayer?.name ?? "Current player"} claimed a ${MODE_LABELS[selectedRouteMode].toLowerCase()} route across ${routeLabel}${result.cost > 0 ? ` for ${formatCurrency(result.cost)}` : ""}${rewardText}. Continue bureaucracy.`,
+      `${currentPlayer?.name ?? "Current player"} claimed a ${MODE_LABELS[selectedRouteMode].toLowerCase()} route across ${routeLabel}${result.cost > 0 ? ` for ${formatCurrency(result.cost)}` : ""}${rewardText}. Continue operations.`,
     )
   }
 
@@ -2496,6 +2889,11 @@ export default function Board({
 
     if (game.currentPhase === "operations" && hasPendingOperationsRouteSelection) {
       setStatusMessage("Build or clear the selected route before ending the turn.")
+      return
+    }
+
+    if (game.currentPhase === "operations" && hasInvalidOperationsPods) {
+      setStatusMessage("Fix the red pods before ending Operations.")
       return
     }
 
@@ -2861,26 +3259,6 @@ export default function Board({
     )
   }
 
-  function handleToggleServiceCity(routeId: string, cityId: string, selectedCityIds: string[]) {
-    const nextCityIds = selectedCityIds.includes(cityId)
-      ? selectedCityIds.filter(candidate => candidate !== cityId)
-      : [...selectedCityIds, cityId]
-    const result = onSetBureaucracyServiceCities(routeId, nextCityIds)
-
-    if (!result.ok) {
-      setStatusMessage(result.error)
-      return
-    }
-
-    setStatusMessage(
-      result.cityIds.length >= 2
-        ? `Updated service span to ${result.cityIds
-            .map(nextCityId => cityMap[nextCityId]?.name ?? nextCityId)
-            .join(" - ")}.`
-        : "Select at least two cities to run that service.",
-    )
-  }
-
   function handleAddSplitService(corridorId: string) {
     const result = onAddBureaucracyServiceSplit(corridorId)
 
@@ -2890,6 +3268,44 @@ export default function Board({
     }
 
     setStatusMessage("Added another service slot on that corridor.")
+  }
+
+  function handleMoveServiceCity(corridorId: string, cityId: string, routeId: string) {
+    const result = onMoveBureaucracyServiceCity(corridorId, cityId, routeId)
+
+    if (!result.ok) {
+      setStatusMessage(result.error)
+      return
+    }
+
+    setStatusMessage(
+      `Moved ${cityMap[cityId]?.name ?? cityId} into ${findPlayerBureaucracyPlan(game, game.currentPlayerId, routeId)?.serviceLabel ?? "that pod"}.`,
+    )
+  }
+
+  function getPodMoveError(
+    plans: NonNullable<typeof currentPlayerBureaucracySummary>["routePlans"],
+    cityId: string,
+    routeId: string,
+  ) {
+    const targetPlan = plans.find(plan => plan.id === routeId)
+
+    if (!targetPlan || !targetPlan.availableCityIds.includes(cityId)) {
+      return "That city does not belong to this pod group."
+    }
+
+    const nextTargetCityIds = [
+      ...new Set([
+        ...targetPlan.selectedCityIds.filter(selectedCityId => selectedCityId !== cityId),
+        cityId,
+      ]),
+    ]
+
+    if (!isValidServicePodSelection(nextTargetCityIds, targetPlan.corridorSegmentPairs)) {
+      return "That destination pod would be disconnected."
+    }
+
+    return null
   }
 
   function handleUpgradeRailRoute(routeId: string) {
@@ -3200,6 +3616,13 @@ export default function Board({
                   You have already claimed 1 route this turn. Advance to the next player.
                 </div>
               )}
+              {game.currentPhase === "operations" &&
+                currentPlayerOwnedModes.has("bus") &&
+                !currentPlayerOwnedModes.has("rail") && (
+                  <div style={{ color: "#56635a", fontSize: 13 }}>
+                    Build Track unlocks after you buy a train vehicle card in Purchase Equipment.
+                  </div>
+                )}
               {game.currentPhase === "operations" && currentPlayerOwnedModes.size === 0 && (
                 <div style={{ color: "#848484", fontSize: 13 }}>
                   You do not own any vehicles that can claim routes yet.
@@ -3375,6 +3798,33 @@ export default function Board({
                   </g>
                 )
               })}
+
+            {currentPlayerPodPreviewLines.map(segment => {
+              const a = latLngToWorld(segment.cityA)
+              const b = latLngToWorld(segment.cityB)
+              const d = buildSegmentPath(a, b, segment.curve)
+
+              return (
+                <g key={`pod-preview:${segment.id}`}>
+                  <path
+                    d={d}
+                    stroke={colorWithOpacity(segment.color, 0.18)}
+                    strokeWidth={segment.haloWidth}
+                    fill="none"
+                    strokeLinecap="round"
+                  />
+                  <path
+                    d={d}
+                    stroke={segment.color}
+                    strokeWidth={segment.lineWidth}
+                    fill="none"
+                    strokeLinecap="round"
+                    strokeDasharray={segment.dasharray}
+                    opacity={0.95}
+                  />
+                </g>
+              )
+            })}
 
             {game.routes.map(route => {
               const aCity = cityMap[route.cityA]
@@ -3580,6 +4030,36 @@ export default function Board({
             >
               {isEconomicsOpen ? "Hide economics" : "Economics"}
             </button>
+            {(game.currentPhase === "operations" || game.currentPhase === "bureaucracy") && (
+              <button
+                type="button"
+                onClick={() => {
+                  setIsBureaucracyOpen(open => !open)
+                  setIsResourceMarketOpen(false)
+                  setIsVehicleMarketOpen(false)
+                  setIsEconomicsOpen(false)
+                  setIsWikiOpen(false)
+                }}
+                style={{
+                  padding: "8px 10px",
+                  borderRadius: 10,
+                  border: "1px solid #c7d0c4",
+                  cursor: "pointer",
+                  background: "#ffffff",
+                  fontWeight: 600,
+                  textAlign: "left",
+                  fontSize: 13,
+                }}
+              >
+                {isBureaucracyOpen
+                  ? game.currentPhase === "operations"
+                   ? "Hide operations table"
+                    : "Hide bureaucracy ledger"
+                  : game.currentPhase === "operations"
+                   ? "Operations table"
+                    : "Bureaucracy ledger"}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -3974,7 +4454,7 @@ export default function Board({
           <strong>{game.currentPhase === "operations" ? "Operations" : "Bureaucracy ledger"}</strong>
           <div style={{ color: "#56635a" }}>
             {game.currentPhase === "operations"
-              ? "Configure pods by mode, assign vehicles, and split services before running the month."
+              ? "Build rail track, assign vehicles, and split pods here. Bureaucracy is now just the read-only results."
               : "Passenger cubes now flow toward the biggest city demand first. The detailed operating planner stays below as a reference view."}
           </div>
           {currentPlayerBureaucracySummary ? (
@@ -3997,34 +4477,112 @@ export default function Board({
                   gap: 8,
                 }}
               >
-                <div>
+                 <div>
                   <strong style={{ color: currentPlayerBureaucracySummary.player.color }}>
                     {currentPlayerBureaucracySummary.player.name}
                   </strong>
-                </div>
-                <div>Revenue: {formatCurrency(currentPlayerBureaucracySummary.totalRevenue)}</div>
-                <div>
-                  Operating cost: {formatCurrency(currentPlayerBureaucracySummary.totalOperatingCost)}
-                </div>
-                <div style={{ paddingLeft: 12, color: "#56635a", fontSize: 12 }}>
-                  Crew: {formatCurrency(currentPlayerBureaucracySummary.totalCrewCost)}
-                </div>
-                <div style={{ paddingLeft: 12, color: "#56635a", fontSize: 12 }}>
-                  Maintenance: {formatCurrency(currentPlayerBureaucracySummary.totalMaintenanceCost)}
-                </div>
-                <div style={{ paddingLeft: 12, color: "#56635a", fontSize: 12 }}>
-                  Balance: {formatCurrency(currentPlayerBureaucracySummary.totalBalanceAdjustmentCost)}
-                </div>
-                <div style={{ paddingLeft: 12, color: "#56635a", fontSize: 12 }}>
-                  Fuel: {formatCurrency(currentPlayerBureaucracySummary.totalFuelCost)}
-                </div>
-                <div>
-                  <strong>Net:</strong> {formatCurrency(currentPlayerBureaucracySummary.netRevenue)}
-                </div>
-                <div>
-                  Passengers served:{" "}
-                  {currentPlayerBureaucracySummary.totalPassengersServed.toLocaleString()}
-                </div>
+                 </div>
+                 {canEditOperations ? (
+                  <>
+                    <div>
+                      Pods ready: <strong>{currentPlayerBureaucracySummary.routePlans.length}</strong>
+                    </div>
+                    <div style={{ color: "#56635a", fontSize: 12 }}>
+                      Bus {currentPlayerBureaucracySummary.routePlans.filter(plan => plan.route.mode === "bus").length}
+                      {" • "}Rail {currentPlayerBureaucracySummary.routePlans.filter(plan => plan.route.mode === "rail").length}
+                      {" • "}Air {currentPlayerBureaucracySummary.routePlans.filter(plan => plan.route.mode === "air").length}
+                    </div>
+                 </>
+                 ) : (
+                  <>
+                    <div>Revenue: {formatCurrency(currentPlayerBureaucracySummary.totalRevenue)}</div>
+                    <div>
+                      Operating cost: {formatCurrency(currentPlayerBureaucracySummary.totalOperatingCost)}
+                    </div>
+                    <div style={{ paddingLeft: 12, color: "#56635a", fontSize: 12 }}>
+                      Crew: {formatCurrency(currentPlayerBureaucracySummary.totalCrewCost)}
+                    </div>
+                    <div style={{ paddingLeft: 12, color: "#56635a", fontSize: 12 }}>
+                      Maintenance: {formatCurrency(currentPlayerBureaucracySummary.totalMaintenanceCost)}
+                    </div>
+                    <div style={{ paddingLeft: 12, color: "#56635a", fontSize: 12 }}>
+                      Balance: {formatCurrency(currentPlayerBureaucracySummary.totalBalanceAdjustmentCost)}
+                    </div>
+                    <div style={{ paddingLeft: 12, color: "#56635a", fontSize: 12 }}>
+                      Fuel: {formatCurrency(currentPlayerBureaucracySummary.totalFuelCost)}
+                    </div>
+                    <div>
+                      <strong>Net:</strong> {formatCurrency(currentPlayerBureaucracySummary.netRevenue)}
+                    </div>
+                    <div>
+                      Passengers served:{" "}
+                      {currentPlayerBureaucracySummary.totalPassengersServed.toLocaleString()}
+                    </div>
+                  </>
+                 )}
+                 {canEditOperations && currentPlayerOwnedModes.has("rail") && (
+                  <div
+                    style={{
+                      border: "1px solid #e1e6df",
+                      borderRadius: 10,
+                      padding: 10,
+                      background: "#ffffff",
+                      display: "grid",
+                      gap: 8,
+                    }}
+                  >
+                    <div>
+                      <strong>Available track segments</strong>
+                    </div>
+                    <div style={{ color: "#56635a", fontSize: 12 }}>
+                      Click a segment here or on the map to lay rail between owned adjacent cities.
+                    </div>
+                    {claimableRailSegments.length === 0 ? (
+                      <div style={{ color: "#56635a", fontSize: 12 }}>
+                        No owned adjacent city pairs are ready for new rail track.
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                        {claimableRailSegments.map(segment => {
+                          const isSelected = selectedRailSegmentKeys.includes(segment.id)
+
+                          return (
+                            <button
+                              key={`track-option-${segment.id}`}
+                              type="button"
+                              onClick={() => handleToggleRailSegment(segment.id)}
+                              style={{
+                                padding: "6px 10px",
+                                borderRadius: 999,
+                                border: `1px solid ${isSelected ? currentPlayerBureaucracySummary.player.color : "#c7d0c4"}`,
+                                background: isSelected
+                                  ? `${currentPlayerBureaucracySummary.player.color}18`
+                                  : "#ffffff",
+                                color: "#223024",
+                                cursor: "pointer",
+                                fontSize: 12,
+                                fontWeight: isSelected ? 700 : 500,
+                              }}
+                            >
+                              {segment.cityA.name} - {segment.cityB.name}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    )}
+                    {selectedRailSegmentKeys.length > 0 && (
+                      <div style={{ color: "#324236", fontSize: 12 }}>
+                        Selected track:{" "}
+                        {selectedRailSegmentKeys
+                          .map(segmentKey => {
+                            const segment = claimableRailSegments.find(candidate => candidate.id === segmentKey)
+                            return segment ? `${segment.cityA.name} - ${segment.cityB.name}` : segmentKey
+                          })
+                          .join(", ")}
+                      </div>
+                    )}
+                  </div>
+                 )}
                  {currentPlayerBureaucracySummary.routePlans.length === 0 ? (
                     <div
                       style={{
@@ -4036,7 +4594,11 @@ export default function Board({
                         gap: 8,
                       }}
                     >
-                      <div style={{ color: "#56635a" }}>No routes to operate yet.</div>
+                      <div style={{ color: "#56635a" }}>
+                        {canEditOperations
+                          ? "No service pods are ready yet."
+                          : "No routes to operate yet."}
+                      </div>
                       {currentPlayerOwnedCityCards.length > 0 && (
                         <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                           {currentPlayerOwnedCityCards.map(city => {
@@ -4074,7 +4636,8 @@ export default function Board({
                       )}
                     </div>
                   ) : (
-                  currentPlayerBureaucracyPlansByMode.map(({ mode, plans }) => (
+                  currentPlayerBureaucracyPlansByMode.map(({ mode, plans }) => {
+                    return (
                     <div
                       key={mode}
                       style={{
@@ -4177,6 +4740,103 @@ export default function Board({
                           const previewViewBox = `${minX - previewPadding} ${minY - previewPadding} ${previewWidth} ${previewHeight}`
                           const shouldStretchFlowMap =
                             plan.simplifiedLedgerEntries.length >= 5
+
+                          if (canEditOperations) {
+                            const podCityIds =
+                              plan.availableCityIds.length > 0
+                                ? plan.availableCityIds
+                                : plan.selectedCityIds
+
+                            return (
+                              <div
+                                key={plan.id}
+                                style={{
+                                  border: "1px solid #e1e6df",
+                                  borderRadius: 8,
+                                  padding: 10,
+                                  display: "grid",
+                                  gap: 10,
+                                }}
+                              >
+                                <div style={{ display: "grid", gap: 4 }}>
+                                  <div>
+                                    <strong>{plan.serviceLabel}</strong>
+                                  </div>
+                                  <div style={{ color: "#56635a", fontSize: 12 }}>
+                                    {plan.route.mode === "rail" && getRailTraction(plan.route) === "electric"
+                                      ? "Electric rail"
+                                      : MODE_LABELS[plan.route.mode]}
+                                    {plan.segmentCount > 1 ? ` • ${plan.segmentCount} segments` : ""}
+                                    {" • "}Pod cities {podCityIds.length}
+                                  </div>
+                                </div>
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                                  {podCityIds.map(cityId => (
+                                    <div
+                                      key={`${plan.id}-pod-city-${cityId}`}
+                                      style={{
+                                        border: "1px solid #d8dfd5",
+                                        borderRadius: 999,
+                                        padding: "4px 8px",
+                                        background: "#fafcf9",
+                                        fontSize: 12,
+                                        color: "#324236",
+                                      }}
+                                    >
+                                      {cityMap[cityId]?.name ?? cityId}
+                                    </div>
+                                  ))}
+                                </div>
+                                <label
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 8,
+                                    fontSize: 13,
+                                    flexWrap: "wrap",
+                                  }}
+                                >
+                                  Vehicle
+                                  <select
+                                    value={plan.vehicleCard?.id ?? ""}
+                                    onChange={event =>
+                                      handleSetBureaucracyVehicleCard(
+                                        plan.id,
+                                        event.target.value === "" ? null : event.target.value,
+                                      )
+                                    }
+                                    disabled={!canEditOperations}
+                                    style={{
+                                      minWidth: 220,
+                                      padding: "6px 8px",
+                                      borderRadius: 8,
+                                      border: "1px solid #c7d0c4",
+                                      background: "#ffffff",
+                                    }}
+                                  >
+                                    <option value="">No vehicle assigned</option>
+                                    {currentPlayerOwnedVehicleCards
+                                      .filter(card => card.type === getVehicleTypeForMode(plan.route.mode))
+                                      .map(card => (
+                                        <option key={card.id} value={card.id}>
+                                          #{card.number} {card.name}
+                                        </option>
+                                      ))}
+                                  </select>
+                                  {!plan.vehicleCard && (
+                                    <span style={{ color: "#9b1c1c", fontSize: 12 }}>
+                                      Assign a matching vehicle to run this pod.
+                                    </span>
+                                  )}
+                                </label>
+                                {plan.availableCityIds.length > 2 && (
+                                  <div style={{ color: "#56635a", fontSize: 12 }}>
+                                    Pod membership is managed in the pod editor above.
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          }
 
                           return (
                             <div
@@ -4567,146 +5227,12 @@ export default function Board({
                                 Assign a matching vehicle card to operate this route.
                               </div>
                             )}
-                            <details>
-                              <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
-                                Detailed view
-                              </summary>
-                              <div
-                                style={{
-                                  display: "grid",
-                                  gap: 8,
-                                  marginTop: 8,
-                                }}
-                              >
-                                <label
-                                  style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    gap: 8,
-                                    fontSize: 13,
-                                  }}
-                                >
-                                  Vehicle
-                                  <select
-                                    value={plan.vehicleCard?.id ?? ""}
-                                    onChange={event =>
-                                      handleSetBureaucracyVehicleCard(
-                                        plan.id,
-                                        event.target.value === "" ? null : event.target.value,
-                                      )
-                                    }
-                                    disabled={!canEditOperations}
-                                    style={{
-                                      minWidth: 220,
-                                      padding: "6px 8px",
-                                      borderRadius: 8,
-                                      border: "1px solid #c7d0c4",
-                                      background: canEditOperations ? "#ffffff" : "#f2f2f2",
-                                    }}
-                                  >
-                                    <option value="">No vehicle assigned</option>
-                                    {currentPlayerOwnedVehicleCards
-                                      .filter(card => card.type === getVehicleTypeForMode(plan.route.mode))
-                                      .map(card => (
-                                        <option key={card.id} value={card.id}>
-                                          #{card.number} {card.name}
-                                        </option>
-                                      ))}
-                                  </select>
-                                </label>
-                                {plan.availableCityIds.length > 2 && (
-                                  <div
-                                    style={{
-                                      display: "flex",
-                                      flexDirection: "column",
-                                      gap: 6,
-                                      fontSize: 12,
-                                      color: "#324236",
-                                    }}
-                                  >
-                                    <div>
-                                      <strong>Cities in service</strong>
-                                    </div>
-                                    <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 10px" }}>
-                                      {plan.availableCityIds.map(cityId => (
-                                        <label
-                                          key={`${plan.id}-${cityId}`}
-                                          style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
-                                        >
-                                          <input
-                                            type="checkbox"
-                                            checked={plan.selectedCityIds.includes(cityId)}
-                                            disabled={!canEditOperations}
-                                            onChange={() =>
-                                              handleToggleServiceCity(plan.id, cityId, plan.selectedCityIds)
-                                            }
-                                          />
-                                          {cityMap[cityId]?.name ?? cityId}
-                                        </label>
-                                      ))}
-                                    </div>
-                                  </div>
-                                )}
-                                {plan.cityCubeDemands.length > 0 && (
-                                  <div
-                                    style={{
-                                      display: "flex",
-                                      flexDirection: "column",
-                                      gap: 6,
-                                      fontSize: 12,
-                                      color: "#324236",
-                                    }}
-                                  >
-                                    <div>
-                                      <strong>City cubes</strong>
-                                    </div>
-                                    <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 10px" }}>
-                                      {plan.cityCubeDemands.map(cityDemand => (
-                                        <div
-                                          key={`${plan.id}-${cityDemand.cityId}-cubes`}
-                                          style={{
-                                            border: "1px solid #e1e6df",
-                                            borderRadius: 999,
-                                            padding: "4px 8px",
-                                            background: "#fafcf9",
-                                          }}
-                                        >
-                                          <strong>{cityDemand.cityName}</strong>
-                                          {" • "}Out {cityDemand.outboundCubes}
-                                          {" • "}In {cityDemand.inboundCubes}
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                )}
-                                {plan.canAddSplitService && (
-                                  <div>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleAddSplitService(plan.corridorId)}
-                                      disabled={!canEditOperations}
-                                      style={{
-                                        padding: "6px 10px",
-                                        borderRadius: 999,
-                                        border: "1px solid #c7d0c4",
-                                        background: canEditOperations ? "#ffffff" : "#f2f2f2",
-                                        cursor: canEditOperations ? "pointer" : "not-allowed",
-                                        fontSize: 12,
-                                        opacity: canEditOperations ? 1 : 0.6,
-                                      }}
-                                    >
-                                      Add split service
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
-                            </details>
                           </div>
                           )
                         })
                       )}
                     </div>
-                  ))
+                 )})
                  )}
                 <div style={{ display: "flex", justifyContent: "flex-end" }}>
                   <button
@@ -5831,67 +6357,101 @@ export default function Board({
                   Owned city cards
                 </div>
                 {game.currentPhase === "operations" && (
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setStatusMessage("Bus pods are automatic from connected owned cities. No build step is needed.")
-                      }}
-                      disabled
+                  <div style={{ display: "grid", gap: 10 }}>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setStatusMessage("Bus pods are automatic from connected owned cities. No build step is needed.")
+                        }}
+                        disabled
+                        style={{
+                          padding: "8px 12px",
+                          borderRadius: 999,
+                          border: "1px solid #d8dfd5",
+                          background: "#f6f8f5",
+                          color: "#7b857d",
+                          cursor: "not-allowed",
+                          opacity: 0.9,
+                        }}
+                      >
+                        Bus (auto)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedRouteMode("rail")
+                          setSelectedOwnedCityIds([])
+                          setSelectedDrawCityIds([])
+                          setSelectedRailSegmentKeys([])
+                          setStatusMessage("Build Track is active. Pick a segment from the Operations list or click a highlighted map segment.")
+                        }}
+                        disabled={!currentPlayerOwnedModes.has("rail")}
+                        style={{
+                          padding: "8px 12px",
+                          borderRadius: 999,
+                          border: `1px solid ${selectedRouteMode === "rail" ? "#223024" : "#c7d0c4"}`,
+                          background: selectedRouteMode === "rail" ? "#223024" : "#ffffff",
+                          color: selectedRouteMode === "rail" ? "#ffffff" : "#223024",
+                          cursor: currentPlayerOwnedModes.has("rail") ? "pointer" : "not-allowed",
+                          opacity: currentPlayerOwnedModes.has("rail") ? 1 : 0.6,
+                        }}
+                      >
+                        Build Track
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedRouteMode("air")
+                          setSelectedOwnedCityIds([])
+                          setSelectedDrawCityIds([])
+                          setSelectedRailSegmentKeys([])
+                        }}
+                        disabled={!currentPlayerOwnedModes.has("air")}
+                        style={{
+                          padding: "8px 12px",
+                          borderRadius: 999,
+                          border: `1px solid ${selectedRouteMode === "air" ? "#223024" : "#c7d0c4"}`,
+                          background: selectedRouteMode === "air" ? "#223024" : "#ffffff",
+                          color: selectedRouteMode === "air" ? "#ffffff" : "#223024",
+                          cursor: currentPlayerOwnedModes.has("air") ? "pointer" : "not-allowed",
+                          opacity: currentPlayerOwnedModes.has("air") ? 1 : 0.6,
+                        }}
+                      >
+                        Air
+                      </button>
+                    </div>
+                    <div
                       style={{
-                        padding: "8px 12px",
-                        borderRadius: 999,
                         border: "1px solid #d8dfd5",
-                        background: "#f6f8f5",
-                        color: "#7b857d",
-                        cursor: "not-allowed",
-                        opacity: 0.9,
+                        borderRadius: 14,
+                        padding: 12,
+                        background: "#fafcf9",
+                        display: "grid",
+                        gap: 10,
                       }}
                     >
-                      Bus (auto)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedRouteMode("rail")
-                        setSelectedOwnedCityIds([])
-                        setSelectedDrawCityIds([])
-                        setSelectedRailSegmentKeys([])
-                      }}
-                      disabled={!currentPlayerOwnedModes.has("rail")}
-                      style={{
-                        padding: "8px 12px",
-                        borderRadius: 999,
-                        border: `1px solid ${selectedRouteMode === "rail" ? "#223024" : "#c7d0c4"}`,
-                        background: selectedRouteMode === "rail" ? "#223024" : "#ffffff",
-                        color: selectedRouteMode === "rail" ? "#ffffff" : "#223024",
-                        cursor: currentPlayerOwnedModes.has("rail") ? "pointer" : "not-allowed",
-                        opacity: currentPlayerOwnedModes.has("rail") ? 1 : 0.6,
-                      }}
-                    >
-                      Build Track
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedRouteMode("air")
-                        setSelectedOwnedCityIds([])
-                        setSelectedDrawCityIds([])
-                        setSelectedRailSegmentKeys([])
-                      }}
-                      disabled={!currentPlayerOwnedModes.has("air")}
-                      style={{
-                        padding: "8px 12px",
-                        borderRadius: 999,
-                        border: `1px solid ${selectedRouteMode === "air" ? "#223024" : "#c7d0c4"}`,
-                        background: selectedRouteMode === "air" ? "#223024" : "#ffffff",
-                        color: selectedRouteMode === "air" ? "#ffffff" : "#223024",
-                        cursor: currentPlayerOwnedModes.has("air") ? "pointer" : "not-allowed",
-                        opacity: currentPlayerOwnedModes.has("air") ? 1 : 0.6,
-                      }}
-                    >
-                      Air
-                    </button>
+                      <div style={{ display: "grid", gap: 4 }}>
+                        <strong>Service pods</strong>
+                        <div style={{ color: "#56635a", fontSize: 12 }}>
+                          Split pods here by mode, then drag cities between pod boxes.
+                        </div>
+                      </div>
+                      {BUREAUCRACY_MODE_ORDER.map(mode => {
+                        const podGroupsForMode = currentPlayerPodGroups.filter(group => group.mode === mode)
+
+                        return (
+                          <div key={`owned-card-pods-${mode}`} style={{ display: "grid", gap: 6 }}>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: "#324236" }}>
+                              {MODE_LABELS[mode]}
+                            </div>
+                            {renderOperationsPodEditor(podGroupsForMode, {
+                              emptyMessage: `No ${MODE_LABELS[mode].toLowerCase()} pods are ready to split yet.`,
+                            })}
+                          </div>
+                        )
+                      })}
+                    </div>
                   </div>
                 )}
                 {currentPlayerOwnedCityCards.length === 0 ? (
@@ -6108,50 +6668,52 @@ export default function Board({
                 </div>
               )}
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedRouteMode("rail")
-                    setSelectedOwnedCityIds([])
-                    setSelectedDrawCityIds([])
-                    setSelectedRailSegmentKeys([])
-                    setStatusMessage("Build Track is active. Click highlighted adjacent segments to lay rail.")
-                  }}
-                  disabled={!currentPlayerOwnedModes.has("rail")}
-                  style={{
-                    padding: "8px 12px",
-                    borderRadius: 999,
-                    border: "1px solid #c7d0c4",
-                    cursor: currentPlayerOwnedModes.has("rail") ? "pointer" : "not-allowed",
-                    background: selectedRouteMode === "rail" ? "#eff5ee" : "#ffffff",
-                    color: "#223024",
-                    fontWeight: 700,
-                    opacity: currentPlayerOwnedModes.has("rail") ? 1 : 0.6,
-                  }}
-                >
-                  Build Track
-                </button>
+                {selectedRouteMode !== "rail" && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedRouteMode("rail")
+                      setSelectedOwnedCityIds([])
+                      setSelectedDrawCityIds([])
+                      setSelectedRailSegmentKeys([])
+                      setStatusMessage("Build Track is active. Pick a segment from the Operations list or click a highlighted map segment.")
+                    }}
+                    disabled={!currentPlayerOwnedModes.has("rail")}
+                    style={{
+                      padding: "8px 12px",
+                      borderRadius: 999,
+                      border: "1px solid #c7d0c4",
+                      cursor: currentPlayerOwnedModes.has("rail") ? "pointer" : "not-allowed",
+                      background: "#ffffff",
+                      color: "#223024",
+                      fontWeight: 700,
+                      opacity: currentPlayerOwnedModes.has("rail") ? 1 : 0.6,
+                    }}
+                  >
+                    Build Track
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={handleClaim}
-                  disabled={!selectedClaimPreview?.valid || game.hasClaimedRouteThisTurn}
+                  disabled={!canConfirmSelectedClaim}
                   style={{
                     padding: "8px 12px",
                     borderRadius: 999,
                     border: "1px solid #223024",
                     cursor:
-                      selectedClaimPreview?.valid && !game.hasClaimedRouteThisTurn
+                      canConfirmSelectedClaim
                         ? "pointer"
                         : "not-allowed",
                     background:
-                      selectedClaimPreview?.valid && !game.hasClaimedRouteThisTurn
+                      canConfirmSelectedClaim
                         ? "#223024"
                         : "#dfe5de",
                     color: "#ffffff",
                     fontWeight: 700,
                   }}
                 >
-                  {selectedRouteMode === "rail" ? "Build track" : "Build route"}
+                  {selectedRouteMode === "rail" ? "Confirm" : "Build route"}
                 </button>
                 <button
                   type="button"
@@ -6182,6 +6744,69 @@ export default function Board({
                   Clear
                 </button>
               </div>
+              {selectedRouteMode === "rail" && (
+                <div style={{ color: "#56635a", fontSize: 12, lineHeight: 1.4 }}>
+                  Track cost:{" "}
+                  <strong style={{ color: canAffordSelectedClaim ? "#324236" : "#9b1c1c" }}>
+                    {formatCurrency(selectedClaimPreview?.claimCost ?? 0)}
+                  </strong>
+                </div>
+              )}
+              {currentPlayerOwnedModes.has("rail") && (
+                <div
+                  style={{
+                    border: "1px solid #d8dfd5",
+                    borderRadius: 12,
+                    padding: 12,
+                    background: "#ffffff",
+                    display: "grid",
+                    gap: 8,
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
+                    <strong>Available track segments</strong>
+                    <span style={{ color: "#56635a", fontSize: 12 }}>
+                      {claimableRailSegments.length} ready
+                    </span>
+                  </div>
+                  <div style={{ color: "#56635a", fontSize: 12 }}>
+                    Pick a segment here, then click <strong>{selectedRouteMode === "rail" ? "Confirm" : "Build Track"}</strong>.
+                  </div>
+                  {claimableRailSegments.length === 0 ? (
+                    <div style={{ color: "#56635a", fontSize: 12 }}>
+                      No owned adjacent city pairs are ready for new rail track.
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                      {claimableRailSegments.map(segment => {
+                        const isSelected = selectedRailSegmentKeys.includes(segment.id)
+
+                        return (
+                          <button
+                            key={`operations-track-option-${segment.id}`}
+                            type="button"
+                            onClick={() => handleToggleRailSegment(segment.id)}
+                            style={{
+                              padding: "6px 10px",
+                              borderRadius: 999,
+                              border: `1px solid ${isSelected ? currentPlayer?.color ?? "#223024" : "#c7d0c4"}`,
+                              background: isSelected
+                                ? colorWithOpacity(currentPlayer?.color ?? "#223024", 0.12)
+                                : "#ffffff",
+                              color: "#223024",
+                              cursor: "pointer",
+                              fontSize: 12,
+                              fontWeight: isSelected ? 700 : 500,
+                            }}
+                          >
+                            {segment.cityA.name} - {segment.cityB.name}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
               {selectedClaimPreview ? (
                 <div
                   style={{
@@ -6205,103 +6830,16 @@ export default function Board({
                     </span>
                   </div>
                   <div>
-                    {MODE_LABELS[selectedClaimPreview.mode]} • {formatDecimal(selectedClaimPreview.totalDistanceMiles)} mi
-                    {" • "}Demand {selectedClaimPreview.combinedDemand}
-                    {" • "}Fleet {selectedClaimPreview.plannedFleetSize}
-                    {selectedClaimPreview.plannedFleetSize < selectedClaimPreview.demandFleetSize &&
-                      ` / ${selectedClaimPreview.demandFleetSize} needed`}
-                    {" • "}Capacity {selectedClaimPreview.passengersPerTrip.toLocaleString()} / trip
-                  </div>
-                  {selectedClaimPreview.previewCard && (
-                    <div style={{ color: "#56635a" }}>
-                      Vehicle preview: #{selectedClaimPreview.previewCard.number}{" "}
-                      {selectedClaimPreview.previewCard.name}
-                    </div>
-                  )}
-                  <div>
-                    Trips/month {selectedClaimPreview.maxTripsPerPeriod.toLocaleString()}
-                    {" • "}Passengers/month {selectedClaimPreview.passengersPerPeriod.toLocaleString()}
-                  </div>
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
-                      gap: 10,
-                      border: "1px solid #e2e8df",
-                      borderRadius: 10,
-                      padding: 10,
-                      background: "#f7faf7",
-                      alignItems: "center",
-                    }}
-                  >
-                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                      <div style={{ color: "#7b857d", fontSize: 11, fontWeight: 600 }}>
-                        Avg net / month
-                      </div>
-                      <div
-                        style={{
-                          color:
-                            selectedClaimPreview.netPerPeriod > 0
-                              ? "#2a7f3b"
-                              : selectedClaimPreview.netPerPeriod < 0
-                                ? "#b42318"
-                                : "#223024",
-                          fontSize: 24,
-                          fontWeight: 800,
-                          lineHeight: 1.1,
-                        }}
-                      >
-                        {formatCurrency(selectedClaimPreview.netPerPeriod)}
-                      </div>
-                    </div>
-                    <div
-                      style={{
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 6,
-                        alignItems: "flex-start",
-                      }}
-                    >
-                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                        <div style={{ color: "#7b857d", fontSize: 11, fontWeight: 600 }}>
-                          Avg revenue / month
-                        </div>
-                        <div style={{ color: "#324236", fontSize: 14, fontWeight: 700 }}>
-                          {formatCurrency(selectedClaimPreview.revenuePerPeriod)}
-                        </div>
-                      </div>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                        <div style={{ color: "#7b857d", fontSize: 11, fontWeight: 600 }}>
-                          Avg operating cost / month
-                        </div>
-                        <div style={{ color: "#324236", fontSize: 14, fontWeight: 700 }}>
-                          {formatCurrency(selectedClaimPreview.operatingCostPerPeriod)}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  <div style={{ color: "#56635a", fontSize: 12 }}>
-                    Crew {formatCurrency(selectedClaimPreview.crewCostPerPeriod)}
-                    {" • "}Maint {formatCurrency(selectedClaimPreview.maintenanceCostPerPeriod)}
-                    {" • "}Balance {formatCurrency(selectedClaimPreview.balanceCostPerPeriod)}
-                    {" • "}Fuel {formatCurrency(selectedClaimPreview.fuelCostPerPeriod)}
-                  </div>
-                  <div>
-                    Build {formatCurrency(selectedClaimPreview.claimCost)}
-                    {selectedClaimPreview.connectionBonus > 0 && (
-                      <>
-                        {" • "}Bonus {formatCurrency(selectedClaimPreview.connectionBonus)}
-                        {" • "}New cities {selectedClaimPreview.newCityCount}
-                      </>
-                    )}
+                    {selectedRouteMode === "rail"
+                      ? `Track segments selected: ${selectedRailSegmentKeys.length}`
+                      : `Selected cities: ${selectedCities.map(city => city.name).join(", ")}`}
                   </div>
                   {optionMessage && <div style={{ color: "#9b1c1c" }}>{optionMessage}</div>}
                   {selectedClaimPreview.valid && (
                     <div style={{ color: "#324236", fontSize: 13 }}>
-                      Ready to confirm for {formatCurrency(selectedClaimPreview.claimCost)}
-                      {selectedClaimPreview.connectionBonus > 0 &&
-                        ` with ${formatCurrency(selectedClaimPreview.connectionBonus)} in connection bonuses`}
-                      .
+                      {selectedRouteMode === "rail"
+                        ? "Ready to build the selected track."
+                        : "Ready to build the selected route."}
                     </div>
                   )}
                 </div>
@@ -6316,7 +6854,7 @@ export default function Board({
                     fontSize: 13,
                   }}
                 >
-                  Select air or build track mode, then pick city cards from your hand or click highlighted rail segments to preview.
+                  Select air or build track mode, then pick owned cities or click an available rail segment chip/map highlight.
                 </div>
               )}
             </>
