@@ -1,0 +1,180 @@
+import type { GameState } from "../engine/types"
+
+export const SAVED_GAME_STORAGE_KEY = "transport-game-saved-game-v1"
+export const ACTIVE_ADMIN_LAUNCH_STORAGE_KEY = "transport-game-active-admin-launch-v1"
+export const LOBBY_CLIENT_ID_STORAGE_KEY = "transport-game-lobby-client-id-v1"
+const ACTIVE_SESSION_PLAYER_STORAGE_KEY_PREFIX = "transport-game-active-session-player-v1"
+const PLAYER_NAME_STORAGE_KEY = "transport-game-player-name-v1"
+const JOIN_APP_URL_STORAGE_KEY = "transport-game-join-app-url-v1"
+
+export type ActiveAdminLaunch = {
+  sessionId: string
+  sessionName: string
+  serverUrl: string
+}
+
+export function loadSavedGame() {
+  if (typeof window === "undefined") {
+    return null
+  }
+
+  const rawValue = window.localStorage.getItem(SAVED_GAME_STORAGE_KEY)
+
+  if (!rawValue) {
+    return null
+  }
+
+  try {
+    return JSON.parse(rawValue) as GameState
+  } catch {
+    return null
+  }
+}
+
+export function saveSavedGame(game: GameState) {
+  if (typeof window === "undefined") {
+    return
+  }
+
+  window.localStorage.setItem(SAVED_GAME_STORAGE_KEY, JSON.stringify(game))
+}
+
+export function clearSavedGame() {
+  if (typeof window === "undefined") {
+    return
+  }
+
+  window.localStorage.removeItem(SAVED_GAME_STORAGE_KEY)
+}
+
+export function loadActiveAdminLaunch() {
+  if (typeof window === "undefined") {
+    return null
+  }
+
+  const rawValue = window.localStorage.getItem(ACTIVE_ADMIN_LAUNCH_STORAGE_KEY)
+
+  if (!rawValue) {
+    return null
+  }
+
+  try {
+    const parsedValue = JSON.parse(rawValue) as Partial<ActiveAdminLaunch>
+
+    if (
+      typeof parsedValue.sessionId !== "string" ||
+      typeof parsedValue.sessionName !== "string" ||
+      typeof parsedValue.serverUrl !== "string"
+    ) {
+      return null
+    }
+
+    return {
+      sessionId: parsedValue.sessionId,
+      sessionName: parsedValue.sessionName,
+      serverUrl: parsedValue.serverUrl,
+    }
+  } catch {
+    return null
+  }
+}
+
+export function saveActiveAdminLaunch(launch: ActiveAdminLaunch) {
+  if (typeof window === "undefined") {
+    return
+  }
+
+  window.localStorage.setItem(ACTIVE_ADMIN_LAUNCH_STORAGE_KEY, JSON.stringify(launch))
+}
+
+export function clearActiveAdminLaunch() {
+  if (typeof window === "undefined") {
+    return
+  }
+
+  window.localStorage.removeItem(ACTIVE_ADMIN_LAUNCH_STORAGE_KEY)
+}
+
+function createLobbyClientId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID()
+  }
+
+  return `client-${Math.random().toString(36).slice(2, 10)}`
+}
+
+export function getLobbyClientId() {
+  if (typeof window === "undefined") {
+    return "server"
+  }
+
+  const existingValue = window.localStorage.getItem(LOBBY_CLIENT_ID_STORAGE_KEY)
+
+  if (existingValue) {
+    return existingValue
+  }
+
+  const nextValue = createLobbyClientId()
+  window.localStorage.setItem(LOBBY_CLIENT_ID_STORAGE_KEY, nextValue)
+  return nextValue
+}
+
+function getActiveSessionPlayerStorageKey(sessionId: string) {
+  return `${ACTIVE_SESSION_PLAYER_STORAGE_KEY_PREFIX}-${sessionId}`
+}
+
+export function loadActiveSessionPlayer(sessionId: string) {
+  if (typeof window === "undefined") {
+    return null
+  }
+
+  return window.localStorage.getItem(getActiveSessionPlayerStorageKey(sessionId))
+}
+
+export function saveActiveSessionPlayer(sessionId: string, playerId: string) {
+  if (typeof window === "undefined") {
+    return
+  }
+
+  window.localStorage.setItem(getActiveSessionPlayerStorageKey(sessionId), playerId)
+}
+
+export function clearActiveSessionPlayer(sessionId: string) {
+  if (typeof window === "undefined") {
+    return
+  }
+
+  window.localStorage.removeItem(getActiveSessionPlayerStorageKey(sessionId))
+}
+
+export function loadPlayerName() {
+  if (typeof window === "undefined") {
+    return null
+  }
+
+  return window.localStorage.getItem(PLAYER_NAME_STORAGE_KEY)
+}
+
+export function savePlayerName(playerName: string) {
+  if (typeof window === "undefined") {
+    return
+  }
+
+  window.localStorage.setItem(PLAYER_NAME_STORAGE_KEY, playerName)
+}
+
+export function loadJoinAppUrl() {
+  if (typeof window === "undefined") {
+    return null
+  }
+
+  return window.localStorage.getItem(JOIN_APP_URL_STORAGE_KEY)
+}
+
+export function saveJoinAppUrl(joinAppUrl: string) {
+  if (typeof window === "undefined") {
+    return
+  }
+
+  window.localStorage.setItem(JOIN_APP_URL_STORAGE_KEY, joinAppUrl)
+}

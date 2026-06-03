@@ -12,6 +12,8 @@ import type {
 import { CITY_DECK_REGIONS } from "./types"
 import {
   applyBureaucracyFuelConsumption,
+  buildDisconnectedServiceSlotId,
+  buildServiceSlotId,
   buildPlayerBureaucracySummary,
   findPlayerBureaucracyPlan,
   getMaxFuelUnitsCapacityForPlayer,
@@ -55,6 +57,18 @@ export type CityOfferSelectionResult =
       ok: true
       game: GameState
       cityIds: string[]
+    }
+  | {
+      ok: false
+      error: string
+    }
+
+export type ReadyPhaseResult =
+  | {
+      ok: true
+      game: GameState
+      playerId: string
+      advancedPhase: boolean
     }
   | {
       ok: false
@@ -227,6 +241,19 @@ export type BureaucracyServiceCityMoveResult =
       error: string
     }
 
+export type BureaucracyServicePodDeleteResult =
+  | {
+      ok: true
+      game: GameState
+      corridorId: string
+      routeId: string
+      cityIds: string[]
+    }
+  | {
+      ok: false
+      error: string
+    }
+
 export type RailUpgradeResult =
   | {
       ok: true
@@ -310,8 +337,48 @@ function isGameLocked(game: GameState) {
   return game.isGameOver
 }
 
-function getOwnedVehicleCards(game: GameState) {
-  const currentPlayer = getCurrentPlayer(game)
+function dedupePlayerIds(playerIds: string[]) {
+  return [...new Set(playerIds)]
+}
+
+export function getPlayerById(game: GameState, playerId: string | null | undefined) {
+  if (!playerId) {
+    return null
+  }
+
+  return game.players.find(player => player.id === playerId) ?? null
+}
+
+export function hasPlayerConfirmedClaimRoutes(game: GameState, playerId: string | null | undefined) {
+  return typeof playerId === "string" && game.claimRoutesReadyPlayerIds.includes(playerId)
+}
+
+export function hasPlayerCompletedOperations(game: GameState, playerId: string | null | undefined) {
+  return typeof playerId === "string" && game.operationsReadyPlayerIds.includes(playerId)
+}
+
+export function hasPlayerCompletedBureaucracy(game: GameState, playerId: string | null | undefined) {
+  return typeof playerId === "string" && game.bureaucracyReadyPlayerIds.includes(playerId)
+}
+
+export function hasPlayerClaimedRouteThisTurn(game: GameState, playerId: string | null | undefined) {
+  return typeof playerId === "string" && game.claimedRoutePlayerIdsThisTurn.includes(playerId)
+}
+
+export function isOperationsUnlockedForPlayer(game: GameState, playerId: string | null | undefined) {
+  return (
+    Boolean(playerId) &&
+    (game.currentPhase === "claim-routes" || game.currentPhase === "operations") &&
+    hasPlayerConfirmedClaimRoutes(game, playerId)
+  )
+}
+
+export function canPlayerEditOperations(game: GameState, playerId: string | null | undefined) {
+  return isOperationsUnlockedForPlayer(game, playerId) && !hasPlayerCompletedOperations(game, playerId)
+}
+
+function getOwnedVehicleCards(game: GameState, playerId = game.currentPlayerId) {
+  const currentPlayer = getPlayerById(game, playerId)
 
   if (!currentPlayer) {
     return []
@@ -629,7 +696,10 @@ function dedupeSegmentPairs(segmentPairs: Array<[string, string]>) {
   })
 }
 
-function getCurrentPlayerHandCityIds(game: GameState, currentPlayer = getCurrentPlayer(game)) {
+function getCurrentPlayerHandCityIds(
+  game: GameState,
+  currentPlayer = getCurrentPlayer(game),
+) {
   return [
     ...new Set([
       ...(currentPlayer?.ownedCityCardIds ?? []),
@@ -1104,6 +1174,7 @@ export function calculateClaimRouteCost(
 export function getConnectionOptions(
   game: GameState,
   cityIds: string[],
+  playerId = game.currentPlayerId,
 ): ConnectionOption[] {
   if (isGameLocked(game)) {
     return CONNECTION_MODES.map(mode => ({
@@ -1113,11 +1184,11 @@ export function getConnectionOptions(
     }))
   }
 
-  if (game.currentPhase !== "operations") {
+  if (!canPlayerEditOperations(game, playerId)) {
     return CONNECTION_MODES.map(mode => ({
       mode,
       valid: false,
-      reason: "Routes can only be claimed during the operations phase.",
+      reason: "Routes can only be claimed after you confirm picks and before you click Next player.",
     }))
   }
 
@@ -1129,15 +1200,15 @@ export function getConnectionOptions(
     }))
   }
 
-  const currentPlayer = getCurrentPlayer(game)
-  const ownedVehicleTypes = new Set(getOwnedVehicleCards(game).map(card => card.type))
+  const currentPlayer = getPlayerById(game, playerId)
+  const ownedVehicleTypes = new Set(getOwnedVehicleCards(game, playerId).map(card => card.type))
 
   return CONNECTION_MODES.map(mode => {
     if (mode === "bus") {
       return {
         mode,
         valid: false,
-        reason: "Bus pods are automatic from connected owned city cards. No bus build is required.",
+        reason: "Bus routes are automatic from connected owned city cards. No bus build is required.",
       }
     }
 
@@ -1188,6 +1259,26 @@ export function getCurrentPlayer(game: GameState) {
     game.players.find(player => player.id === game.currentPlayerId) ??
     game.players[0]
   )
+}
+
+function getNextPendingPlayerId(game: GameState, readyPlayerIds: string[]) {
+  if (game.players.length <= 1) {
+    return game.players[0]?.id ?? game.currentPlayerId
+  }
+
+  const readySet = new Set(readyPlayerIds)
+  const currentPlayerIndex = game.players.findIndex(player => player.id === game.currentPlayerId)
+  const safeCurrentPlayerIndex = currentPlayerIndex === -1 ? 0 : currentPlayerIndex
+
+  for (let step = 1; step <= game.players.length; step += 1) {
+    const candidate = game.players[(safeCurrentPlayerIndex + step) % game.players.length]
+
+    if (!readySet.has(candidate.id)) {
+      return candidate.id
+    }
+  }
+
+  return game.players[safeCurrentPlayerIndex]?.id ?? game.currentPlayerId
 }
 
 export function getVehiclePurchaseLimit(type: VehicleType) {
@@ -1256,7 +1347,7 @@ export function drawCityOffer(
     }
   }
 
-  if (game.hasClaimedRouteThisTurn) {
+  if (hasPlayerClaimedRouteThisTurn(game, game.currentPlayerId)) {
     return {
       ok: false,
       error: "You already claimed a route this turn.",
@@ -1359,6 +1450,167 @@ export function setActiveCityOfferKeptCityIds(
   }
 }
 
+export function confirmClaimPicks(game: GameState): ReadyPhaseResult {
+  if (isGameLocked(game)) {
+    return {
+      ok: false,
+      error: "The game is over.",
+    }
+  }
+
+  if (game.currentPhase !== "claim-routes") {
+    return {
+      ok: false,
+      error: "City picks can only be confirmed during the claim routes phase.",
+    }
+  }
+
+  if ((game.activeCityOffer?.keptCityIds.length ?? 0) !== 2) {
+    return {
+      ok: false,
+      error: "Keep exactly 2 city cards from the draw first.",
+    }
+  }
+
+  const gameWithKeptCityCards = returnUnkeptCityOfferCardsToDecks(
+    applyKeptCityOfferToCurrentPlayer(game),
+  )
+  const migratedBureaucracyState = migrateBureaucracyServiceState(
+    game,
+    gameWithKeptCityCards,
+  )
+  const claimRoutesReadyPlayerIds = dedupePlayerIds([
+    ...game.claimRoutesReadyPlayerIds,
+    game.currentPlayerId,
+  ])
+  const advancedPhase = claimRoutesReadyPlayerIds.length >= game.players.length
+  const firstPlayerId = game.players[game.leadPlayerIndex]?.id ?? game.players[0]?.id ?? game.currentPlayerId
+
+  return {
+    ok: true,
+    playerId: game.currentPlayerId,
+    advancedPhase,
+    game: {
+      ...gameWithKeptCityCards,
+      ...migratedBureaucracyState,
+      claimRoutesReadyPlayerIds,
+      operationsReadyPlayerIds: game.operationsReadyPlayerIds.filter(playerId =>
+        claimRoutesReadyPlayerIds.includes(playerId),
+      ),
+      currentPhase: advancedPhase ? "operations" : "claim-routes",
+      currentPlayerId: advancedPhase
+        ? firstPlayerId
+        : getNextPendingPlayerId(game, claimRoutesReadyPlayerIds),
+      activeCityOffer: null,
+    },
+  }
+}
+
+export function markOperationsReady(
+  game: GameState,
+  playerId: string,
+): ReadyPhaseResult {
+  if (isGameLocked(game)) {
+    return {
+      ok: false,
+      error: "The game is over.",
+    }
+  }
+
+  if (!canPlayerEditOperations(game, playerId)) {
+    if (hasPlayerCompletedOperations(game, playerId)) {
+      return {
+        ok: true,
+        playerId,
+        advancedPhase: false,
+        game,
+      }
+    }
+
+    return {
+      ok: false,
+      error: "Operations unlock after you confirm picks and lock once you click Next player.",
+    }
+  }
+
+  const operationsReadyPlayerIds = dedupePlayerIds([
+    ...game.operationsReadyPlayerIds,
+    playerId,
+  ])
+  const advancedPhase = operationsReadyPlayerIds.length >= game.players.length
+  const firstPlayerId = game.players[game.leadPlayerIndex]?.id ?? game.players[0]?.id ?? game.currentPlayerId
+
+  return {
+    ok: true,
+    playerId,
+    advancedPhase,
+    game: {
+      ...game,
+      currentPhase: advancedPhase ? "bureaucracy" : game.currentPhase,
+      currentPlayerId: advancedPhase ? firstPlayerId : game.currentPlayerId,
+      operationsReadyPlayerIds: advancedPhase ? [] : operationsReadyPlayerIds,
+      bureaucracyReadyPlayerIds: advancedPhase ? [] : game.bureaucracyReadyPlayerIds,
+      activeCityOffer: advancedPhase ? null : game.activeCityOffer,
+    },
+  }
+}
+
+export function markBureaucracyReady(
+  game: GameState,
+  playerId: string,
+): ReadyPhaseResult {
+  if (isGameLocked(game)) {
+    return {
+      ok: false,
+      error: "The game is over.",
+    }
+  }
+
+  if (game.currentPhase !== "bureaucracy") {
+    return {
+      ok: false,
+      error: "Bureaucracy can only be advanced during the bureaucracy phase.",
+    }
+  }
+
+  if (!getPlayerById(game, playerId)) {
+    return {
+      ok: false,
+      error: `Player ${playerId} could not be found.`,
+    }
+  }
+
+  if (hasPlayerCompletedBureaucracy(game, playerId)) {
+    return {
+      ok: true,
+      playerId,
+      advancedPhase: false,
+      game,
+    }
+  }
+
+  const bureaucracyReadyPlayerIds = dedupePlayerIds([
+    ...game.bureaucracyReadyPlayerIds,
+    playerId,
+  ])
+  const advancedPhase = bureaucracyReadyPlayerIds.length >= game.players.length
+
+  return {
+    ok: true,
+    playerId,
+    advancedPhase,
+    game: advancedPhase
+      ? advancePhase({
+          ...game,
+          bureaucracyReadyPlayerIds,
+        })
+      : {
+          ...game,
+          bureaucracyReadyPlayerIds,
+        },
+  }
+}
+
 export function advancePhase(game: GameState): GameState {
   if (isGameLocked(game)) {
     return game
@@ -1387,10 +1639,13 @@ export function advancePhase(game: GameState): GameState {
       currentPhase: WEEKLY_PHASES[nextPhaseIndex],
       leadPlayerIndex: nextLeadPlayerIndex,
       currentPlayerId: firstPlayerId,
+      claimRoutesReadyPlayerIds: [],
+      operationsReadyPlayerIds: [],
+      bureaucracyReadyPlayerIds: [],
       hasPurchasedVehicleThisTurn: false,
       hasPurchasedVehicleThisPhase: false,
       purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
-      hasClaimedRouteThisTurn: false,
+      claimedRoutePlayerIdsThisTurn: [],
       claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
       vehicleMarketCardIds: nextVehicleMarketCardIds,
       activeCityOffer: null,
@@ -1413,10 +1668,13 @@ export function advancePhase(game: GameState): GameState {
       currentPhase: WEEKLY_PHASES[nextPhaseIndex],
       leadPlayerIndex: nextLeadPlayerIndex,
       currentPlayerId: firstPlayerId,
+      claimRoutesReadyPlayerIds: [],
+      operationsReadyPlayerIds: [],
+      bureaucracyReadyPlayerIds: [],
       hasPurchasedVehicleThisTurn: false,
       hasPurchasedVehicleThisPhase: false,
       purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
-      hasClaimedRouteThisTurn: false,
+      claimedRoutePlayerIdsThisTurn: [],
       claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
       activeCityOffer: null,
     }
@@ -1431,10 +1689,13 @@ export function advancePhase(game: GameState): GameState {
         isGameOver: true,
         leadPlayerIndex: nextLeadPlayerIndex,
         currentPlayerId: firstPlayerId,
+        claimRoutesReadyPlayerIds: [],
+        operationsReadyPlayerIds: [],
+        bureaucracyReadyPlayerIds: [],
         hasPurchasedVehicleThisTurn: false,
         hasPurchasedVehicleThisPhase: false,
         purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
-        hasClaimedRouteThisTurn: false,
+        claimedRoutePlayerIdsThisTurn: [],
         claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
         activeCityOffer: null,
       }
@@ -1480,10 +1741,13 @@ export function advancePhase(game: GameState): GameState {
       chanceDiscardCardIds: nextDiscard,
       leadPlayerIndex: nextLeadPlayerIndex,
       currentPlayerId: firstPlayerId,
+      claimRoutesReadyPlayerIds: [],
+      operationsReadyPlayerIds: [],
+      bureaucracyReadyPlayerIds: [],
       hasPurchasedVehicleThisTurn: false,
       hasPurchasedVehicleThisPhase: false,
       purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
-      hasClaimedRouteThisTurn: false,
+      claimedRoutePlayerIdsThisTurn: [],
       claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
       activeCityOffer: null,
       resourceMarket: {
@@ -1503,10 +1767,13 @@ export function advancePhase(game: GameState): GameState {
     currentPhase: WEEKLY_PHASES[nextPhaseIndex],
     leadPlayerIndex: nextLeadPlayerIndex,
     currentPlayerId: firstPlayerId,
+    claimRoutesReadyPlayerIds: [],
+    operationsReadyPlayerIds: [],
+    bureaucracyReadyPlayerIds: [],
     hasPurchasedVehicleThisTurn: false,
     hasPurchasedVehicleThisPhase: false,
     purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
-    hasClaimedRouteThisTurn: false,
+    claimedRoutePlayerIdsThisTurn: [],
     claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
     activeCityOffer: null,
   }
@@ -1706,20 +1973,30 @@ export function advanceTurn(game: GameState): GameState {
     return game
   }
 
+  if (game.currentPhase === "claim-routes") {
+    const result = confirmClaimPicks(game)
+    return result.ok ? result.game : game
+  }
+
+  if (game.currentPhase === "operations") {
+    const result = markOperationsReady(game, game.currentPlayerId)
+    return result.ok ? result.game : game
+  }
+
+  if (game.currentPhase === "bureaucracy") {
+    const result = markBureaucracyReady(game, game.currentPlayerId)
+    return result.ok ? result.game : game
+  }
+
   if (isLastPlayerTurn(game)) {
     return advancePhase(game)
   }
 
-  const gameWithKeptCityCards =
-    game.currentPhase === "claim-routes"
-      ? returnUnkeptCityOfferCardsToDecks(applyKeptCityOfferToCurrentPlayer(game))
-      : game
-
   return {
-    ...gameWithKeptCityCards,
+    ...game,
     currentPlayerId: getNextPlayerId(game),
     hasPurchasedVehicleThisTurn: false,
-    hasClaimedRouteThisTurn: false,
+    claimedRoutePlayerIdsThisTurn: [],
     activeCityOffer: null,
   }
 }
@@ -1855,6 +2132,7 @@ export function setBureaucracyRouteFuelUnits(
   game: GameState,
   routeId: string,
   requestedFuelUnits: number,
+  playerId = game.currentPlayerId,
 ): BureaucracyFuelUnitsResult {
   if (isGameLocked(game)) {
     return {
@@ -1863,14 +2141,14 @@ export function setBureaucracyRouteFuelUnits(
     }
   }
 
-  if (game.currentPhase !== "operations") {
+  if (!canPlayerEditOperations(game, playerId)) {
     return {
       ok: false,
-      error: "Fuel units can only be planned during the operations phase.",
+      error: "Fuel units can only be planned after you confirm picks and before you click Next player.",
     }
   }
 
-  const routePlan = findPlayerBureaucracyPlan(game, game.currentPlayerId, routeId)
+  const routePlan = findPlayerBureaucracyPlan(game, playerId, routeId)
 
   if (!routePlan) {
     return {
@@ -1901,6 +2179,7 @@ export function setBureaucracyRouteVehicleCard(
   game: GameState,
   routeId: string,
   requestedVehicleCardId: string | null,
+  playerId = game.currentPlayerId,
 ): BureaucracyVehicleCardResult {
   if (isGameLocked(game)) {
     return {
@@ -1909,14 +2188,14 @@ export function setBureaucracyRouteVehicleCard(
     }
   }
 
-  if (game.currentPhase !== "operations") {
+  if (!canPlayerEditOperations(game, playerId)) {
     return {
       ok: false,
-      error: "Vehicles can only be assigned during the operations phase.",
+      error: "Vehicles can only be assigned after you confirm picks and before you click Next player.",
     }
   }
 
-  const routePlan = findPlayerBureaucracyPlan(game, game.currentPlayerId, routeId)
+  const routePlan = findPlayerBureaucracyPlan(game, playerId, routeId)
 
   if (!routePlan) {
     return {
@@ -1925,7 +2204,7 @@ export function setBureaucracyRouteVehicleCard(
     }
   }
 
-  const currentPlayer = getCurrentPlayer(game)
+  const currentPlayer = getPlayerById(game, playerId)
 
   if (!currentPlayer) {
     return {
@@ -1989,6 +2268,7 @@ export function setBureaucracyServiceCities(
   game: GameState,
   routeId: string,
   cityIds: string[],
+  playerId = game.currentPlayerId,
 ): BureaucracyServiceCitiesResult {
   if (isGameLocked(game)) {
     return {
@@ -1997,14 +2277,14 @@ export function setBureaucracyServiceCities(
     }
   }
 
-  if (game.currentPhase !== "operations") {
+  if (!canPlayerEditOperations(game, playerId)) {
     return {
       ok: false,
-      error: "Service cities can only be updated during the operations phase.",
+      error: "Service cities can only be updated after you confirm picks and before you click Next player.",
     }
   }
 
-  const routePlan = findPlayerBureaucracyPlan(game, game.currentPlayerId, routeId)
+  const routePlan = findPlayerBureaucracyPlan(game, playerId, routeId)
 
   if (!routePlan) {
     return {
@@ -2032,6 +2312,7 @@ export function setBureaucracyServiceCities(
 export function addBureaucracyServiceSplit(
   game: GameState,
   corridorId: string,
+  playerId = game.currentPlayerId,
 ): BureaucracyServiceSplitResult {
   if (isGameLocked(game)) {
     return {
@@ -2040,10 +2321,10 @@ export function addBureaucracyServiceSplit(
     }
   }
 
-  if (game.currentPhase !== "operations") {
+  if (!canPlayerEditOperations(game, playerId)) {
     return {
       ok: false,
-      error: "Service splits can only be added during the operations phase.",
+      error: "Service splits can only be added after you confirm picks and before you click Next player.",
     }
   }
 
@@ -2060,11 +2341,100 @@ export function addBureaucracyServiceSplit(
   }
 }
 
+export function deleteBureaucracyServicePod(
+  game: GameState,
+  corridorId: string,
+  routeId: string,
+  playerId = game.currentPlayerId,
+): BureaucracyServicePodDeleteResult {
+  if (isGameLocked(game)) {
+    return {
+      ok: false,
+      error: "The game is over.",
+    }
+  }
+
+  if (!canPlayerEditOperations(game, playerId)) {
+    return {
+      ok: false,
+      error: "Routes can only be deleted after you confirm picks and before you click Next player.",
+    }
+  }
+
+  const summary = buildPlayerBureaucracySummary(game, playerId)
+  const corridorPlans =
+    summary?.routePlans
+      .filter(plan => plan.corridorId === corridorId)
+      .sort((planA, planB) => planA.slotIndex - planB.slotIndex) ?? []
+  const targetPlan = corridorPlans.find(plan => plan.id === routeId)
+  const disconnectedPlan = corridorPlans.find(plan => plan.isDisconnected)
+
+  if (!targetPlan || targetPlan.isDisconnected) {
+    return {
+      ok: false,
+      error: "That route could not be found.",
+    }
+  }
+
+  if (!disconnectedPlan) {
+    return {
+      ok: false,
+      error: "The disconnected route could not be found.",
+    }
+  }
+
+  const remainingPlans = corridorPlans.filter(
+    plan => !plan.isDisconnected && plan.id !== routeId,
+  )
+  const deletedCityIds = targetPlan.selectedCityIds
+  const nextSelections = { ...game.bureaucracyServiceCityIdsByRouteId }
+  const nextVehicleAssignments = { ...game.bureaucracyVehicleCardIdsByRouteId }
+
+  corridorPlans.forEach(plan => {
+    delete nextSelections[plan.id]
+    delete nextVehicleAssignments[plan.id]
+  })
+
+  remainingPlans.forEach((plan, slotIndex) => {
+    const nextRouteId = buildServiceSlotId(corridorId, slotIndex)
+    nextSelections[nextRouteId] = [...plan.selectedCityIds]
+
+    if (plan.vehicleCard?.id) {
+      nextVehicleAssignments[nextRouteId] = plan.vehicleCard.id
+    }
+  })
+
+  if (remainingPlans.length === 0) {
+    nextSelections[buildServiceSlotId(corridorId, 0)] = []
+  }
+
+  nextSelections[buildDisconnectedServiceSlotId(corridorId)] = [
+    ...new Set([...disconnectedPlan.selectedCityIds, ...deletedCityIds]),
+  ]
+
+  return {
+    ok: true,
+    corridorId,
+    routeId,
+    cityIds: deletedCityIds,
+    game: {
+      ...game,
+      bureaucracyServiceSlotCountsByCorridorId: {
+        ...game.bureaucracyServiceSlotCountsByCorridorId,
+        [corridorId]: Math.max(1, remainingPlans.length),
+      },
+      bureaucracyServiceCityIdsByRouteId: nextSelections,
+      bureaucracyVehicleCardIdsByRouteId: nextVehicleAssignments,
+    },
+  }
+}
+
 export function moveBureaucracyServiceCity(
   game: GameState,
   corridorId: string,
   cityId: string,
   routeId: string,
+  playerId = game.currentPlayerId,
 ): BureaucracyServiceCityMoveResult {
   if (isGameLocked(game)) {
     return {
@@ -2073,14 +2443,14 @@ export function moveBureaucracyServiceCity(
     }
   }
 
-  if (game.currentPhase !== "operations") {
+  if (!canPlayerEditOperations(game, playerId)) {
     return {
       ok: false,
-      error: "Pod cities can only be moved during the operations phase.",
+      error: "Route cities can only be moved after you confirm picks and before you click Next player.",
     }
   }
 
-  const summary = buildPlayerBureaucracySummary(game, game.currentPlayerId)
+  const summary = buildPlayerBureaucracySummary(game, playerId)
   const corridorPlans =
     summary?.routePlans.filter(plan => plan.corridorId === corridorId) ?? []
   const targetPlan = corridorPlans.find(plan => plan.id === routeId)
@@ -2088,14 +2458,14 @@ export function moveBureaucracyServiceCity(
   if (!targetPlan) {
     return {
       ok: false,
-      error: "That target pod could not be found.",
+      error: "That target route could not be found.",
     }
   }
 
   if (!targetPlan.availableCityIds.includes(cityId)) {
     return {
       ok: false,
-      error: "That city does not belong to this pod group.",
+      error: "That city does not belong to this route group.",
     }
   }
 
@@ -2109,10 +2479,13 @@ export function moveBureaucracyServiceCity(
 
   nextSelections[routeId] = [...new Set([...(nextSelections[routeId] ?? []), cityId])]
 
-  if (!isValidServicePodSelection(nextSelections[routeId] ?? [], targetPlan.corridorSegmentPairs)) {
+  if (
+    !targetPlan.isDisconnected &&
+    !isValidServicePodSelection(nextSelections[routeId] ?? [], targetPlan.corridorSegmentPairs)
+  ) {
     return {
       ok: false,
-      error: "That destination pod would be disconnected. Pods with 2+ cities must stay connected.",
+      error: "That destination route would be disconnected. Routes with 2+ cities must stay connected.",
     }
   }
 
@@ -2131,6 +2504,7 @@ export function moveBureaucracyServiceCity(
 export function claimRoute(
   game: GameState,
   input: ClaimRouteInput,
+  playerId = game.currentPlayerId,
 ): ClaimRouteResult {
   if (isGameLocked(game)) {
     return {
@@ -2139,21 +2513,21 @@ export function claimRoute(
     }
   }
 
-  if (game.hasClaimedRouteThisTurn) {
+  if (hasPlayerClaimedRouteThisTurn(game, playerId)) {
     return {
       ok: false,
       error: "You can claim at most 1 route per turn.",
     }
   }
 
-  if (game.currentPhase !== "operations") {
+  if (!canPlayerEditOperations(game, playerId)) {
     return {
       ok: false,
-      error: "Routes can only be claimed during the operations phase.",
+      error: "Routes can only be claimed after you confirm picks and before you click Next player.",
     }
   }
 
-  const currentPlayer = getCurrentPlayer(game)
+  const currentPlayer = getPlayerById(game, playerId)
 
   if (!currentPlayer) {
     return {
@@ -2167,7 +2541,7 @@ export function claimRoute(
   if (input.mode === "bus") {
     return {
       ok: false,
-      error: "Bus pods are automatic from connected owned city cards. Build rail track or air links in Operations instead.",
+      error: "Bus routes are automatic from connected owned city cards. Build rail track or air links in Operations instead.",
     }
   }
 
@@ -2198,7 +2572,7 @@ export function claimRoute(
     input.mode === "rail" && input.segmentPairs && input.segmentPairs.length > 0
       ? resolvedSelection.segmentPairs
       : getClaimSegmentPairs(game, input.mode, cityIds)
-  const ownedVehicleTypes = new Set(getOwnedVehicleCards(game).map(card => card.type))
+  const ownedVehicleTypes = new Set(getOwnedVehicleCards(game, playerId).map(card => card.type))
 
   if (!ownedVehicleTypes.has(getVehicleTypeForMode(input.mode))) {
     return {
@@ -2232,14 +2606,17 @@ export function claimRoute(
       cityB,
       mode: input.mode,
       railTraction: input.mode === "rail" ? ("diesel" as const) : undefined,
-      ownerId: game.currentPlayerId,
+      ownerId: playerId,
     }
   })
   const claimedGame = {
     ...game,
     routes: [...game.routes, ...routes],
     activeCityOffer: null,
-    hasClaimedRouteThisTurn: true,
+    claimedRoutePlayerIdsThisTurn: dedupePlayerIds([
+      ...game.claimedRoutePlayerIdsThisTurn,
+      playerId,
+    ]),
     claimedRouteModesThisPhase: {
       ...game.claimedRouteModesThisPhase,
       [input.mode]: true,
@@ -2272,6 +2649,7 @@ export function claimRoute(
 export function upgradeRailRoute(
   game: GameState,
   routeId: string,
+  playerId = game.currentPlayerId,
 ): RailUpgradeResult {
   if (isGameLocked(game)) {
     return {
@@ -2280,10 +2658,10 @@ export function upgradeRailRoute(
     }
   }
 
-  if (game.currentPhase !== "operations") {
+  if (!canPlayerEditOperations(game, playerId)) {
     return {
       ok: false,
-      error: "Rail upgrades can only be purchased during the operations phase.",
+      error: "Rail upgrades can only be purchased after you confirm picks and before you click Next player.",
     }
   }
 
@@ -2296,10 +2674,10 @@ export function upgradeRailRoute(
     }
   }
 
-  if (route.ownerId !== game.currentPlayerId) {
+  if (route.ownerId !== playerId) {
     return {
       ok: false,
-      error: "You can only upgrade the current player's rail routes.",
+      error: "You can only upgrade your own rail routes.",
     }
   }
 
@@ -2317,7 +2695,7 @@ export function upgradeRailRoute(
     }
   }
 
-  const currentPlayer = getCurrentPlayer(game)
+  const currentPlayer = getPlayerById(game, playerId)
 
   if (!currentPlayer) {
     return {

@@ -14,6 +14,7 @@ import {
   getConnectionOptions,
   getCurrentPlayer,
   isLastPlayerTurn,
+  hasPlayerClaimedRouteThisTurn,
   resolveSegmentSelection,
   resolveRouteSelection,
   type DrawCityOfferResult,
@@ -66,13 +67,26 @@ import type {
 } from "../engine/types"
 import { CITY_DECK_REGIONS as CITY_DECK_REGION_LIST } from "../engine/types"
 
+type MaybePromise<T> = T | Promise<T>
+
+type LanSessionStatus = {
+  sessionId: string
+  sessionName: string
+  playerName: string | null
+  statusMessage: string
+  statusTone: "neutral" | "error"
+}
+
 type Props = {
   game: GameState
+  viewingPlayerId?: string | null
+  lanSessionStatus?: LanSessionStatus | null
+  onPeriodSummaryVisibilityChange?: (isOpen: boolean) => void
   onClaimRoute: (
     mode: RouteMode,
     cityIds: string[],
     segmentPairs?: Array<[string, string]>,
-  ) =>
+  ) => MaybePromise<
     | {
         ok: true
         routes: GameState["routes"]
@@ -87,8 +101,9 @@ type Props = {
         ok: false
         error: string
       }
-  onDrawCityOffer: (region: CityDeckRegion) => DrawCityOfferResult
-  onSetActiveCityOfferKeptCityIds: (cityIds: string[]) =>
+  >
+  onDrawCityOffer: (region: CityDeckRegion) => MaybePromise<DrawCityOfferResult>
+  onSetActiveCityOfferKeptCityIds: (cityIds: string[]) => MaybePromise<
     | {
         ok: true
         game: GameState
@@ -98,15 +113,19 @@ type Props = {
         ok: false
         error: string
       }
-  onBuyResource: (resource: PurchasableResource, quantity: number) => ResourcePurchaseResult
+  >
+  onBuyResource: (
+    resource: PurchasableResource,
+    quantity: number,
+  ) => MaybePromise<ResourcePurchaseResult>
   onBuyVehicleCard: (
     cardId: string,
     quantity: number,
-  ) =>
+  ) => MaybePromise<
     | {
-        ok: true
-        card: VehicleCard
-        quantity: number
+      ok: true
+      card: VehicleCard
+      quantity: number
         cost: number
         nextPhase: WeeklyPhase
         nextPlayerName: string
@@ -116,18 +135,28 @@ type Props = {
         ok: false
         error: string
       }
-  onUpgradeRailRoute: (routeId: string) => RailUpgradeResult
+  >
+  onUpgradeRailRoute: (routeId: string) => MaybePromise<RailUpgradeResult>
   onSetBureaucracyRouteVehicleCard: (
     routeId: string,
     vehicleCardId: string | null,
-  ) => BureaucracyVehicleCardResult
-  onAddBureaucracyServiceSplit: (corridorId: string) => BureaucracyServiceSplitResult
+  ) => MaybePromise<BureaucracyVehicleCardResult>
+  onAddBureaucracyServiceSplit: (corridorId: string) => MaybePromise<BureaucracyServiceSplitResult>
   onMoveBureaucracyServiceCity: (
     corridorId: string,
     cityId: string,
     routeId: string,
-  ) => BureaucracyServiceCityMoveResult
-  onAdvanceTurn: () => void
+  ) => MaybePromise<BureaucracyServiceCityMoveResult>
+  onDeleteBureaucracyServicePod: (
+    corridorId: string,
+    routeId: string,
+  ) => MaybePromise<{
+    ok: true
+  } | {
+    ok: false
+    error: string
+  }>
+  onAdvanceTurn: () => MaybePromise<{ ok: true; game: GameState } | { ok: false; error: string }>
   onUndo: () => void
   canUndo: boolean
 }
@@ -154,17 +183,18 @@ type DraggedPodCity = {
 }
 
 const MIN_TRAY_SIZE = 200
+const MIN_STATUS_RAIL_WIDTH = 60
 const DEFAULT_TABLE_ZONE_HEIGHT = 390
 const DEFAULT_LEFT_PANEL_WIDTH = 280
-const DEFAULT_STATUS_RAIL_WIDTH = 200
+const DEFAULT_STATUS_RAIL_WIDTH = 60
 const DEFAULT_TABLE_PREVIEW_WIDTH = 240
 const PANEL_GAP = 12
 const ROW_TWO_TOP = 88
 const TABLE_ZONE_GAP = 6
 const RESIZE_HANDLE_SIZE = 12
 const CITY_DOT_RADIUS = 2.4
-const DEMAND_CUBE_PASSENGERS = 50
-const DEMAND_CYLINDER_PASSENGERS = 500
+const DEMAND_POINTS_PER_MAP_CUBE = 10
+const MAP_CUBES_PER_CYLINDER = 10
 const POD_COLOR_PALETTE = [
   "#2563eb",
   "#db2777",
@@ -304,13 +334,14 @@ const TOP_BAR_PROGRESS_STYLE = {
 } as const
 
 const BOTTOM_BAR_STYLE = {
+  position: "relative",
   minHeight: 0,
   display: "flex",
   flexDirection: "column",
-  alignItems: "stretch",
+  alignItems: "center",
   justifyContent: "flex-start",
   gap: 8,
-  padding: 12,
+  padding: 8,
   borderRadius: 12,
   background: "rgba(255, 255, 255, 0.97)",
   boxShadow: "0 10px 28px rgba(0, 0, 0, 0.16)",
@@ -341,6 +372,29 @@ function colorWithOpacity(color: string, opacity: number) {
   }
 
   return color
+}
+
+function getRouteSelectColors(mode: RouteMode) {
+  switch (mode) {
+    case "bus":
+      return {
+        border: "#2563eb",
+        background: colorWithOpacity("#2563eb", 0.12),
+        color: "#1d4ed8",
+      }
+    case "rail":
+      return {
+        border: "#b45309",
+        background: colorWithOpacity("#f59e0b", 0.14),
+        color: "#92400e",
+      }
+    case "air":
+      return {
+        border: "#7c3aed",
+        background: colorWithOpacity("#8b5cf6", 0.14),
+        color: "#5b21b6",
+      }
+  }
 }
 
 function buildSegmentPath(
@@ -398,6 +452,23 @@ function renderFillBoxes(
       }}
     />
   ))
+}
+
+function renderDemandPointBoxes(
+  totalDemandPoints: number,
+  filledDemandPoints: number,
+  options: {
+    demandPointsPerBox?: number
+    filledColor?: string
+    unfilledColor?: string
+    unfilledBorderColor?: string
+  } = {},
+) {
+  const demandPointsPerBox = options.demandPointsPerBox ?? 10
+  const totalBoxes = Math.max(0, Math.ceil(totalDemandPoints / demandPointsPerBox))
+  const filledBoxes = Math.min(totalBoxes, Math.max(0, Math.ceil(filledDemandPoints / demandPointsPerBox)))
+
+  return renderFillBoxes(totalBoxes, filledBoxes, options)
 }
 
 type CityAdjacencyLabel = {
@@ -889,17 +960,24 @@ function CardStackPreview({
   )
 }
 
-function getCityDemandTokenCounts(passengers: number) {
+function getCityDemandTokenCounts(
+  passengers: number,
+  passengersPerDemandPoint: number,
+) {
+  const demandCubePassengers =
+    passengersPerDemandPoint * DEMAND_POINTS_PER_MAP_CUBE
+  const demandCylinderPassengers =
+    demandCubePassengers * MAP_CUBES_PER_CYLINDER
   const roundedPassengers = Math.max(
     0,
-    Math.round(passengers / DEMAND_CUBE_PASSENGERS) * DEMAND_CUBE_PASSENGERS,
+    Math.round(passengers / demandCubePassengers) * demandCubePassengers,
   )
 
   return {
     roundedPassengers,
-    cylinders: Math.floor(roundedPassengers / DEMAND_CYLINDER_PASSENGERS),
+    cylinders: Math.floor(roundedPassengers / demandCylinderPassengers),
     cubes:
-      (roundedPassengers % DEMAND_CYLINDER_PASSENGERS) / DEMAND_CUBE_PASSENGERS,
+      (roundedPassengers % demandCylinderPassengers) / demandCubePassengers,
   }
 }
 
@@ -909,9 +987,10 @@ function renderCityDemandTokens(
   y: number,
   radius: number,
   passengers: number,
+  passengersPerDemandPoint: number,
 ) {
   const { roundedPassengers, cylinders, cubes } =
-    getCityDemandTokenCounts(passengers)
+    getCityDemandTokenCounts(passengers, passengersPerDemandPoint)
 
   if (roundedPassengers <= 0) {
     return null
@@ -995,7 +1074,7 @@ function renderCityDemandTokens(
 
   return (
     <g pointerEvents="none">
-      <title>{`${cityName}: ${roundedPassengers} passengers of monthly demand`}</title>
+      <title>{`${cityName}: ${roundedPassengers} passengers of monthly demand (${DEMAND_POINTS_PER_MAP_CUBE} demand points per cube)`}</title>
       {layers}
     </g>
   )
@@ -1083,7 +1162,7 @@ function getNextPhase(phase: WeeklyPhase): WeeklyPhase {
 
 function getRouteInteractionMessage(phase: WeeklyPhase) {
   return phase === "operations"
-    ? "Build tracks from the Operations list or highlighted map segments, then assign vehicles and split pods."
+    ? "Build tracks from the Operations list or highlighted map segments, then assign vehicles and split routes."
     : "Routes can only be claimed during the operations phase."
 }
 
@@ -1092,9 +1171,9 @@ function getPhaseStatusMessage(phase: WeeklyPhase) {
     case "purchase-equipment":
       return "Make 1 vehicle purchase this turn. Buses can buy up to 6, trains up to 3, planes 1."
     case "claim-routes":
-      return "Draw 4 city cards and keep exactly 2. This step only adds cities to your hand."
+      return "Draw 4 city cards and keep exactly 2, then go straight into Operations for this turn."
     case "operations":
-      return "Build tracks, assign vehicles, and split service pods before running the month."
+      return "Build tracks, assign vehicles, and split service routes before running the month."
     case "purchase-fuel":
       return "Fuel purchasing is disabled."
     case "bureaucracy":
@@ -1172,6 +1251,9 @@ function InfoBubble({ label }: { label: string }) {
 
 export default function Board({
   game,
+  viewingPlayerId,
+  lanSessionStatus,
+  onPeriodSummaryVisibilityChange,
   onClaimRoute,
   onDrawCityOffer,
   onSetActiveCityOfferKeptCityIds,
@@ -1181,6 +1263,7 @@ export default function Board({
   onSetBureaucracyRouteVehicleCard,
   onAddBureaucracyServiceSplit,
   onMoveBureaucracyServiceCity,
+  onDeleteBureaucracyServicePod,
   onAdvanceTurn,
   onUndo,
   canUndo,
@@ -1199,6 +1282,7 @@ export default function Board({
   const [isEconomicsOpen, setIsEconomicsOpen] = useState(false)
   const [isWikiOpen, setIsWikiOpen] = useState(false)
   const [isActionLogOpen, setIsActionLogOpen] = useState(false)
+  const [isControlsMenuOpen, setIsControlsMenuOpen] = useState(false)
   const [wikiPreviousPanel, setWikiPreviousPanel] = useState<RestorablePanel>(null)
   const [zoomScale, setZoomScale] = useState(1)
   const [isLiveStagePulseOn, setIsLiveStagePulseOn] = useState(false)
@@ -1244,7 +1328,7 @@ export default function Board({
         viewportWidth - PANEL_GAP * 4 - MIN_TRAY_SIZE - rightRailWidth,
       )
       const maxRightRailWidth = Math.max(
-        MIN_TRAY_SIZE,
+        MIN_STATUS_RAIL_WIDTH,
         viewportWidth - PANEL_GAP * 4 - MIN_TRAY_SIZE - leftPanelWidth,
       )
       const maxTableZoneHeight = Math.max(
@@ -1296,7 +1380,9 @@ export default function Board({
   }, [leftPanelWidth, resizeState, rightRailWidth])
 
   const map = game.map
-  const currentPlayer = getCurrentPlayer(game)
+  const activeViewingPlayerId = viewingPlayerId ?? game.currentPlayerId
+  const currentPlayer =
+    game.players.find(player => player.id === activeViewingPlayerId) ?? getCurrentPlayer(game)
   const boardClearanceBottom = tableZoneHeight + PANEL_GAP * 2
   const boardLeftInset = leftPanelWidth + PANEL_GAP * 2
   const boardRightInset = rightRailWidth + PANEL_GAP * 2
@@ -1444,6 +1530,15 @@ export default function Board({
     },
     [selectedDrawCityIds, selectedOwnedCityIds, selectedRailSegmentPairs, selectedRouteMode],
   )
+  const selectedCityIdSet = useMemo(() => new Set(selectedCityIds), [selectedCityIds])
+  const activeOfferCityIdSet = useMemo(
+    () => new Set(activeCityOffer?.cityIds ?? []),
+    [activeCityOffer],
+  )
+  const ownedCityCardIdSet = useMemo(
+    () => new Set(currentPlayer?.ownedCityCardIds ?? []),
+    [currentPlayer],
+  )
   const currentPlayerConnectedCityIds = useMemo(
     () =>
       currentPlayer
@@ -1451,6 +1546,7 @@ export default function Board({
         : new Set<string>(),
     [currentPlayer],
   )
+  const isSelectingCityCards = game.currentPhase === "claim-routes"
   const expandedCityIds = useMemo(() => {
     const cardVisibleCityIds = new Set<string>([
       ...selectedCityIds,
@@ -1464,10 +1560,100 @@ export default function Board({
 
     return cardVisibleCityIds
   }, [activeCityOffer, currentPlayer, currentPlayerConnectedCityIds, selectedCityIds])
+  function getCityMarkerPriority(cityId: string) {
+    if (isSelectingCityCards) {
+      if (selectedCityIdSet.has(cityId)) {
+        return 3
+      }
+
+      if (activeOfferCityIdSet.has(cityId)) {
+        return 2
+      }
+
+      if (ownedCityCardIdSet.has(cityId)) {
+        return 1
+      }
+
+      return 0
+    }
+
+    if (selectedCityIdSet.has(cityId)) {
+      return 1
+    }
+
+    return 0
+  }
+
+  function getCityMarkerStyle(city: GameState["cities"][number]) {
+    if (isSelectingCityCards) {
+      if (selectedCityIdSet.has(city.id)) {
+        return {
+          radius: city.size * 2.5,
+          fill: "#2563eb",
+          stroke: "#1e3a8a",
+          strokeWidth: 2.5,
+          isEmphasized: true,
+        }
+      }
+
+      if (activeOfferCityIdSet.has(city.id)) {
+        return {
+          radius: city.size * 2.5,
+          fill: "#fde047",
+          stroke: "#b45309",
+          strokeWidth: 2.5,
+          isEmphasized: true,
+        }
+      }
+
+      if (ownedCityCardIdSet.has(city.id)) {
+        return {
+          radius: city.size * 2.5,
+          fill: "#ffffff",
+          stroke: "#000000",
+          strokeWidth: 1.5,
+          isEmphasized: true,
+        }
+      }
+    }
+
+    if (selectedCityIdSet.has(city.id)) {
+      return {
+        radius: 8,
+        fill: "#fde047",
+        stroke: "#b45309",
+        strokeWidth: 3,
+        isEmphasized: true,
+      }
+    }
+
+    if (showCitySizeBubbles) {
+      return {
+        radius: city.size * 2.5,
+        fill: "#ffffff",
+        stroke: "#000000",
+        strokeWidth: 1.5,
+        isEmphasized: true,
+      }
+    }
+
+    return {
+      radius: CITY_DOT_RADIUS,
+      fill: "rgba(34, 48, 36, 0.7)",
+      stroke: "rgba(244, 241, 232, 0.75)",
+      strokeWidth: 1,
+      isEmphasized: false,
+    }
+  }
   const visibleCities = useMemo(() => {
     const kept: Array<GameState["cities"][number] & { markerRadius: number; x: number; y: number }> = []
 
     const orderedCities = [...game.cities].sort((a, b) => {
+      const priorityDifference = getCityMarkerPriority(b.id) - getCityMarkerPriority(a.id)
+      if (priorityDifference !== 0) {
+        return priorityDifference
+      }
+
       if (b.size !== a.size) {
         return b.size - a.size
       }
@@ -1477,8 +1663,7 @@ export default function Board({
 
     for (const city of orderedCities) {
       const { x, y } = latLngToWorld(city)
-      const isExpanded = expandedCityIds.has(city.id)
-      const markerRadius = showCitySizeBubbles || isExpanded ? city.size * 2.5 : CITY_DOT_RADIUS
+      const markerRadius = getCityMarkerStyle(city).radius
       const overlapsExisting = kept.some(other => {
         const dx = other.x - x
         const dy = other.y - y
@@ -1491,30 +1676,34 @@ export default function Board({
     }
 
     return kept.sort((a, b) => {
+      const priorityDifference = getCityMarkerPriority(a.id) - getCityMarkerPriority(b.id)
+      if (priorityDifference !== 0) {
+        return priorityDifference
+      }
+
       if (a.size !== b.size) {
         return a.size - b.size
       }
 
       return a.name.localeCompare(b.name)
     })
-  }, [expandedCityIds, game.cities, showCitySizeBubbles])
+  }, [expandedCityIds, game.cities, showCitySizeBubbles, activeOfferCityIdSet, ownedCityCardIdSet, selectedCityIdSet, isSelectingCityCards])
   const labels = useMemo(
     () =>
-      showCityNames
-        ? computeLabels(
-            visibleCities.map(city => {
-              const isExpanded = expandedCityIds.has(city.id)
-              const labelRadius = showCitySizeBubbles || isExpanded ? city.size * 2.5 : CITY_DOT_RADIUS
+    showCityNames
+      ? computeLabels(
+          visibleCities.map(city => {
+            const labelRadius = getCityMarkerStyle(city).radius
 
-              return {
-                ...city,
-                labelRadius,
+            return {
+              ...city,
+              labelRadius,
               }
             }),
             zoomScale,
           )
         : [],
-    [expandedCityIds, showCityNames, showCitySizeBubbles, visibleCities, zoomScale],
+    [expandedCityIds, showCityNames, showCitySizeBubbles, visibleCities, zoomScale, activeOfferCityIdSet, ownedCityCardIdSet, selectedCityIdSet, isSelectingCityCards],
   )
   const labelMap = Object.fromEntries(
     labels.map(l => [l.cityId, l]),
@@ -1685,11 +1874,11 @@ export default function Board({
       selectedCities.length >= 2
         ? calculateConnectionBonus(
             game,
-            game.currentPlayerId,
+            currentPlayer.id,
             selectedCities.map(city => city.id),
           )
         : null,
-    [game, selectedCities],
+    [currentPlayer.id, game, selectedCities],
   )
   const routePreviewSummaries = useMemo(() => {
     if (selectedCities.length < 2) {
@@ -1895,15 +2084,16 @@ export default function Board({
     selectedClaimPreview === null
       ? false
       : selectedClaimPreview.claimCost <= (currentPlayer?.money ?? 0)
+  const currentPlayerHasClaimedRouteThisTurn = hasPlayerClaimedRouteThisTurn(game, currentPlayer.id)
   const canConfirmSelectedClaim =
     Boolean(selectedClaimPreview?.valid) &&
     canAffordSelectedClaim &&
-    !game.hasClaimedRouteThisTurn
+    !currentPlayerHasClaimedRouteThisTurn
   const optionMessage =
     selectedRouteMode !== null && selectedClaimPreview && !canConfirmSelectedClaim
       ? !selectedClaimPreview.valid
         ? selectedClaimPreview.reason ?? "That route is not available."
-        : game.hasClaimedRouteThisTurn
+        : currentPlayerHasClaimedRouteThisTurn
           ? "You already built a route this turn."
           : `That selection costs ${formatCurrency(selectedClaimPreview.claimCost)}, but you only have ${formatCurrency(currentPlayer?.money ?? 0)}.`
       : ""
@@ -2123,7 +2313,12 @@ export default function Board({
     player => player.id === game.currentPlayerId,
   )
   const currentPlayerBureaucracySummary = bureaucracySummaries.find(
-    summary => summary.player.id === game.currentPlayerId,
+    summary => summary.player.id === currentPlayer.id,
+  )
+  const currentPlayerActiveBureaucracyPlans = useMemo(
+    () =>
+      currentPlayerBureaucracySummary?.routePlans.filter(plan => !plan.isDisconnected) ?? [],
+    [currentPlayerBureaucracySummary],
   )
   const currentPlayerBureaucracyPlansByMode = useMemo(() => {
     if (!currentPlayerBureaucracySummary) {
@@ -2132,9 +2327,21 @@ export default function Board({
 
     return BUREAUCRACY_MODE_ORDER.map(mode => ({
       mode,
-      plans: currentPlayerBureaucracySummary.routePlans.filter(plan => plan.route.mode === mode),
+      plans: currentPlayerActiveBureaucracyPlans
+        .filter(plan => plan.route.mode === mode)
+        .sort((planA, planB) => {
+          if (planB.passengersServed !== planA.passengersServed) {
+            return planB.passengersServed - planA.passengersServed
+          }
+
+          if (planB.movedCubes !== planA.movedCubes) {
+            return planB.movedCubes - planA.movedCubes
+          }
+
+          return planA.serviceLabel.localeCompare(planB.serviceLabel)
+        }),
     }))
-  }, [currentPlayerBureaucracySummary])
+  }, [currentPlayerActiveBureaucracyPlans, currentPlayerBureaucracySummary])
   const currentPlayerCombinedDemandFill = useMemo(() => {
     if (!currentPlayerBureaucracySummary) {
       return []
@@ -2159,13 +2366,22 @@ export default function Board({
       })
     })
 
-    return currentPlayerOwnedCityCards.map(city => ({
-      city,
-      outboundCubes: Math.max(0, getCityDemandSize(game, city)),
-      inboundCubes: getCityDemandAbsorptionSize(game, city),
-      filledCubes: filledByCityId.get(city.id) ?? 0,
-      movedOutboundCubes: movedOutboundByCityId.get(city.id) ?? 0,
-    }))
+    return currentPlayerOwnedCityCards
+      .map(city => ({
+        city,
+        outboundCubes: Math.max(0, getCityDemandSize(game, city)),
+        inboundCubes: getCityDemandAbsorptionSize(game, city),
+        filledCubes: filledByCityId.get(city.id) ?? 0,
+        movedOutboundCubes: movedOutboundByCityId.get(city.id) ?? 0,
+      }))
+      .sort((entryA, entryB) => {
+        const sizeDifference = (entryB.city.size ?? 0) - (entryA.city.size ?? 0)
+        if (sizeDifference !== 0) {
+          return sizeDifference
+        }
+
+        return entryA.city.name.localeCompare(entryB.city.name)
+      })
   }, [currentPlayerBureaucracySummary, currentPlayerOwnedCityCards, game])
   const currentPlayerPodGroups = useMemo(() => {
     if (!currentPlayerBureaucracySummary) {
@@ -2220,7 +2436,7 @@ export default function Board({
 
     return currentPlayerPodGroups.flatMap(group =>
       group.plans.flatMap((plan, planIndex) => {
-        if (plan.selectedCityIds.length < 2) {
+        if (plan.isDisconnected || plan.selectedCityIds.length < 2) {
           return []
         }
 
@@ -2311,10 +2527,11 @@ export default function Board({
         currentPlayerBureaucracySummary?.routePlans
           .filter(
             plan =>
-              plan.selectedCityIds.length > 1 &&
+              !plan.isDisconnected &&
               !isValidServicePodSelection(
                 plan.selectedCityIds,
                 plan.corridorSegmentPairs,
+                { allowSingleCity: false },
               ),
           )
           .map(plan => plan.id) ?? [],
@@ -2368,7 +2585,8 @@ export default function Board({
     : ""
   const areResizeHandlesVisible =
     !isResourceMarketOpen && !isBureaucracyOpen && !isEconomicsOpen && !isWikiOpen
-  const shouldAdvancePhase = isLastPlayerTurn(game)
+  const shouldAdvancePhase =
+    game.currentPhase === "claim-routes" || isLastPlayerTurn(game)
   const canEditOperations = game.currentPhase === "operations"
   const hasInvalidOperationsPods =
     canEditOperations && invalidCurrentPlayerPodRouteIds.size > 0
@@ -2405,9 +2623,9 @@ export default function Board({
             gap: 4,
           }}
         >
-          <strong>Pod editor</strong>
+          <strong>Route editor</strong>
           <div style={{ color: "#56635a", fontSize: 12 }}>
-            {options?.emptyMessage ?? "No editable pods are available in this section yet."}
+            {options?.emptyMessage ?? "No editable routes are available in this section yet."}
           </div>
         </div>
       )
@@ -2425,9 +2643,9 @@ export default function Board({
         }}
       >
         <div style={{ display: "grid", gap: 4 }}>
-          <strong>Pod editor</strong>
+          <strong>Route editor</strong>
           <div style={{ color: "#56635a", fontSize: 12 }}>
-            Split a corridor into smaller pods, then drag cities between pod boxes.
+            Split a corridor into smaller routes, drag cities between route boxes, or click × to disconnect a city from that mode.
           </div>
         </div>
         {hasInvalidOperationsPods && (
@@ -2442,11 +2660,15 @@ export default function Board({
               fontWeight: 600,
             }}
           >
-            Fix the red pods before leaving Operations.
+            Fix the red routes before leaving Operations.
           </div>
         )}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-start" }}>
-          {groups.map(group => (
+          {groups.map(group => {
+            const disconnectedPlan =
+              group.plans.find(plan => plan.isDisconnected) ?? null
+
+            return (
             <div
               key={`pod-group-${group.corridorId}`}
               style={{
@@ -2470,7 +2692,7 @@ export default function Board({
                 }}
               >
                 <div style={{ fontSize: 12, color: "#324236" }}>
-                  <strong>{MODE_LABELS[group.mode]} pod</strong>
+                  <strong>{MODE_LABELS[group.mode]} route</strong>
                   {" • "}
                   {group.availableCityIds
                     .map(cityId => cityMap[cityId]?.name ?? cityId)
@@ -2489,13 +2711,14 @@ export default function Board({
                       fontSize: 12,
                     }}
                   >
-                    New pod
+                    New route
                   </button>
                 )}
               </div>
               <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 2 }}>
                 {group.plans.map(plan => {
                   const isInvalidPod = invalidCurrentPlayerPodRouteIds.has(plan.id)
+                  const routeSelectColors = getRouteSelectColors(plan.route.mode)
                   const dropError =
                     draggedPodCity && draggedPodCity.corridorId === group.corridorId
                       ? getPodMoveError(group.plans, draggedPodCity.cityId, plan.id)
@@ -2504,6 +2727,9 @@ export default function Board({
                     draggedPodCity !== null &&
                     draggedPodCity.corridorId === group.corridorId &&
                     dropError === null
+                  const availableVehicleCards = currentPlayerOwnedVehicleCards.filter(
+                    card => card.type === getVehicleTypeForMode(plan.route.mode),
+                  )
 
                   return (
                     <div
@@ -2536,7 +2762,7 @@ export default function Board({
                       title={
                         dropError ??
                         (isInvalidPod
-                          ? "Illegal pod: cities in this pod are not all connected."
+                          ? "Illegal route: service routes need 2+ connected cities."
                           : undefined)
                       }
                       style={{
@@ -2567,17 +2793,86 @@ export default function Board({
                         flex: "0 0 180px",
                       }}
                     >
-                      <div style={{ color: "#56635a", fontSize: 11, fontWeight: 700 }}>
-                        POD {plan.slotIndex + 1}
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          gap: 8,
+                        }}
+                      >
+                        {plan.isDisconnected ? (
+                          <div style={{ color: "#56635a", fontSize: 11, fontWeight: 700 }}>
+                            DISCONNECTED
+                          </div>
+                        ) : (
+                          <>
+                            <select
+                              value={plan.vehicleCard?.id ?? ""}
+                              onChange={event =>
+                                handleSetBureaucracyVehicleCard(
+                                  plan.id,
+                                  event.target.value === "" ? null : event.target.value,
+                                )
+                              }
+                              disabled={!canEditOperations}
+                              style={{
+                                minWidth: 0,
+                                width: 0,
+                                maxWidth: "100%",
+                                flex: "1 1 0",
+                                padding: "6px 8px",
+                                borderRadius: 8,
+                                border: `1px solid ${routeSelectColors.border}`,
+                                background: routeSelectColors.background,
+                                color: routeSelectColors.color,
+                                fontSize: 12,
+                              }}
+                            >
+                              <option value="">No vehicle assigned</option>
+                              {availableVehicleCards.map(card => (
+                                <option key={card.id} value={card.id}>
+                                  #{card.number} {card.name} ({currentPlayerOwnedVehicleCountsByCardId[card.id] ?? 0})
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleDeleteServicePod(
+                                  group.corridorId,
+                                  plan.id,
+                                  plan.selectedCityIds,
+                                )
+                              }
+                              title="Delete this route and move its cities to disconnected"
+                              style={{
+                                border: "none",
+                                background: "transparent",
+                                color: "#9b1c1c",
+                                cursor: "pointer",
+                                fontSize: 12,
+                                fontWeight: 700,
+                                lineHeight: 1,
+                                padding: 0,
+                                flexShrink: 0,
+                              }}
+                            >
+                              ×
+                            </button>
+                          </>
+                        )}
                       </div>
                       {isInvalidPod && (
                         <div style={{ color: "#9b1c1c", fontSize: 11, fontWeight: 700 }}>
-                          Illegal pod
+                          Illegal route
                         </div>
                       )}
                       {plan.selectedCityIds.length === 0 ? (
                         <div style={{ color: "#8b948d", fontSize: 12 }}>
-                          Drop city here
+                          {plan.isDisconnected
+                            ? "Click × or drop city here"
+                            : "Drop city here"}
                         </div>
                       ) : (
                         <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
@@ -2596,14 +2891,47 @@ export default function Board({
                               style={{
                                 border: "1px solid #d8dfd5",
                                 borderRadius: 999,
-                                padding: "4px 8px",
+                                padding: "4px 6px 4px 8px",
                                 background: "#ffffff",
                                 color: "#324236",
                                 fontSize: 12,
                                 cursor: "grab",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 6,
                               }}
                             >
-                              {cityMap[cityId]?.name ?? cityId}
+                              <span>
+                                {(cityMap[cityId]?.name ?? cityId) +
+                                  ` (${cityMap[cityId]?.size ?? "?"})`}
+                              </span>
+                              {!plan.isDisconnected && disconnectedPlan && (
+                                <button
+                                  type="button"
+                                  onClick={event => {
+                                    event.preventDefault()
+                                    event.stopPropagation()
+                                    handleMoveServiceCity(
+                                      group.corridorId,
+                                      cityId,
+                                      disconnectedPlan.id,
+                                    )
+                                  }}
+                                  title="Disconnect this city from the route"
+                                  style={{
+                                    border: "none",
+                                    background: "transparent",
+                                    color: "#9b1c1c",
+                                    cursor: "pointer",
+                                    fontSize: 12,
+                                    fontWeight: 700,
+                                    lineHeight: 1,
+                                    padding: 0,
+                                  }}
+                                >
+                                  ×
+                                </button>
+                              )}
                             </div>
                           ))}
                         </div>
@@ -2613,7 +2941,8 @@ export default function Board({
                 })}
               </div>
             </div>
-          ))}
+            )
+          })}
         </div>
       </div>
     )
@@ -2663,6 +2992,10 @@ export default function Board({
     setIsPeriodSummaryOpen(true)
     setLastShownPeriodSummaryKey(summaryKey)
   }, [game.currentPhase, game.currentWeek, game.isGameOver, lastShownPeriodSummaryKey])
+
+  useEffect(() => {
+    onPeriodSummaryVisibilityChange?.(isPeriodSummaryOpen)
+  }, [isPeriodSummaryOpen, onPeriodSummaryVisibilityChange])
 
   useEffect(() => {
     setIsResourceMarketOpen(false)
@@ -2748,7 +3081,7 @@ export default function Board({
     resetSelection(getRouteInteractionMessage(game.currentPhase))
   }
 
-  function toggleSelectedCityId(
+  async function toggleSelectedCityId(
     cityId: string,
     source: "draw" | "owned",
     mode: RouteMode,
@@ -2769,7 +3102,7 @@ export default function Board({
         return
       }
 
-      const result = onSetActiveCityOfferKeptCityIds(nextCityIds)
+      const result = await onSetActiveCityOfferKeptCityIds(nextCityIds)
 
       if (!result.ok) {
         setStatusMessage(result.error)
@@ -2809,8 +3142,8 @@ export default function Board({
     setStatusMessage(`Selecting owned city cards for a ${MODE_LABELS[mode].toLowerCase()} route.`)
   }
 
-  function handleDrawDeck(region: CityDeckRegion) {
-    const result = onDrawCityOffer(region)
+  async function handleDrawDeck(region: CityDeckRegion) {
+    const result = await onDrawCityOffer(region)
 
     if (!result.ok) {
       setStatusMessage(result.error)
@@ -2860,7 +3193,7 @@ export default function Board({
     setStatusMessage("Selected air route endpoints from owned city cards.")
   }
 
-  function handleClaim() {
+  async function handleClaim() {
     if (game.currentPhase !== "operations") {
       setStatusMessage(getRouteInteractionMessage(game.currentPhase))
       return
@@ -2875,7 +3208,7 @@ export default function Board({
       return
     }
 
-    const result = onClaimRoute(
+    const result = await onClaimRoute(
       selectedRouteMode,
       selectedCityIds,
       selectedRouteMode === "rail" ? selectedSegmentPairs : undefined,
@@ -2897,7 +3230,7 @@ export default function Board({
     )
   }
 
-  function handleConfirmPicks() {
+  async function handleConfirmPicks() {
     if (!canConfirmPicks) {
       setStatusMessage("Keep exactly 2 city cards from the draw first.")
       return
@@ -2907,11 +3240,15 @@ export default function Board({
       ? `Confirmed picks. Starting ${formatPhaseLabel(getNextPhase(game.currentPhase)).toLowerCase()}.`
       : `Confirmed picks. ${nextPlayer?.name ?? "Next player"} is up.`
 
-    onAdvanceTurn()
+    const result = await onAdvanceTurn()
+    if (!result.ok) {
+      setStatusMessage(result.error)
+      return
+    }
     resetSelection(nextStatusMessage)
   }
 
-  function handleAdvanceTurnClick() {
+  async function handleAdvanceTurnClick() {
     if (
       game.currentPhase === "claim-routes" &&
       (game.activeCityOffer?.keptCityIds.length ?? 0) !== 2
@@ -2926,7 +3263,7 @@ export default function Board({
     }
 
     if (game.currentPhase === "operations" && hasInvalidOperationsPods) {
-      setStatusMessage("Fix the red pods before ending Operations.")
+      setStatusMessage("Fix the red routes before ending Operations.")
       return
     }
 
@@ -2934,7 +3271,11 @@ export default function Board({
       ? `Starting ${formatPhaseLabel(getNextPhase(game.currentPhase)).toLowerCase()}.`
       : `${nextPlayer?.name ?? "Next player"} is up.`
 
-    onAdvanceTurn()
+    const result = await onAdvanceTurn()
+    if (!result.ok) {
+      setStatusMessage(result.error)
+      return
+    }
     resetSelection(nextStatusMessage)
   }
 
@@ -3236,8 +3577,8 @@ export default function Board({
     )
   }
 
-  function handleBuyResourceClick(resource: PurchasableResource, quantity: number) {
-    const result = onBuyResource(resource, quantity)
+  async function handleBuyResourceClick(resource: PurchasableResource, quantity: number) {
+    const result = await onBuyResource(resource, quantity)
 
     if (!result.ok) {
       setStatusMessage(result.error)
@@ -3254,12 +3595,15 @@ export default function Board({
     setPendingVehiclePurchaseCardId(cardId)
   }
 
-  function handleConfirmBuyVehicleCard() {
+  async function handleConfirmBuyVehicleCard() {
     if (!pendingVehiclePurchaseCard) {
       return
     }
 
-    const result = onBuyVehicleCard(pendingVehiclePurchaseCard.id, pendingVehiclePurchaseQuantity)
+    const result = await onBuyVehicleCard(
+      pendingVehiclePurchaseCard.id,
+      pendingVehiclePurchaseQuantity,
+    )
 
     if (!result.ok) {
       setStatusMessage(result.error)
@@ -3277,8 +3621,8 @@ export default function Board({
     setPendingVehiclePurchaseQuantity(1)
   }
 
-  function handleSetBureaucracyVehicleCard(routeId: string, vehicleCardId: string | null) {
-    const result = onSetBureaucracyRouteVehicleCard(routeId, vehicleCardId)
+  async function handleSetBureaucracyVehicleCard(routeId: string, vehicleCardId: string | null) {
+    const result = await onSetBureaucracyRouteVehicleCard(routeId, vehicleCardId)
 
     if (!result.ok) {
       setStatusMessage(result.error)
@@ -3292,8 +3636,8 @@ export default function Board({
     )
   }
 
-  function handleAddSplitService(corridorId: string) {
-    const result = onAddBureaucracyServiceSplit(corridorId)
+  async function handleAddSplitService(corridorId: string) {
+    const result = await onAddBureaucracyServiceSplit(corridorId)
 
     if (!result.ok) {
       setStatusMessage(result.error)
@@ -3303,8 +3647,8 @@ export default function Board({
     setStatusMessage("Added another service slot on that corridor.")
   }
 
-  function handleMoveServiceCity(corridorId: string, cityId: string, routeId: string) {
-    const result = onMoveBureaucracyServiceCity(corridorId, cityId, routeId)
+  async function handleMoveServiceCity(corridorId: string, cityId: string, routeId: string) {
+    const result = await onMoveBureaucracyServiceCity(corridorId, cityId, routeId)
 
     if (!result.ok) {
       setStatusMessage(result.error)
@@ -3312,7 +3656,22 @@ export default function Board({
     }
 
     setStatusMessage(
-      `Moved ${cityMap[cityId]?.name ?? cityId} into ${findPlayerBureaucracyPlan(game, game.currentPlayerId, routeId)?.serviceLabel ?? "that pod"}.`,
+      `Moved ${cityMap[cityId]?.name ?? cityId} into ${findPlayerBureaucracyPlan(game, currentPlayer.id, routeId)?.serviceLabel ?? "that route"}.`,
+    )
+  }
+
+  async function handleDeleteServicePod(corridorId: string, routeId: string, cityIds: string[]) {
+    const result = await onDeleteBureaucracyServicePod(corridorId, routeId)
+
+    if (!result.ok) {
+      setStatusMessage(result.error)
+      return
+    }
+
+    setStatusMessage(
+      cityIds.length === 0
+        ? "Deleted that route."
+        : `Deleted that route and moved ${cityIds.length} cit${cityIds.length === 1 ? "y" : "ies"} to disconnected.`,
     )
   }
 
@@ -3324,7 +3683,11 @@ export default function Board({
     const targetPlan = plans.find(plan => plan.id === routeId)
 
     if (!targetPlan || !targetPlan.availableCityIds.includes(cityId)) {
-      return "That city does not belong to this pod group."
+      return "That city does not belong to this route group."
+    }
+
+    if (targetPlan.isDisconnected) {
+      return null
     }
 
     const nextTargetCityIds = [
@@ -3335,14 +3698,14 @@ export default function Board({
     ]
 
     if (!isValidServicePodSelection(nextTargetCityIds, targetPlan.corridorSegmentPairs)) {
-      return "That destination pod would be disconnected."
+      return "That destination route would be disconnected."
     }
 
     return null
   }
 
-  function handleUpgradeRailRoute(routeId: string) {
-    const result = onUpgradeRailRoute(routeId)
+  async function handleUpgradeRailRoute(routeId: string) {
+    const result = await onUpgradeRailRoute(routeId)
 
     if (!result.ok) {
       setStatusMessage(result.error)
@@ -3636,7 +3999,7 @@ export default function Board({
                   : game.currentPhase === "claim-routes"
                     ? "Draw 4 city cards and keep exactly 2. This step only adds cities to your hand."
                     : game.currentPhase === "operations"
-                      ? "Build tracks, split pods, assign service, and set up routes."
+                      ? "Build tracks, split routes, assign service, and set up routes."
                       : "Review passenger flow and route ledgers before ending the month."}
               </div>
               {game.currentPhase === "purchase-equipment" && game.hasPurchasedVehicleThisTurn && (
@@ -3644,7 +4007,7 @@ export default function Board({
                   You have already used your vehicle purchase this turn. Advance to the next player.
                 </div>
               )}
-              {game.currentPhase === "operations" && game.hasClaimedRouteThisTurn && (
+              {game.currentPhase === "operations" && currentPlayerHasClaimedRouteThisTurn && (
                 <div style={{ color: "#9b1c1c", fontSize: 13 }}>
                   You have already claimed 1 route this turn. Advance to the next player.
                 </div>
@@ -3930,21 +4293,27 @@ export default function Board({
               })
             )}
 
-            {visibleCities.map(city => {
+            {[...visibleCities]
+              .sort((cityA, cityB) => {
+                const priorityDifference =
+                  getCityMarkerPriority(cityA.id) - getCityMarkerPriority(cityB.id)
+                if (priorityDifference !== 0) {
+                  return priorityDifference
+                }
+
+                if (cityA.size !== cityB.size) {
+                  return cityA.size - cityB.size
+                }
+
+                return cityA.name.localeCompare(cityB.name)
+              })
+              .map(city => {
               const { x, y } = latLngToWorld(city)
-              const isExpanded = expandedCityIds.has(city.id)
-              const usesBubbleRadius = showCitySizeBubbles || isExpanded
-              const radius = usesBubbleRadius ? city.size * 2.5 : CITY_DOT_RADIUS
+              const markerStyle = getCityMarkerStyle(city)
+              const usesBubbleRadius = markerStyle.isEmphasized
+              const labelScale = Math.max(1, zoomScale)
               const label = labelMap[city.id]
-              const isSelected = selectedCityIds.includes(city.id)
-              const fill = isSelected
-                ? currentPlayer?.color ?? "#ffffff"
-                : usesBubbleRadius
-                  ? "#ffffff"
-                  : "rgba(34, 48, 36, 0.7)"
-              const stroke = usesBubbleRadius
-                ? "#000000"
-                : "rgba(244, 241, 232, 0.75)"
+              const radiusToRender = markerStyle.radius
               const shouldShowDemandTokens = currentPlayerConnectedCityIds.has(city.id)
               const demandPassengers =
                 shouldShowDemandTokens
@@ -3958,28 +4327,33 @@ export default function Board({
                   onClick={handleCityClick}
                   style={{ cursor: game.currentPhase === "claim-routes" ? "default" : "pointer" }}
                 >
-                  {renderCityDemandTokens(city.name, x, y, radius, demandPassengers)}
+                  {renderCityDemandTokens(
+                    city.name,
+                    x,
+                    y,
+                    radiusToRender,
+                    demandPassengers,
+                    game.operatingConfig.passengersPerDemandPoint,
+                  )}
                   <circle
                     cx={x}
                     cy={y}
-                    r={radius}
-                    fill={fill}
-                    stroke={stroke}
-                    strokeWidth={
-                      isSelected ? 2.5 : usesBubbleRadius ? 1.5 : 1
-                    }
+                    r={radiusToRender}
+                    fill={markerStyle.fill}
+                    stroke={markerStyle.stroke}
+                    strokeWidth={markerStyle.strokeWidth}
                   />
 
                   {label && (
                     <text
                       x={label.textX}
                       y={label.textY}
-                      fontSize={usesBubbleRadius ? 12 : 10}
+                      fontSize={(usesBubbleRadius ? 24 : 20) / labelScale}
                       textAnchor={label.textAnchor}
                       dominantBaseline="middle"
                       fill="#223024"
                       stroke="rgba(244, 241, 232, 0.95)"
-                      strokeWidth={usesBubbleRadius ? 4 : 3.2}
+                      strokeWidth={(usesBubbleRadius ? 8 : 6.4) / labelScale}
                       strokeLinejoin="round"
                       paintOrder="stroke"
                       pointerEvents="none"
@@ -3996,185 +4370,274 @@ export default function Board({
           </div>
         </div>
         <div style={BOTTOM_BAR_STYLE}>
-          <div style={{ display: "grid", gap: 6 }}>
-            <label
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "8px 10px",
-                borderRadius: 10,
-                border: "1px solid #c7d0c4",
-                background: "#ffffff",
-                color: "#324236",
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: "pointer",
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={showCityNames}
-                onChange={event => setShowCityNames(event.target.checked)}
-              />
-              <span>Show city names</span>
-            </label>
-            <label
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "8px 10px",
-                borderRadius: 10,
-                border: "1px solid #c7d0c4",
-                background: "#ffffff",
-                color: "#324236",
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: "pointer",
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={showCitySizeBubbles}
-                onChange={event => setShowCitySizeBubbles(event.target.checked)}
-              />
-              <span>Show city size bubbles</span>
-            </label>
-            <button
-              type="button"
-              onClick={() => {
-                setIsEconomicsOpen(open => !open)
-                setIsResourceMarketOpen(false)
-                setIsVehicleMarketOpen(false)
-                setIsBureaucracyOpen(false)
-                setIsWikiOpen(false)
-              }}
-              style={{
-                padding: "8px 10px",
-                borderRadius: 10,
-                border: "1px solid #c7d0c4",
-                cursor: "pointer",
-                background: "#ffffff",
-                fontWeight: 600,
-                textAlign: "left",
-                fontSize: 13,
-              }}
-            >
-              {isEconomicsOpen ? "Hide economics" : "Economics"}
-            </button>
-            {(game.currentPhase === "operations" || game.currentPhase === "bureaucracy") && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, minHeight: 0, height: "100%" }}>
+            <div style={{ display: "grid", gap: 8, alignContent: "start" }}>
               <button
                 type="button"
-                onClick={() => {
-                  setIsBureaucracyOpen(open => !open)
-                  setIsResourceMarketOpen(false)
-                  setIsVehicleMarketOpen(false)
-                  setIsEconomicsOpen(false)
-                  setIsWikiOpen(false)
-                }}
+                onClick={() => setIsControlsMenuOpen(open => !open)}
                 style={{
-                  padding: "8px 10px",
+                  padding: "10px 12px",
                   borderRadius: 10,
                   border: "1px solid #c7d0c4",
                   cursor: "pointer",
-                  background: "#ffffff",
-                  fontWeight: 600,
-                  textAlign: "left",
-                  fontSize: 13,
+                  background: isControlsMenuOpen ? "#eef3ed" : "#ffffff",
+                  fontWeight: 700,
+                  fontSize: 18,
+                  lineHeight: 1,
+                  width: 44,
+                  height: 44,
+                }}
+                aria-label={isControlsMenuOpen ? "Close controls menu" : "Open controls menu"}
+                title={isControlsMenuOpen ? "Close controls menu" : "Open controls menu"}
+              >
+                ☰
+              </button>
+            </div>
+            {isControlsMenuOpen && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  right: "calc(100% + 8px)",
+                  minWidth: 220,
+                  display: "grid",
+                  gap: 6,
+                  padding: 8,
+                  borderRadius: 12,
+                  border: "1px solid #d8dfd5",
+                  background: "#f8faf7",
+                  boxShadow: "0 10px 28px rgba(0, 0, 0, 0.16)",
+                  zIndex: 3,
                 }}
               >
-                {isBureaucracyOpen
-                  ? game.currentPhase === "operations"
-                   ? "Hide operations table"
-                    : "Hide bureaucracy ledger"
-                  : game.currentPhase === "operations"
-                   ? "Operations table"
-                    : "Bureaucracy ledger"}
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() => {
-                if (isWikiOpen) {
-                  setIsWikiOpen(false)
-                  restoreWikiPreviousPanel()
-                  return
-                }
+                {lanSessionStatus && (
+                  <div
+                    style={{
+                      display: "grid",
+                      gap: 4,
+                      padding: "8px 10px",
+                      borderRadius: 10,
+                      border: `1px solid ${lanSessionStatus.statusTone === "error" ? "#d2a4a4" : "#c7d0c4"}`,
+                      background: "#ffffff",
+                      color: "#223024",
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 800,
+                        letterSpacing: 0.4,
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      LAN session {lanSessionStatus.sessionId}
+                    </div>
+                    <div style={{ fontSize: 13 }}>{lanSessionStatus.sessionName} • undo disabled while connected</div>
+                    {lanSessionStatus.playerName && (
+                      <div style={{ fontSize: 12, color: "#56635a" }}>
+                        You joined as {lanSessionStatus.playerName}
+                      </div>
+                    )}
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: lanSessionStatus.statusTone === "error" ? "#9b1c1c" : "#56635a",
+                      }}
+                    >
+                      {lanSessionStatus.statusMessage}
+                    </div>
+                  </div>
+                )}
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "8px 10px",
+                    borderRadius: 10,
+                    border: "1px solid #c7d0c4",
+                    background: "#ffffff",
+                    color: "#324236",
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={showCityNames}
+                    onChange={event => setShowCityNames(event.target.checked)}
+                  />
+                  <span>Show city names</span>
+                </label>
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "8px 10px",
+                    borderRadius: 10,
+                    border: "1px solid #c7d0c4",
+                    background: "#ffffff",
+                    color: "#324236",
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={showCitySizeBubbles}
+                    onChange={event => setShowCitySizeBubbles(event.target.checked)}
+                  />
+                  <span>Show city size bubbles</span>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsEconomicsOpen(open => !open)
+                    setIsResourceMarketOpen(false)
+                    setIsVehicleMarketOpen(false)
+                    setIsBureaucracyOpen(false)
+                    setIsWikiOpen(false)
+                  }}
+                  style={{
+                    padding: "8px 10px",
+                    borderRadius: 10,
+                    border: "1px solid #c7d0c4",
+                    cursor: "pointer",
+                    background: "#ffffff",
+                    fontWeight: 600,
+                    textAlign: "left",
+                    fontSize: 13,
+                  }}
+                >
+                  {isEconomicsOpen ? "Hide economics" : "Economics"}
+                </button>
+                {(game.currentPhase === "operations" || game.currentPhase === "bureaucracy") && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsBureaucracyOpen(open => !open)
+                      setIsResourceMarketOpen(false)
+                      setIsVehicleMarketOpen(false)
+                      setIsEconomicsOpen(false)
+                      setIsWikiOpen(false)
+                    }}
+                    style={{
+                      padding: "8px 10px",
+                      borderRadius: 10,
+                      border: "1px solid #c7d0c4",
+                      cursor: "pointer",
+                      background: "#ffffff",
+                      fontWeight: 600,
+                      textAlign: "left",
+                      fontSize: 13,
+                    }}
+                  >
+                    {isBureaucracyOpen
+                      ? game.currentPhase === "operations"
+                        ? "Hide operations table"
+                        : "Hide bureaucracy ledger"
+                      : game.currentPhase === "operations"
+                        ? "Operations table"
+                        : "Bureaucracy ledger"}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isWikiOpen) {
+                      setIsWikiOpen(false)
+                      restoreWikiPreviousPanel()
+                      return
+                    }
 
-                setWikiPreviousPanel(getCurrentRestorablePanel())
-                setIsWikiOpen(true)
-                setIsResourceMarketOpen(false)
-                setIsVehicleMarketOpen(false)
-                setIsBureaucracyOpen(false)
-                setIsEconomicsOpen(false)
-              }}
-              style={{
-                padding: "8px 10px",
-                borderRadius: 10,
-                border: "1px solid #c7d0c4",
-                cursor: "pointer",
-                background: "#ffffff",
-                fontWeight: 600,
-                textAlign: "left",
-                fontSize: 13,
-              }}
-            >
-              {isWikiOpen ? "Hide wiki" : "Wiki"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setIsActionLogOpen(open => !open)}
-              style={{
-                padding: "8px 10px",
-                borderRadius: 10,
-                border: "1px solid #c7d0c4",
-                cursor: "pointer",
-                background: "#ffffff",
-                fontWeight: 600,
-                textAlign: "left",
-                fontSize: 13,
-              }}
-            >
-              {isActionLogOpen ? "Hide log" : "Action log"}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                onUndo()
-                setStatusMessage("Undid the last action.")
-              }}
-              disabled={!canUndo}
-              style={{
-                padding: "8px 10px",
-                borderRadius: 10,
-                border: "1px solid #c7d0c4",
-                cursor: canUndo ? "pointer" : "not-allowed",
-                background: canUndo ? "#ffffff" : "#f2f2f2",
-                fontWeight: 600,
-                textAlign: "left",
-                fontSize: 13,
-              }}
-            >
-              Undo
-            </button>
+                    setWikiPreviousPanel(getCurrentRestorablePanel())
+                    setIsWikiOpen(true)
+                    setIsResourceMarketOpen(false)
+                    setIsVehicleMarketOpen(false)
+                    setIsBureaucracyOpen(false)
+                    setIsEconomicsOpen(false)
+                  }}
+                  style={{
+                    padding: "8px 10px",
+                    borderRadius: 10,
+                    border: "1px solid #c7d0c4",
+                    cursor: "pointer",
+                    background: "#ffffff",
+                    fontWeight: 600,
+                    textAlign: "left",
+                    fontSize: 13,
+                  }}
+                >
+                  {isWikiOpen ? "Hide wiki" : "Wiki"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsActionLogOpen(open => !open)}
+                  style={{
+                    padding: "8px 10px",
+                    borderRadius: 10,
+                    border: "1px solid #c7d0c4",
+                    cursor: "pointer",
+                    background: "#ffffff",
+                    fontWeight: 600,
+                    textAlign: "left",
+                    fontSize: 13,
+                  }}
+                >
+                  {isActionLogOpen ? "Hide log" : "Action log"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onUndo()
+                    setStatusMessage("Undid the last action.")
+                  }}
+                  disabled={!canUndo}
+                  style={{
+                    padding: "8px 10px",
+                    borderRadius: 10,
+                    border: "1px solid #c7d0c4",
+                    cursor: canUndo ? "pointer" : "not-allowed",
+                    background: canUndo ? "#ffffff" : "#f2f2f2",
+                    fontWeight: 600,
+                    textAlign: "left",
+                    fontSize: 13,
+                  }}
+                >
+                  Undo
+                </button>
+              </div>
+            )}
             {game.currentPhase !== "bureaucracy" && (
               <button
                 type="button"
                 onClick={handleAdvanceTurnClick}
                 disabled={game.isGameOver || isAdvanceBlocked}
                 style={{
-                  padding: "8px 10px",
+                  marginTop: "auto",
+                  alignSelf: "center",
+                  width: 44,
+                  minHeight: 176,
+                  padding: "12px 0",
                   borderRadius: 10,
                   border: "1px solid #c7d0c4",
                   cursor: game.isGameOver || isAdvanceBlocked ? "not-allowed" : "pointer",
                   background: game.isGameOver || isAdvanceBlocked ? "#f2f2f2" : "#ffffff",
                   fontWeight: 700,
-                  textAlign: "left",
                   fontSize: 13,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  overflow: "visible",
                 }}
+                title={advanceTurnLabel}
               >
-                {advanceTurnLabel}
+                <span style={{ display: "inline-block", whiteSpace: "nowrap", transform: "rotate(90deg)" }}>
+                  {advanceTurnLabel}
+                </span>
               </button>
             )}
           </div>
@@ -4404,7 +4867,7 @@ export default function Board({
                 ? expandedPlayerSummary.connectedRoutes.join("; ")
                 : "None yet"}
             </div>
-            {expandedPlayerSummary.player.id === game.currentPlayerId &&
+            {expandedPlayerSummary.player.id === currentPlayer.id &&
             game.currentPhase === "operations" ? (
               <div
                 style={{
@@ -4487,7 +4950,7 @@ export default function Board({
           <strong>{game.currentPhase === "operations" ? "Operations" : "Bureaucracy ledger"}</strong>
           <div style={{ color: "#56635a" }}>
             {game.currentPhase === "operations"
-              ? "Build rail track, assign vehicles, and split pods here. Bureaucracy is now just the read-only results."
+            ? "Build rail track, assign vehicles, and split routes here. Bureaucracy is now just the read-only results."
               : "Passenger cubes now flow toward the biggest city demand first. The detailed operating planner stays below as a reference view."}
           </div>
           {currentPlayerBureaucracySummary ? (
@@ -4518,12 +4981,12 @@ export default function Board({
                  {canEditOperations ? (
                   <>
                     <div>
-                      Pods ready: <strong>{currentPlayerBureaucracySummary.routePlans.length}</strong>
+                      Routes ready: <strong>{currentPlayerActiveBureaucracyPlans.length}</strong>
                     </div>
                     <div style={{ color: "#56635a", fontSize: 12 }}>
-                      Bus {currentPlayerBureaucracySummary.routePlans.filter(plan => plan.route.mode === "bus").length}
-                      {" • "}Rail {currentPlayerBureaucracySummary.routePlans.filter(plan => plan.route.mode === "rail").length}
-                      {" • "}Air {currentPlayerBureaucracySummary.routePlans.filter(plan => plan.route.mode === "air").length}
+                      Bus {currentPlayerActiveBureaucracyPlans.filter(plan => plan.route.mode === "bus").length}
+                      {" • "}Rail {currentPlayerActiveBureaucracyPlans.filter(plan => plan.route.mode === "rail").length}
+                      {" • "}Air {currentPlayerActiveBureaucracyPlans.filter(plan => plan.route.mode === "air").length}
                     </div>
                  </>
                  ) : (
@@ -4616,7 +5079,7 @@ export default function Board({
                     )}
                   </div>
                  )}
-                 {currentPlayerBureaucracySummary.routePlans.length === 0 ? (
+                 {currentPlayerActiveBureaucracyPlans.length === 0 ? (
                     <div
                       style={{
                         border: "1px solid #e1e6df",
@@ -4629,7 +5092,7 @@ export default function Board({
                     >
                       <div style={{ color: "#56635a" }}>
                         {canEditOperations
-                          ? "No service pods are ready yet."
+                        ? "No service routes are ready yet."
                           : "No routes to operate yet."}
                       </div>
                       {currentPlayerOwnedCityCards.length > 0 && (
@@ -4656,7 +5119,7 @@ export default function Board({
                                   {" • "}size {city.size}
                                 </div>
                                 <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                                  {renderFillBoxes(absorptionSize, 0)}
+                                  {renderDemandPointBoxes(absorptionSize, 0)}
                                 </div>
                                 <div style={{ color: "#56635a", fontSize: 11 }}>
                                   Waiting cubes {Math.max(0, demandSize)}
@@ -4683,6 +5146,9 @@ export default function Board({
                     >
                       <div>
                         <strong>City demand fill</strong>
+                        <span style={{ color: "#56635a", fontSize: 11, marginLeft: 8 }}>
+                          1 box = 10 demand points
+                        </span>
                       </div>
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                         {currentPlayerCombinedDemandFill.map(
@@ -4725,29 +5191,18 @@ export default function Board({
                                     gap: 4,
                                   }}
                                 >
-                                  {renderFillBoxes(
+                                  {renderDemandPointBoxes(
                                     inboundCubes,
                                     Math.min(inboundCubes, filledCubes),
-                                  )}
-                                </div>
-                                <div
-                                  style={{
-                                    display: "inline-flex",
-                                    flexWrap: "wrap",
-                                    gap: 4,
-                                    justifyContent: "flex-end",
-                                  }}
-                                >
-                                  {renderFillBoxes(
-                                    Math.max(0, outboundCubes - movedOutboundCubes),
-                                    Math.max(0, outboundCubes - movedOutboundCubes),
-                                    { filledColor: "#ef4444" },
                                   )}
                                 </div>
                               </div>
                               <div style={{ color: "#56635a", fontSize: 11 }}>
                                 Filled {filledCubes} / {inboundCubes}
                                 {" • "}Out {outboundCubes}
+                                {Math.max(0, outboundCubes - movedOutboundCubes) > 0
+                                  ? ` • ${Math.max(0, outboundCubes - movedOutboundCubes)} cubes blocked by capacity`
+                                  : ""}
                               </div>
                             </div>
                           ),
@@ -4846,6 +5301,19 @@ export default function Board({
                           const previewViewBox = `${minX - previewPadding} ${minY - previewPadding} ${previewWidth} ${previewHeight}`
                           const shouldStretchFlowMap =
                             plan.simplifiedLedgerEntries.length >= 5
+                          const sortedLedgerEntries = [...plan.simplifiedLedgerEntries].sort(
+                            (entryA, entryB) => {
+                              if (entryB.passengers !== entryA.passengers) {
+                                return entryB.passengers - entryA.passengers
+                              }
+
+                              if (entryB.cubeCount !== entryA.cubeCount) {
+                                return entryB.cubeCount - entryA.cubeCount
+                              }
+
+                              return entryA.id.localeCompare(entryB.id)
+                            },
+                          )
 
                           if (canEditOperations) {
                             const podCityIds =
@@ -4873,7 +5341,7 @@ export default function Board({
                                       ? "Electric rail"
                                       : MODE_LABELS[plan.route.mode]}
                                     {plan.segmentCount > 1 ? ` • ${plan.segmentCount} segments` : ""}
-                                    {" • "}Pod cities {podCityIds.length}
+                                    {" • "}Route cities {podCityIds.length}
                                   </div>
                                 </div>
                                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
@@ -4916,8 +5384,9 @@ export default function Board({
                                       minWidth: 220,
                                       padding: "6px 8px",
                                       borderRadius: 8,
-                                      border: "1px solid #c7d0c4",
-                                      background: "#ffffff",
+                                      border: `1px solid ${getRouteSelectColors(plan.route.mode).border}`,
+                                      background: getRouteSelectColors(plan.route.mode).background,
+                                      color: getRouteSelectColors(plan.route.mode).color,
                                     }}
                                   >
                                     <option value="">No vehicle assigned</option>
@@ -4925,19 +5394,19 @@ export default function Board({
                                       .filter(card => card.type === getVehicleTypeForMode(plan.route.mode))
                                       .map(card => (
                                         <option key={card.id} value={card.id}>
-                                          #{card.number} {card.name}
+                                          #{card.number} {card.name} ({currentPlayerOwnedVehicleCountsByCardId[card.id] ?? 0})
                                         </option>
                                       ))}
                                   </select>
                                   {!plan.vehicleCard && (
                                     <span style={{ color: "#9b1c1c", fontSize: 12 }}>
-                                      Assign a matching vehicle to run this pod.
+                                      Assign a matching vehicle to run this route.
                                     </span>
                                   )}
                                 </label>
                                 {plan.availableCityIds.length > 2 && (
                                   <div style={{ color: "#56635a", fontSize: 12 }}>
-                                    Pod membership is managed in the pod editor above.
+                                    Route membership is managed in the route editor above.
                                   </div>
                                 )}
                               </div>
@@ -4964,31 +5433,32 @@ export default function Board({
                                 ? "Electric rail "
                                 : `${MODE_LABELS[plan.route.mode]} `}
                               {plan.segmentCount > 1 ? `• ${plan.segmentCount} segments ` : ""}
-                              {plan.vehicleCard
-                                ? (
-                                  <>
-                                    {`• #${plan.vehicleCard.number} ${plan.vehicleCard.name} • `}
-                                    <span
-                                      style={{
-                                        color:
-                                          plan.selectedFleetSize < plan.demandFleetSize
-                                            ? "#b42318"
-                                            : "#56635a",
-                                        fontWeight:
-                                          plan.selectedFleetSize < plan.demandFleetSize
-                                            ? 700
-                                            : 400,
-                                      }}
-                                    >
-                                      {`Fleet ${plan.selectedFleetSize}${
+                              {plan.vehicleCard ? (
+                                <>
+                                  {`• #${plan.vehicleCard.number} ${plan.vehicleCard.name} • `}
+                                  <span
+                                    style={{
+                                      color:
                                         plan.selectedFleetSize < plan.demandFleetSize
-                                          ? ` / ${plan.demandFleetSize} needed`
-                                          : ""
-                                      }`}
-                                    </span>
-                                  </>
-                                )
-                                : "• No vehicle assigned"}
+                                          ? "#b42318"
+                                          : "#56635a",
+                                      fontWeight:
+                                        plan.selectedFleetSize < plan.demandFleetSize
+                                          ? 700
+                                          : 400,
+                                    }}
+                                  >
+                                    {`Fleet ${plan.selectedFleetSize} / ${plan.demandFleetSize} Demand`}
+                                  </span>
+                                </>
+                              ) : (
+                                <>
+                                  {"• No vehicle assigned • "}
+                                  <span style={{ color: "#b42318", fontWeight: 700 }}>
+                                    {`Fleet 0 / ${plan.demandFleetSize} Demand`}
+                                  </span>
+                                </>
+                              )}
                             </div>
                             <div
                               style={{
@@ -5012,7 +5482,6 @@ export default function Board({
                               )}
                               <span>{plan.cubeCapacityPerTrip} cubes/trip</span>
                               <span>max {plan.maxTripsByTime} trips</span>
-                              <span>Fleet {plan.selectedFleetSize}</span>
                               <span>👥 {plan.passengersPerTrip.toLocaleString()}</span>
                               <span>x{formatDecimal(plan.simplifiedPayoutMultiplier, 0)} payout weight</span>
                             </div>
@@ -5042,12 +5511,12 @@ export default function Board({
                                 <div>
                                   <strong>Simplified passenger ledger</strong>
                                 </div>
-                                {plan.simplifiedLedgerEntries.length === 0 ? (
+                                {sortedLedgerEntries.length === 0 ? (
                                   <div style={{ color: "#56635a", fontSize: 12 }}>
                                     No passenger cubes can be moved on this service with the current setup.
                                   </div>
                                 ) : (
-                                  plan.simplifiedLedgerEntries.map(entry => (
+                                  sortedLedgerEntries.map(entry => (
                                     <div
                                       key={entry.id}
                                       style={{
@@ -5091,7 +5560,7 @@ export default function Board({
                                   }}
                                 >
                                   <div>
-                                    <strong>Pod flow map</strong>
+                                    <strong>Route flow map</strong>
                                   </div>
                                   <svg
                                     viewBox={previewViewBox}
@@ -5109,7 +5578,7 @@ export default function Board({
                                     }}
                                   >
                                     <defs>
-                                      {plan.simplifiedLedgerEntries.map((_, entryIndex) => {
+                                      {sortedLedgerEntries.map((_, entryIndex) => {
                                         const color =
                                           flowColors[
                                             entryIndex % flowColors.length
@@ -5120,10 +5589,10 @@ export default function Board({
                                             key={`${markerPrefix}-arrow-${entryIndex}`}
                                             id={`${markerPrefix}-arrow-${entryIndex}`}
                                             viewBox="0 0 10 10"
-                                            refX="8"
+                                            refX="6"
                                             refY="5"
-                                            markerWidth="5"
-                                            markerHeight="5"
+                                            markerWidth="2.5"
+                                            markerHeight="2.5"
                                             orient="auto"
                                           >
                                             <path d="M 0 0 L 10 5 L 0 10 z" fill={color} />
@@ -5155,7 +5624,7 @@ export default function Board({
                                         />
                                       )
                                     })}
-                                    {plan.simplifiedLedgerEntries.flatMap(
+                                    {sortedLedgerEntries.flatMap(
                                       (entry, entryIndex) =>
                                         entry.pathCityIds
                                           .slice(0, -1)
@@ -5187,8 +5656,8 @@ export default function Board({
                                                 fill="none"
                                                 stroke={color}
                                                 strokeWidth={Math.max(
-                                                  2.5,
-                                                  entry.cubeCount * 0.7,
+                                                  1,
+                                                  entry.cubeCount * 0.07,
                                                 )}
                                                 markerEnd={`url(#${markerPrefix}-arrow-${entryIndex})`}
                                                 strokeLinecap="round"
@@ -5559,6 +6028,9 @@ export default function Board({
               >
                 <strong>Demand + score</strong>
                 <div style={{ marginTop: 6, color: "#324236", fontSize: 13 }}>
+                  {game.operatingConfig.demandPointsPerCitySize} demand points per city size
+                </div>
+                <div style={{ color: "#324236", fontSize: 13 }}>
                   {game.operatingConfig.passengersPerDemandPoint} passengers per demand point
                 </div>
                 <div style={{ color: "#324236", fontSize: 13 }}>
@@ -5623,6 +6095,10 @@ export default function Board({
                 Ties break by <strong>connected cities</strong>, then <strong>cash</strong>.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
+                Each city size point creates{" "}
+                <strong>{game.operatingConfig.demandPointsPerCitySize}</strong> demand points.
+              </div>
+              <div style={{ color: "#324236", fontSize: 13 }}>
                 Each demand point supports <strong>{game.operatingConfig.passengersPerDemandPoint}</strong>{" "}
                 passengers per trip.
               </div>
@@ -5649,7 +6125,7 @@ export default function Board({
                 2. <strong>Claim Routes</strong>: each turn draw 4 city cards and keep exactly 2 to grow your hand.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
-                3. <strong>Operations</strong>: build rail/air links, assign vehicles, and split services. Bus pods follow connected owned cities automatically.
+                3. <strong>Operations</strong>: build rail/air links, assign vehicles, and split services. Bus routes follow connected owned cities automatically.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
                 Use <strong>Build Track</strong> in Operations to click highlighted adjacent segments on the map and lay rail.
@@ -5676,7 +6152,7 @@ export default function Board({
             >
               <strong>Route rules</strong>
               <div style={{ color: "#324236", fontSize: 13 }}>
-                <strong>Bus</strong>: pods are built from connected owned city cards and use diesel.
+                <strong>Bus</strong>: routes are built from connected owned city cards and use diesel.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
                 <strong>Air</strong>: can connect any city pair, but only between 2 cities at a time.
@@ -6152,9 +6628,9 @@ export default function Board({
                 : game.currentPhase === "claim-routes"
                   ? "Draw regional city cards and keep exactly 2 to add them to your hand."
                   : game.currentPhase === "operations"
-                    ? "Build tracks/routes and configure service pods by mode before running operations."
+                  ? "Build tracks/routes and configure service routes by mode before running operations."
                   : game.currentPhase === "bureaucracy"
-                    ? "Review how passenger cubes moved and how each pod performed."
+                  ? "Review how passenger cubes moved and how each route performed."
                   : "The board stays clear while reference panels open over it."}
             </div>
             </div>
@@ -6379,7 +6855,7 @@ export default function Board({
                       <button
                         type="button"
                         onClick={() => {
-                          setStatusMessage("Bus pods are automatic from connected owned cities. No build step is needed.")
+                          setStatusMessage("Bus routes are automatic from connected owned cities. No build step is needed.")
                         }}
                         disabled
                         style={{
@@ -6449,9 +6925,9 @@ export default function Board({
                       }}
                     >
                       <div style={{ display: "grid", gap: 4 }}>
-                        <strong>Service pods</strong>
+                        <strong>Service routes</strong>
                         <div style={{ color: "#56635a", fontSize: 12 }}>
-                          Split pods here by mode, then drag cities between pod boxes.
+                          Split routes here by mode, drag cities between route boxes, and assign vehicles before running Bureaucracy.
                         </div>
                       </div>
                       {BUREAUCRACY_MODE_ORDER.map(mode => {
@@ -6463,7 +6939,7 @@ export default function Board({
                               {MODE_LABELS[mode]}
                             </div>
                             {renderOperationsPodEditor(podGroupsForMode, {
-                              emptyMessage: `No ${MODE_LABELS[mode].toLowerCase()} pods are ready to split yet.`,
+                            emptyMessage: `No ${MODE_LABELS[mode].toLowerCase()} routes are ready to split yet.`,
                             })}
                           </div>
                         )
@@ -6503,7 +6979,7 @@ export default function Board({
                             : "rail"
                       const disabled =
                         game.currentPhase !== "operations" ||
-                        game.hasClaimedRouteThisTurn ||
+                        currentPlayerHasClaimedRouteThisTurn ||
                         mode === "rail" ||
                         !currentPlayerOwnedModes.has(mode)
 

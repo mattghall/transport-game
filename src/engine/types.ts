@@ -89,6 +89,7 @@ export type OperatingConfig = {
   weeksPerPeriod: number
   totalWeeks: number
   loadingHours: Record<VehicleType, number>
+  demandPointsPerCitySize: number
   passengersPerDemandPoint: number
   connectionBonusPerCitySize: number
   railConstructionCostPerMile: number
@@ -189,10 +190,13 @@ export type GameState = {
   routeMarketCardIdsByMode: RouteMarketByMode
   cityDeckCardIdsByRegion: CityDecksByRegion
   activeCityOffer: ActiveCityOffer | null
+  claimRoutesReadyPlayerIds: string[]
+  operationsReadyPlayerIds: string[]
+  bureaucracyReadyPlayerIds: string[]
   hasPurchasedVehicleThisTurn: boolean
   hasPurchasedVehicleThisPhase: boolean
   purchasedVehicleTypesThisPhase: VehiclePurchasesByType
-  hasClaimedRouteThisTurn: boolean
+  claimedRoutePlayerIdsThisTurn: string[]
   claimedRouteModesThisPhase: RouteClaimsByMode
 
   players: Player[]
