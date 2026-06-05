@@ -26,6 +26,7 @@ import {
   getFuelPriceMultiplier,
   getRailUpgradeCost,
 } from "./economy"
+import { shuffleWithRandomState } from "./random"
 import { calculateDistanceMiles } from "./trips"
 
 export type ConnectionOption = {
@@ -235,6 +236,7 @@ export type BureaucracyServiceCityMoveResult =
       corridorId: string
       routeId: string
       cityId: string
+      sourceRouteId: string | null
     }
   | {
       ok: false
@@ -248,6 +250,7 @@ export type BureaucracyServicePodDeleteResult =
       corridorId: string
       routeId: string
       cityIds: string[]
+      disconnectedCityIds: string[]
     }
   | {
       ok: false
@@ -935,6 +938,7 @@ export function getEffectiveClaimCityIds(
   game: GameState,
   mode: RouteMode,
   cityIds: string[],
+  playerId = game.currentPlayerId,
 ) {
   const normalizedCityIds = [...new Set(cityIds)]
 
@@ -942,8 +946,8 @@ export function getEffectiveClaimCityIds(
     return normalizedCityIds
   }
 
-  const currentPlayer = getCurrentPlayer(game)
-  const handCityIds = getCurrentPlayerHandCityIds(game, currentPlayer)
+  const currentPlayer = getPlayerById(game, playerId)
+  const handCityIds = getCurrentPlayerHandCityIds(game, currentPlayer ?? undefined)
 
   if (!currentPlayer || handCityIds.length === 0) {
     return normalizedCityIds
@@ -1052,9 +1056,10 @@ export function resolveRouteSelection(
 function getImplicitBusHandSegmentPairs(
   game: GameState,
   selectedCityIds: string[],
+  playerId = game.currentPlayerId,
 ) {
-  const currentPlayer = getCurrentPlayer(game)
-  const handCityIds = getCurrentPlayerHandCityIds(game, currentPlayer)
+  const currentPlayer = getPlayerById(game, playerId)
+  const handCityIds = getCurrentPlayerHandCityIds(game, currentPlayer ?? undefined)
 
   if (!currentPlayer || handCityIds.length === 0) {
     return []
@@ -1085,8 +1090,9 @@ export function getClaimSegmentPairs(
   game: GameState,
   mode: RouteMode,
   cityIds: string[],
+  playerId = game.currentPlayerId,
 ) {
-  const effectiveCityIds = getEffectiveClaimCityIds(game, mode, cityIds)
+  const effectiveCityIds = getEffectiveClaimCityIds(game, mode, cityIds, playerId)
   const resolvedSelection = resolveRouteSelection(game, effectiveCityIds, mode)
 
   if (!resolvedSelection.ok) {
@@ -1099,7 +1105,7 @@ export function getClaimSegmentPairs(
 
   return dedupeSegmentPairs([
     ...resolvedSelection.segmentPairs,
-    ...getImplicitBusHandSegmentPairs(game, cityIds),
+    ...getImplicitBusHandSegmentPairs(game, cityIds, playerId),
   ])
 }
 
@@ -1138,6 +1144,7 @@ export function getVisibleRouteMarketCardIds(game: GameState, mode: RouteMode) {
 export function calculateClaimRouteCost(
   game: GameState,
   input: ClaimRouteCostInput,
+  playerId = game.currentPlayerId,
 ) {
   if (input.mode !== "rail") {
     return 0
@@ -1148,7 +1155,7 @@ export function calculateClaimRouteCost(
       ? resolveSegmentSelection(game, input.segmentPairs, input.mode)
       : resolveRouteSelection(
           game,
-          getEffectiveClaimCityIds(game, input.mode, input.cityIds),
+          getEffectiveClaimCityIds(game, input.mode, input.cityIds, playerId),
           input.mode,
         )
 
@@ -1212,7 +1219,7 @@ export function getConnectionOptions(
       }
     }
 
-    const effectiveCityIds = getEffectiveClaimCityIds(game, mode, cityIds)
+    const effectiveCityIds = getEffectiveClaimCityIds(game, mode, cityIds, playerId)
 
     if (effectiveCityIds.length < 2) {
       return {
@@ -1240,7 +1247,9 @@ export function getConnectionOptions(
       }
     }
 
-    const claimCost = Math.ceil(calculateClaimRouteCost(game, { cityIds: effectiveCityIds, mode: "rail" }))
+    const claimCost = Math.ceil(
+      calculateClaimRouteCost(game, { cityIds: effectiveCityIds, mode: "rail" }, playerId),
+    )
 
     if (mode === "rail" && currentPlayer && currentPlayer.money < claimCost) {
       return {
@@ -1332,6 +1341,7 @@ function getVehicleMarketBurnCardIds(game: GameState) {
 export function drawCityOffer(
   game: GameState,
   region: CityDeckRegion,
+  playerId = game.currentPlayerId,
 ): DrawCityOfferResult {
   if (isGameLocked(game)) {
     return {
@@ -1344,6 +1354,13 @@ export function drawCityOffer(
     return {
       ok: false,
       error: "City cards can only be drawn during the claim routes phase.",
+    }
+  }
+
+  if (playerId !== game.currentPlayerId) {
+    return {
+      ok: false,
+      error: "Only the active player can draw city cards.",
     }
   }
 
@@ -1404,6 +1421,7 @@ export function drawCityOffer(
 export function setActiveCityOfferKeptCityIds(
   game: GameState,
   requestedCityIds: string[],
+  playerId = game.currentPlayerId,
 ): CityOfferSelectionResult {
   if (isGameLocked(game)) {
     return {
@@ -1416,6 +1434,13 @@ export function setActiveCityOfferKeptCityIds(
     return {
       ok: false,
       error: "City cards can only be picked during the claim routes phase.",
+    }
+  }
+
+  if (playerId !== game.currentPlayerId) {
+    return {
+      ok: false,
+      error: "Only the active player can pick city cards.",
     }
   }
 
@@ -1717,23 +1742,20 @@ export function advancePhase(game: GameState): GameState {
       ? [...resolvedGame.chanceDiscardCardIds, resolvedGame.activeChanceCardId]
       : [...resolvedGame.chanceDiscardCardIds]
     let nextDeck = [...resolvedGame.chanceDeckCardIds]
+    let randomState = resolvedGame.randomState
 
     if (nextDeck.length === 0 && nextDiscard.length > 0) {
-      for (let index = nextDiscard.length - 1; index > 0; index -= 1) {
-        const swapIndex = Math.floor(Math.random() * (index + 1))
-        const currentCardId = nextDiscard[index]
-        nextDiscard[index] = nextDiscard[swapIndex]
-        nextDiscard[swapIndex] = currentCardId
-      }
-
-      nextDeck = nextDiscard
+      const reshuffledDiscard = shuffleWithRandomState(nextDiscard, randomState)
+      nextDeck = reshuffledDiscard.items
       nextDiscard = []
+      randomState = reshuffledDiscard.randomState
     }
 
     const activeChanceCardId = nextDeck[0] ?? null
 
     return {
       ...resolvedGame,
+      randomState,
       currentWeek: wrappedWeek,
       currentPhase: WEEKLY_PHASES[nextPhaseIndex],
       activeChanceCardId,
@@ -2293,7 +2315,23 @@ export function setBureaucracyServiceCities(
     }
   }
 
-  const normalizedCityIds = routePlan.availableCityIds.filter(cityId => cityIds.includes(cityId))
+  const summary = buildPlayerBureaucracySummary(game, playerId)
+  const corridorPlans =
+    summary?.routePlans.filter(plan => plan.corridorId === routePlan.corridorId) ?? []
+  const disconnectedPlan = corridorPlans.find(plan => plan.isDisconnected) ?? null
+  const nextSelections = { ...game.bureaucracyServiceCityIdsByRouteId }
+  const normalizedCityIds = [...new Set(routePlan.availableCityIds.filter(cityId => cityIds.includes(cityId)))]
+
+  nextSelections[routeId] = normalizedCityIds
+
+  if (disconnectedPlan) {
+    syncDisconnectedServiceCities(
+      nextSelections,
+      routePlan.availableCityIds,
+      corridorPlans.filter(plan => !plan.isDisconnected).map(plan => plan.id),
+      disconnectedPlan.id,
+    )
+  }
 
   return {
     ok: true,
@@ -2301,10 +2339,7 @@ export function setBureaucracyServiceCities(
     cityIds: normalizedCityIds,
     game: {
       ...game,
-      bureaucracyServiceCityIdsByRouteId: {
-        ...game.bureaucracyServiceCityIdsByRouteId,
-        [routeId]: normalizedCityIds,
-      },
+      bureaucracyServiceCityIdsByRouteId: nextSelections,
     },
   }
 }
@@ -2339,6 +2374,21 @@ export function addBureaucracyServiceSplit(
       },
     },
   }
+}
+
+function syncDisconnectedServiceCities(
+  nextSelections: Record<string, string[]>,
+  availableCityIds: string[],
+  activeRouteIds: string[],
+  disconnectedRouteId: string,
+) {
+  const activeCityIds = new Set(
+    activeRouteIds.flatMap(routeId => nextSelections[routeId] ?? []),
+  )
+
+  nextSelections[disconnectedRouteId] = availableCityIds.filter(
+    cityId => !activeCityIds.has(cityId),
+  )
 }
 
 export function deleteBureaucracyServicePod(
@@ -2408,15 +2458,31 @@ export function deleteBureaucracyServicePod(
     nextSelections[buildServiceSlotId(corridorId, 0)] = []
   }
 
-  nextSelections[buildDisconnectedServiceSlotId(corridorId)] = [
-    ...new Set([...disconnectedPlan.selectedCityIds, ...deletedCityIds]),
-  ]
+  const disconnectedRouteId = buildDisconnectedServiceSlotId(corridorId)
+  const remainingActiveRouteIds =
+    remainingPlans.length === 0
+      ? [buildServiceSlotId(corridorId, 0)]
+      : remainingPlans.map((_, slotIndex) => buildServiceSlotId(corridorId, slotIndex))
+  const remainingActiveCityIds = new Set(
+    remainingActiveRouteIds.flatMap(routeCandidateId => nextSelections[routeCandidateId] ?? []),
+  )
+  syncDisconnectedServiceCities(
+    nextSelections,
+    targetPlan.availableCityIds,
+    remainingActiveRouteIds,
+    disconnectedRouteId,
+  )
+
+  const disconnectedCityIds = deletedCityIds.filter(cityCandidateId =>
+    !remainingActiveCityIds.has(cityCandidateId),
+  )
 
   return {
     ok: true,
     corridorId,
     routeId,
     cityIds: deletedCityIds,
+    disconnectedCityIds,
     game: {
       ...game,
       bureaucracyServiceSlotCountsByCorridorId: {
@@ -2434,6 +2500,7 @@ export function moveBureaucracyServiceCity(
   corridorId: string,
   cityId: string,
   routeId: string,
+  sourceRouteId: string | null = null,
   playerId = game.currentPlayerId,
 ): BureaucracyServiceCityMoveResult {
   if (isGameLocked(game)) {
@@ -2454,6 +2521,9 @@ export function moveBureaucracyServiceCity(
   const corridorPlans =
     summary?.routePlans.filter(plan => plan.corridorId === corridorId) ?? []
   const targetPlan = corridorPlans.find(plan => plan.id === routeId)
+  const disconnectedPlan = corridorPlans.find(plan => plan.isDisconnected) ?? null
+  const sourcePlan =
+    sourceRouteId === null ? null : corridorPlans.find(plan => plan.id === sourceRouteId) ?? null
 
   if (!targetPlan) {
     return {
@@ -2469,15 +2539,28 @@ export function moveBureaucracyServiceCity(
     }
   }
 
-  const nextSelections = { ...game.bureaucracyServiceCityIdsByRouteId }
-
-  for (const plan of corridorPlans) {
-    nextSelections[plan.id] = plan.selectedCityIds.filter(
-      selectedCityId => selectedCityId !== cityId,
-    )
+  if (sourceRouteId !== null && !sourcePlan) {
+    return {
+      ok: false,
+      error: "That source route could not be found.",
+    }
   }
 
-  nextSelections[routeId] = [...new Set([...(nextSelections[routeId] ?? []), cityId])]
+  const nextSelections = { ...game.bureaucracyServiceCityIdsByRouteId }
+
+  corridorPlans.forEach(plan => {
+    nextSelections[plan.id] = [...plan.selectedCityIds]
+  })
+
+  if (targetPlan.isDisconnected) {
+    if (sourcePlan && !sourcePlan.isDisconnected) {
+      nextSelections[sourcePlan.id] = sourcePlan.selectedCityIds.filter(
+        selectedCityId => selectedCityId !== cityId,
+      )
+    }
+  } else {
+    nextSelections[routeId] = [...new Set([...(nextSelections[routeId] ?? []), cityId])]
+  }
 
   if (
     !targetPlan.isDisconnected &&
@@ -2489,14 +2572,24 @@ export function moveBureaucracyServiceCity(
     }
   }
 
+  if (disconnectedPlan) {
+    syncDisconnectedServiceCities(
+    nextSelections,
+    targetPlan.availableCityIds,
+    corridorPlans.filter(plan => !plan.isDisconnected).map(plan => plan.id),
+    disconnectedPlan.id,
+    )
+  }
+
   return {
     ok: true,
     corridorId,
     routeId,
     cityId,
+    sourceRouteId,
     game: {
-      ...game,
-      bureaucracyServiceCityIdsByRouteId: nextSelections,
+    ...game,
+    bureaucracyServiceCityIdsByRouteId: nextSelections,
     },
   }
 }
@@ -2510,13 +2603,6 @@ export function claimRoute(
     return {
       ok: false,
       error: "The game is over.",
-    }
-  }
-
-  if (hasPlayerClaimedRouteThisTurn(game, playerId)) {
-    return {
-      ok: false,
-      error: "You can claim at most 1 route per turn.",
     }
   }
 
@@ -2545,7 +2631,7 @@ export function claimRoute(
     }
   }
 
-  const effectiveCityIds = getEffectiveClaimCityIds(game, input.mode, cityIds)
+  const effectiveCityIds = getEffectiveClaimCityIds(game, input.mode, cityIds, playerId)
   const handCityIds = getCurrentPlayerHandCityIds(game, currentPlayer)
 
   if (cityIds.some(cityId => !handCityIds.includes(cityId))) {
@@ -2571,7 +2657,7 @@ export function claimRoute(
   const segmentPairs =
     input.mode === "rail" && input.segmentPairs && input.segmentPairs.length > 0
       ? resolvedSelection.segmentPairs
-      : getClaimSegmentPairs(game, input.mode, cityIds)
+      : getClaimSegmentPairs(game, input.mode, cityIds, playerId)
   const ownedVehicleTypes = new Set(getOwnedVehicleCards(game, playerId).map(card => card.type))
 
   if (!ownedVehicleTypes.has(getVehicleTypeForMode(input.mode))) {
@@ -2586,7 +2672,7 @@ export function claimRoute(
       cityIds: orderedCityIds,
       mode: input.mode,
       segmentPairs: input.segmentPairs,
-    }),
+    }, playerId),
   )
   const connectionBonus = calculateConnectionBonus(game, currentPlayer.id, orderedCityIds)
 

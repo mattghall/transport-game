@@ -2,6 +2,7 @@ import type { GameState } from "../engine/types"
 
 export const SAVED_GAME_STORAGE_KEY = "transport-game-saved-game-v1"
 export const ACTIVE_ADMIN_LAUNCH_STORAGE_KEY = "transport-game-active-admin-launch-v1"
+export const PENDING_LOCAL_LAUNCH_STORAGE_KEY = "transport-game-pending-local-launch-v1"
 export const LOBBY_CLIENT_ID_STORAGE_KEY = "transport-game-lobby-client-id-v1"
 const ACTIVE_SESSION_PLAYER_STORAGE_KEY_PREFIX = "transport-game-active-session-player-v1"
 const PLAYER_NAME_STORAGE_KEY = "transport-game-player-name-v1"
@@ -11,6 +12,10 @@ export type ActiveAdminLaunch = {
   sessionId: string
   sessionName: string
   serverUrl: string
+}
+
+export type PendingLocalLaunch = {
+  selectedPlayerId: string | null
 }
 
 export function loadSavedGame() {
@@ -36,7 +41,32 @@ export function saveSavedGame(game: GameState) {
     return
   }
 
-  window.localStorage.setItem(SAVED_GAME_STORAGE_KEY, JSON.stringify(game))
+  const persistenceCandidates: GameState[] = [
+    game,
+    {
+      ...game,
+      actionLog: game.actionLog.slice(-250),
+    },
+    {
+      ...game,
+      actionLog: [],
+    },
+  ]
+
+  for (const candidate of persistenceCandidates) {
+    try {
+      window.localStorage.setItem(SAVED_GAME_STORAGE_KEY, JSON.stringify(candidate))
+      return
+    } catch {
+      // Try a smaller snapshot before giving up.
+    }
+  }
+
+  try {
+    window.localStorage.removeItem(SAVED_GAME_STORAGE_KEY)
+  } catch {
+    // Ignore cleanup failures so the app never crashes on storage limits.
+  }
 }
 
 export function clearSavedGame() {
@@ -93,6 +123,52 @@ export function clearActiveAdminLaunch() {
   }
 
   window.localStorage.removeItem(ACTIVE_ADMIN_LAUNCH_STORAGE_KEY)
+}
+
+export function loadPendingLocalLaunch() {
+  if (typeof window === "undefined") {
+    return null
+  }
+
+  const rawValue = window.localStorage.getItem(PENDING_LOCAL_LAUNCH_STORAGE_KEY)
+
+  if (!rawValue) {
+    return null
+  }
+
+  try {
+    const parsedValue = JSON.parse(rawValue) as Partial<PendingLocalLaunch>
+
+    if (!("selectedPlayerId" in parsedValue)) {
+      return null
+    }
+
+    if (parsedValue.selectedPlayerId !== null && typeof parsedValue.selectedPlayerId !== "string") {
+      return null
+    }
+
+    return {
+      selectedPlayerId: parsedValue.selectedPlayerId,
+    }
+  } catch {
+    return null
+  }
+}
+
+export function savePendingLocalLaunch(launch: PendingLocalLaunch) {
+  if (typeof window === "undefined") {
+    return
+  }
+
+  window.localStorage.setItem(PENDING_LOCAL_LAUNCH_STORAGE_KEY, JSON.stringify(launch))
+}
+
+export function clearPendingLocalLaunch() {
+  if (typeof window === "undefined") {
+    return
+  }
+
+  window.localStorage.removeItem(PENDING_LOCAL_LAUNCH_STORAGE_KEY)
 }
 
 function createLobbyClientId() {

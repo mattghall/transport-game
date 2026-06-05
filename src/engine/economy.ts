@@ -1,4 +1,5 @@
 import { calculateRouteDistanceMiles } from "./trips"
+import { getPlayerConnectedCityIds } from "./playerNetwork"
 import type {
   ChanceCard,
   City,
@@ -229,18 +230,7 @@ export function getBalanceAdjustmentPerTrip(game: GameState, route: Route) {
 }
 
 export function getConnectedCityIds(game: GameState, playerId: string) {
-  const connectedCityIds = new Set<string>()
-
-  for (const route of game.routes) {
-    if (route.ownerId !== playerId) {
-      continue
-    }
-
-    connectedCityIds.add(route.cityA)
-    connectedCityIds.add(route.cityB)
-  }
-
-  return [...connectedCityIds]
+  return getPlayerConnectedCityIds(game, playerId)
 }
 
 export function getNewlyConnectedCityIds(

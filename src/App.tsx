@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { loadUserDecks } from "./data/deckData"
 import {
+  clearPendingLocalLaunch,
   clearSavedGame,
   getLobbyClientId,
   clearActiveAdminLaunch,
   clearActiveSessionPlayer,
   loadJoinAppUrl,
+  loadSavedGame,
+  loadPendingLocalLaunch,
   loadActiveSessionPlayer,
   loadPlayerName,
   saveActiveAdminLaunch,
@@ -15,8 +18,11 @@ import {
   savePlayerName,
 } from "./data/gameStorage"
 import { usMap } from "./data/maps/usMap"
-import { PLAYER_SETUP_PRESETS } from "./gameSetup/defaultPlayers"
-import { createDefaultSetupPlayers } from "./gameSetup/defaultPlayers"
+import {
+  MAX_SETUP_PLAYERS,
+  PLAYER_SETUP_PRESETS,
+  createDefaultSetupPlayers,
+} from "./gameSetup/defaultPlayers"
 import {
   addBureaucracyServiceSplit,
   advanceTurn,
@@ -37,8 +43,14 @@ import {
   setBureaucracyRouteVehicleCard,
   upgradeRailRoute,
 } from "./engine/actions"
+import { applyBotAction, getBotLegalActions, getPendingBotPlayerId } from "./bots/actions"
+import { createScriptedBot } from "./bots/scriptedBot"
 import { findPlayerBureaucracyPlan } from "./engine/bureaucracy"
-import { createGameState, DEFAULT_STARTING_MONEY } from "./engine/createGameState"
+import {
+  createGameState,
+  DEFAULT_STARTING_MONEY,
+  type GameSetupPlayer,
+} from "./engine/createGameState"
 import type { GameActionLogEntry, GameState, PurchasableResource, WeeklyPhase } from "./engine/types"
 import {
   buildLanSessionJoinUrl,
@@ -142,7 +154,8 @@ type LanSessionConnection = {
   version: number
 }
 
-type AppMode = "launcher" | "joining" | "waiting" | "lobby" | "ready"
+type AppMode = "launcher" | "setup-lobby" | "joining" | "waiting" | "lobby" | "ready"
+type SetupLobbyKind = "local" | "lan"
 
 function createPlaceholderGame() {
   const initialUserDecks = loadUserDecks()
@@ -155,11 +168,230 @@ function createPlaceholderGame() {
   })
 }
 
-function createLauncherPlayers(playerCount: number) {
-  return PLAYER_SETUP_PRESETS.slice(0, playerCount).map((player, index) => ({
-    ...player,
-    name: `Player ${index + 1}`,
-  }))
+function clampSetupPlayerCount(playerCount: number) {
+  return Math.max(1, Math.min(MAX_SETUP_PLAYERS, Math.floor(playerCount) || 1))
+}
+
+function getDefaultSetupPlayerName(index: number, isBot: boolean) {
+  return isBot ? `Bot ${index + 1}` : `Player ${index + 1}`
+}
+
+function normalizeSetupPlayers(players: GameSetupPlayer[]) {
+  return PLAYER_SETUP_PRESETS.slice(0, clampSetupPlayerCount(players.length)).map((preset, index) => {
+    const existingPlayer = players[index]
+    const isBot = existingPlayer?.isBot ?? false
+    const trimmedName = existingPlayer?.name?.trim() ?? ""
+
+    return {
+      ...preset,
+      ...existingPlayer,
+      isBot,
+      name: trimmedName || getDefaultSetupPlayerName(index, isBot),
+    }
+  })
+}
+
+function createSetupPlayers(playerCount: number, botSeatIndexes: number[] = []) {
+  const botSeatIndexSet = new Set(botSeatIndexes)
+
+  return normalizeSetupPlayers(
+    PLAYER_SETUP_PRESETS.slice(0, clampSetupPlayerCount(playerCount)).map((player, index) => ({
+      ...player,
+      isBot: botSeatIndexSet.has(index),
+      name: getDefaultSetupPlayerName(index, botSeatIndexSet.has(index)),
+    })),
+  )
+}
+
+function updateSetupPlayer(
+  players: GameSetupPlayer[],
+  playerId: string,
+  updates: Partial<Pick<GameSetupPlayer, "name" | "isBot">>,
+) {
+  return normalizeSetupPlayers(
+    players.map((player, index) => {
+      if (player.id !== playerId) {
+        return player
+      }
+
+      const previousIsBot = player.isBot ?? false
+      const nextIsBot = updates.isBot ?? previousIsBot
+      const previousDefaultName = getDefaultSetupPlayerName(index, previousIsBot)
+      const nextDefaultName = getDefaultSetupPlayerName(index, nextIsBot)
+      const requestedName = updates.name ?? player.name
+
+      return {
+        ...player,
+        ...updates,
+        isBot: nextIsBot,
+        name: requestedName === previousDefaultName ? nextDefaultName : requestedName,
+      }
+    }),
+  )
+}
+
+function getSetupValidationError(players: GameSetupPlayer[]) {
+  if (players.length === 0) {
+    return "Add at least one seat."
+  }
+
+  const nameCounts = new Map<string, number>()
+
+  for (const player of normalizeSetupPlayers(players)) {
+    const normalizedName = player.name.trim().toLowerCase()
+    nameCounts.set(normalizedName, (nameCounts.get(normalizedName) ?? 0) + 1)
+  }
+
+  const duplicateName = [...nameCounts.entries()].find(([, count]) => count > 1)?.[0] ?? null
+
+  if (duplicateName) {
+    return "Seat names must be unique."
+  }
+
+  return null
+}
+
+function getDefaultLocalViewingPlayerId(game: GameState) {
+  const humanPlayers = game.players.filter(player => !player.isBot)
+
+  if (humanPlayers.length === 0) {
+    return null
+  }
+
+  if (game.currentPhase === "operations") {
+    return (
+      humanPlayers.find(player => canPlayerEditOperations(game, player.id) && !hasPlayerCompletedOperations(game, player.id))
+        ?.id ??
+      humanPlayers[0]?.id ??
+      null
+    )
+  }
+
+  if (game.currentPhase === "bureaucracy") {
+    return (
+      humanPlayers.find(player => !hasPlayerCompletedBureaucracy(game, player.id))?.id ??
+      humanPlayers[0]?.id ??
+      null
+    )
+  }
+
+  if (game.currentPhase === "claim-routes") {
+    const currentHumanPlayer = humanPlayers.find(player => player.id === game.currentPlayerId)
+
+    if (currentHumanPlayer && !hasPlayerConfirmedClaimRoutes(game, currentHumanPlayer.id)) {
+      return currentHumanPlayer.id
+    }
+
+    return (
+      humanPlayers.find(player => canPlayerEditOperations(game, player.id) && !hasPlayerCompletedOperations(game, player.id))
+        ?.id ??
+      currentHumanPlayer?.id ??
+      humanPlayers[0]?.id ??
+      null
+    )
+  }
+
+  return humanPlayers.find(player => player.id === game.currentPlayerId)?.id ?? humanPlayers[0]?.id ?? null
+}
+
+function getNextLocalViewingPlayerId(game: GameState, currentSelectedPlayerId: string | null = null) {
+  const humanPlayers = game.players.filter(player => !player.isBot)
+
+  if (humanPlayers.length === 0) {
+    return null
+  }
+
+  if (
+    currentSelectedPlayerId &&
+    humanPlayers.some(player => player.id === currentSelectedPlayerId)
+  ) {
+    if (game.currentPhase === "operations" && canPlayerEditOperations(game, currentSelectedPlayerId)) {
+      return currentSelectedPlayerId
+    }
+
+    if (game.currentPhase === "bureaucracy" && !hasPlayerCompletedBureaucracy(game, currentSelectedPlayerId)) {
+      return currentSelectedPlayerId
+    }
+
+    if (
+      game.currentPhase === "claim-routes" &&
+      (currentSelectedPlayerId === game.currentPlayerId || canPlayerEditOperations(game, currentSelectedPlayerId))
+    ) {
+      return currentSelectedPlayerId
+    }
+
+    if (game.currentPhase === "purchase-equipment" && currentSelectedPlayerId === game.currentPlayerId) {
+      return currentSelectedPlayerId
+    }
+  }
+
+  return getDefaultLocalViewingPlayerId(game)
+}
+
+function getBotActionLogMessage(previousGame: GameState, nextGame: GameState, action: ReturnType<typeof getBotLegalActions>[number]) {
+  return action.type === "buy-vehicle"
+    ? (() => {
+        const card = previousGame.vehicleCatalog.find(vehicleCard => vehicleCard.id === action.cardId)
+        return card
+          ? `purchased ${action.quantity} vehicle${action.quantity === 1 ? "" : "s"} of #${card.number} ${card.name}`
+          : "purchased a vehicle"
+      })()
+    : action.type === "draw-city-offer"
+      ? `drew 4 city cards from the ${action.region} deck`
+      : action.type === "keep-city-offer"
+        ? "picked 2 city cards from the draw"
+        : action.type === "confirm-claim-picks"
+          ? nextGame.currentPhase === "operations"
+            ? "confirmed city picks and opened Operations for every player"
+            : `confirmed city picks; ${nextGame.players.find(player => player.id === nextGame.currentPlayerId)?.name ?? nextGame.currentPlayerId} is selecting cities`
+          : action.type === "ready-operations"
+            ? nextGame.currentPhase === "bureaucracy"
+              ? "finished operations planning and advanced to bureaucracy"
+              : "finished operations planning"
+            : action.type === "ready-bureaucracy"
+              ? nextGame.currentPhase === "purchase-equipment"
+                ? "finished bureaucracy review and advanced to purchase equipment"
+                : "finished bureaucracy review"
+              : getAdvanceTurnLogMessage(previousGame, nextGame)
+}
+
+function runBotTurns(game: GameState, botPlayerIds: ReadonlySet<string>) {
+  let nextGame = game
+  let hasChanged = false
+
+  while (true) {
+    const actingBotPlayerId = getPendingBotPlayerId(nextGame, botPlayerIds)
+
+    if (!actingBotPlayerId) {
+      break
+    }
+
+    const legalActions = getBotLegalActions(nextGame, actingBotPlayerId)
+
+    if (legalActions.length === 0) {
+      break
+    }
+
+    const action = createScriptedBot(actingBotPlayerId).pickAction({
+      game: nextGame,
+      playerId: actingBotPlayerId,
+      legalActions,
+      phase: nextGame.currentPhase,
+    })
+    const advancedGame = applyBotAction(nextGame, actingBotPlayerId, action)
+    const discardMessage =
+      action.type === "end-turn" ? getPhaseDiscardLogMessage(nextGame, advancedGame) : null
+    const actionMessage = getBotActionLogMessage(nextGame, advancedGame, action)
+    const fullMessage = discardMessage ? `${actionMessage}; ${discardMessage}` : actionMessage
+
+    nextGame = appendActionLog(nextGame, advancedGame, fullMessage, actingBotPlayerId)
+    hasChanged = true
+  }
+
+  return {
+    game: nextGame,
+    hasChanged,
+  }
 }
 
 function isLegacyLobbyApiError(error: unknown) {
@@ -203,9 +435,11 @@ export default function App() {
   const requestedLanSessionId = requestedLanSession?.sessionId ?? null
   const requestedLanSessionServerUrl = requestedLanSession?.serverUrl ?? null
   const isLauncherRoute = requestedLanSessionId === null
+  const pendingLocalLaunch = requestedLanSession ? null : loadPendingLocalLaunch()
+  const pendingLocalGame = requestedLanSession ? null : (pendingLocalLaunch ? loadSavedGame() : null)
   const defaultSessionServerUrl = getDefaultSessionServerUrl()
   const [joinAppUrl, setJoinAppUrl] = useState(() => loadJoinAppUrl() ?? getDefaultJoinAppUrl())
-  const [game, setGame] = useState(() => createPlaceholderGame())
+  const [game, setGame] = useState(() => pendingLocalGame ?? createPlaceholderGame())
   const [history, setHistory] = useState<typeof game[]>([])
   const [lanSession, setLanSession] = useState<LanSessionConnection | null>(null)
   const [lanLobby, setLanLobby] = useState<LanSessionLobby | null>(null)
@@ -216,19 +450,37 @@ export default function App() {
       return `Connecting to session ${requestedLanSessionId}...`
     }
 
-    return "Create a LAN game or join an existing one."
+    if (pendingLocalLaunch && pendingLocalGame) {
+      return "Resumed a local bot-only game."
+    }
+
+    return "Create a local or LAN game, or join an existing session."
   })
   const [lanStatusTone, setLanStatusTone] = useState<"neutral" | "error">("neutral")
-  const [appMode, setAppMode] = useState<AppMode>(() => (requestedLanSession ? "joining" : "launcher"))
-  const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null)
+  const [appMode, setAppMode] = useState<AppMode>(() =>
+    requestedLanSession ? "joining" : pendingLocalLaunch && pendingLocalGame ? "ready" : "launcher",
+  )
+  const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(
+    () => pendingLocalLaunch?.selectedPlayerId ?? null,
+  )
+  const [setupLobbyKind, setSetupLobbyKind] = useState<SetupLobbyKind | null>(null)
+  const [localSeatCount, setLocalSeatCount] = useState(2)
+  const [lanSeatCount, setLanSeatCount] = useState(4)
+  const [localSetupPlayers, setLocalSetupPlayers] = useState<GameSetupPlayer[]>(() =>
+    createSetupPlayers(2),
+  )
+  const [lanSetupPlayers, setLanSetupPlayers] = useState<GameSetupPlayer[]>(() =>
+    createSetupPlayers(4),
+  )
   const [playerName, setPlayerName] = useState("")
   const [isUpdatingLobby, setIsUpdatingLobby] = useState(false)
-  const [maxPlayers, setMaxPlayers] = useState(4)
   const [launcherSessions, setLauncherSessions] = useState<LanSessionSummary[]>([])
   const [launcherServerOnline, setLauncherServerOnline] = useState<boolean | null>(null)
   const [isLaunchingSession, setIsLaunchingSession] = useState(false)
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null)
   const [isPeriodSummaryVisible, setIsPeriodSummaryVisible] = useState(false)
+  const localBotTurnSignatureRef = useRef<string | null>(null)
+  const lanBotTurnSignatureRef = useRef<string | null>(null)
   const normalizedJoinAppUrl = useMemo(() => {
     try {
       return normalizeJoinAppUrl(joinAppUrl)
@@ -244,8 +496,18 @@ export default function App() {
       return false
     }
   }, [joinAppUrl])
+  const localSetupError = useMemo(() => getSetupValidationError(localSetupPlayers), [localSetupPlayers])
+  const lanSetupError = useMemo(() => getSetupValidationError(lanSetupPlayers), [lanSetupPlayers])
 
   const hasStarted = appMode === "ready"
+
+  useEffect(() => {
+    if (!pendingLocalLaunch) {
+      return
+    }
+
+    clearPendingLocalLaunch()
+  }, [pendingLocalLaunch])
 
   useEffect(() => {
     lanSessionRef.current = lanSession
@@ -272,7 +534,39 @@ export default function App() {
       return suggestedJoinAppUrl
     })
   }, [])
+  const handleCreateLocalLobby = useCallback(() => {
+    setLocalSetupPlayers(createSetupPlayers(localSeatCount))
+    setSetupLobbyKind("local")
+    setAppMode("setup-lobby")
+    setLanStatusTone("neutral")
+    setLanStatusMessage("Configure the local lobby, then start the game.")
+  }, [localSeatCount])
+  const handleCreateLanLobby = useCallback(() => {
+    setLanSetupPlayers(createSetupPlayers(lanSeatCount))
+    setSetupLobbyKind("lan")
+    setAppMode("setup-lobby")
+    setLanStatusTone("neutral")
+    setLanStatusMessage("Configure the LAN lobby, then create the session.")
+  }, [lanSeatCount])
+  const handleBackToLauncher = useCallback(() => {
+    setSetupLobbyKind(null)
+    setAppMode("launcher")
+  }, [])
+  const handleLocalSetupPlayerChange = useCallback(
+    (playerId: string, updates: Partial<Pick<GameSetupPlayer, "name" | "isBot">>) => {
+      setLocalSetupPlayers(currentPlayers => updateSetupPlayer(currentPlayers, playerId, updates))
+    },
+    [],
+  )
+  const handleLanSetupPlayerChange = useCallback(
+    (playerId: string, updates: Partial<Pick<GameSetupPlayer, "name" | "isBot">>) => {
+      setLanSetupPlayers(currentPlayers => updateSetupPlayer(currentPlayers, playerId, updates))
+    },
+    [],
+  )
 
+  // LAN-only: the session server is authoritative, so incoming snapshots replace local UI state.
+  // Local hotseat never hydrates from snapshots; it owns the GameState directly in React state/history.
   const applyLanSnapshot = useCallback((snapshot: LanSessionSnapshot, serverUrl: string) => {
     const nextConnection = {
       sessionId: snapshot.sessionId,
@@ -302,6 +596,7 @@ export default function App() {
     setLanLobby(snapshot.lobby)
     setGame(nextGame)
     setHistory([])
+    setSetupLobbyKind(null)
     setSelectedPlayerId(nextSelectedPlayerId)
     setPlayerName(storedPlayerName ?? nextSelectedPlayer?.name ?? "")
     saveSavedGame(nextGame)
@@ -595,12 +890,17 @@ export default function App() {
     }
   }, [])
 
+  // Shared gameplay handlers all funnel through this helper.
+  // Local mode applies the mutation directly to React state/history, while LAN mode must push the
+  // mutated game through the session server and retry on version conflicts.
   const commitGameMutation = useCallback(
     async <T extends { ok: true; game: GameState }>(
       mutate: (baseGame: GameState, actingPlayerId: string) => T | GameMutationFailure,
     ): Promise<T | GameMutationFailure> => {
       const activeLanSession = lanSessionRef.current
-      const actingPlayerId = activeLanSession ? selectedPlayerId : game.currentPlayerId
+      const actingPlayerId = activeLanSession
+        ? selectedPlayerId
+        : getDefaultLocalViewingPlayerId(game) ?? game.currentPlayerId
 
       if (activeLanSession && !canPlayerWriteLiveGame(game, actingPlayerId)) {
         const message = getBlockedLanActionMessage(game, actingPlayerId)
@@ -618,6 +918,9 @@ export default function App() {
         if (result.ok) {
           setHistory(current => [...current, game])
           setGame(result.game)
+          setSelectedPlayerId(currentSelectedPlayerId =>
+            getNextLocalViewingPlayerId(result.game, currentSelectedPlayerId),
+          )
           saveSavedGame(result.game)
         }
 
@@ -687,6 +990,15 @@ export default function App() {
       }
     },
     [applyLanSnapshot, canPlayerWriteLiveGame, game, getBlockedLanActionMessage, selectedPlayerId],
+  )
+  // Local hotseat derives the acting seat from the current overlap state.
+  // LAN uses the seat the client claimed in the lobby, even when another player is the turn owner.
+  const resolveActingPlayerId = useCallback(
+    (baseGame: GameState) =>
+      lanSession
+        ? selectedPlayerId ?? baseGame.currentPlayerId
+        : getDefaultLocalViewingPlayerId(baseGame) ?? baseGame.currentPlayerId,
+    [lanSession, selectedPlayerId],
   )
 
   const applyLobbyUpdate = useCallback(
@@ -760,14 +1072,23 @@ export default function App() {
   )
 
   const handleLaunchLanSession = useCallback(async () => {
+    const launchPlayers = normalizeSetupPlayers(lanSetupPlayers)
+    const validationError = getSetupValidationError(launchPlayers)
+
+    if (validationError) {
+      setLanStatusTone("error")
+      setLanStatusMessage(validationError)
+      return
+    }
+
     setIsLaunchingSession(true)
 
     try {
       const initialUserDecks = loadUserDecks()
       const snapshot = await createLanSession(defaultSessionServerUrl, {
-        sessionName: `Transport Game LAN (${maxPlayers}P)`,
+        sessionName: `Transport Game LAN (${launchPlayers.length} seats)`,
         game: createGameState(usMap, {
-          players: createLauncherPlayers(maxPlayers),
+          players: launchPlayers,
           vehicleCards: initialUserDecks.vehicleCards,
           chanceCards: initialUserDecks.chanceCards,
           startingMoney: DEFAULT_STARTING_MONEY,
@@ -796,13 +1117,14 @@ export default function App() {
           })),
         ]
       })
+      applyLanSnapshot(snapshot, defaultSessionServerUrl)
     } catch (error) {
       setLanStatusTone("error")
       setLanStatusMessage(error instanceof Error ? error.message : "Could not launch the LAN session.")
     } finally {
       setIsLaunchingSession(false)
     }
-  }, [defaultSessionServerUrl, maxPlayers, normalizedJoinAppUrl])
+  }, [applyLanSnapshot, defaultSessionServerUrl, lanSetupPlayers, normalizedJoinAppUrl])
 
   const handleDeleteSession = useCallback(async (sessionId: string) => {
     setDeletingSessionId(sessionId)
@@ -839,7 +1161,8 @@ export default function App() {
   const handleClaimRouteAndAdvance = useCallback(
     async (mode: "bus" | "rail" | "air", cityIds: string[], segmentPairs?: Array<[string, string]>) =>
       commitGameMutation(baseGame => {
-        const claimResult = claimRoute(baseGame, { mode, cityIds, segmentPairs }, selectedPlayerId ?? baseGame.currentPlayerId)
+        const actingPlayerId = resolveActingPlayerId(baseGame)
+        const claimResult = claimRoute(baseGame, { mode, cityIds, segmentPairs }, actingPlayerId)
 
         if (!claimResult.ok) {
           return claimResult
@@ -857,7 +1180,7 @@ export default function App() {
           baseGame,
           claimResult.game,
           `claimed a ${mode} route across ${routeLabel}${claimResult.connectionBonus > 0 ? ` and earned ${Math.round(claimResult.connectionBonus).toLocaleString()}` : ""}`,
-          selectedPlayerId ?? baseGame.currentPlayerId,
+          actingPlayerId,
         )
 
         return {
@@ -874,13 +1197,13 @@ export default function App() {
           advancedPhase: false,
         }
       }),
-    [commitGameMutation, selectedPlayerId],
+    [commitGameMutation, resolveActingPlayerId],
   )
 
   const handleDrawCityOffer = useCallback(
     async (region: NonNullable<GameState["activeCityOffer"]>["region"]) =>
-      commitGameMutation(baseGame => {
-        const result = drawCityOffer(baseGame, region)
+      commitGameMutation((baseGame, actingPlayerId) => {
+        const result = drawCityOffer(baseGame, region, actingPlayerId)
 
         if (!result.ok) {
           return result
@@ -892,17 +1215,17 @@ export default function App() {
             baseGame,
             result.game,
             `drew ${result.cityIds.length} city cards from the ${region} deck`,
-            selectedPlayerId ?? baseGame.currentPlayerId,
+            actingPlayerId,
           ),
         }
       }),
-    [commitGameMutation, selectedPlayerId],
+    [commitGameMutation],
   )
 
   const handleAdvanceTurn = useCallback(
     async () =>
       commitGameMutation(baseGame => {
-        const actingPlayerId = selectedPlayerId ?? baseGame.currentPlayerId
+        const actingPlayerId = resolveActingPlayerId(baseGame)
 
         if (baseGame.currentPhase === "claim-routes" && actingPlayerId === baseGame.currentPlayerId) {
           const result = confirmClaimPicks(baseGame)
@@ -982,13 +1305,13 @@ export default function App() {
           game: appendActionLog(baseGame, nextGame, fullMessage, actingPlayerId),
         }
       }),
-    [commitGameMutation, selectedPlayerId],
+    [commitGameMutation, resolveActingPlayerId],
   )
 
   const handleSetActiveCityOfferKeptCityIds = useCallback(
     async (cityIds: string[]) =>
-      commitGameMutation(baseGame => {
-        const result = setActiveCityOfferKeptCityIds(baseGame, cityIds)
+      commitGameMutation((baseGame, actingPlayerId) => {
+        const result = setActiveCityOfferKeptCityIds(baseGame, cityIds, actingPlayerId)
 
         return result.ok
           ? {
@@ -1003,6 +1326,7 @@ export default function App() {
   const handleBuyResource = useCallback(
     async (resource: PurchasableResource, quantity: number) =>
       commitGameMutation(baseGame => {
+        const actingPlayerId = resolveActingPlayerId(baseGame)
         const result = buyResource(baseGame, resource, quantity)
 
         if (!result.ok) {
@@ -1015,11 +1339,11 @@ export default function App() {
             baseGame,
             result.game,
             `bought ${result.quantity} ${resource === "diesel" ? "diesel" : "jet fuel"} for ${Math.round(result.cost).toLocaleString()}`,
-            selectedPlayerId ?? baseGame.currentPlayerId,
+            actingPlayerId,
           ),
         }
       }),
-    [commitGameMutation, selectedPlayerId],
+    [commitGameMutation, resolveActingPlayerId],
   )
 
   const handleBuyVehicleCardAndAdvance = useCallback(
@@ -1031,7 +1355,7 @@ export default function App() {
           return purchaseResult
         }
 
-        const actingPlayerId = selectedPlayerId ?? baseGame.currentPlayerId
+        const actingPlayerId = resolveActingPlayerId(baseGame)
         const purchasedGame = appendActionLog(
           baseGame,
           purchaseResult.game,
@@ -1059,13 +1383,13 @@ export default function App() {
           advancedPhase: advancedGame.currentPhase !== purchasedGame.currentPhase,
         }
       }),
-    [commitGameMutation, selectedPlayerId],
+    [commitGameMutation, resolveActingPlayerId],
   )
 
   const handleSetBureaucracyRouteVehicleCard = useCallback(
     async (routeId: string, vehicleCardId: string | null) =>
       commitGameMutation(baseGame => {
-        const actingPlayerId = selectedPlayerId ?? baseGame.currentPlayerId
+        const actingPlayerId = resolveActingPlayerId(baseGame)
         const result = setBureaucracyRouteVehicleCard(baseGame, routeId, vehicleCardId, actingPlayerId)
 
         if (!result.ok) {
@@ -1088,13 +1412,13 @@ export default function App() {
           ),
         }
       }),
-    [commitGameMutation, selectedPlayerId],
+    [commitGameMutation, resolveActingPlayerId],
   )
 
   const handleAddBureaucracyServiceSplit = useCallback(
     async (corridorId: string) =>
       commitGameMutation(baseGame => {
-        const actingPlayerId = selectedPlayerId ?? baseGame.currentPlayerId
+        const actingPlayerId = resolveActingPlayerId(baseGame)
         const result = addBureaucracyServiceSplit(baseGame, corridorId, actingPlayerId)
 
         return result.ok
@@ -1109,14 +1433,26 @@ export default function App() {
             }
           : result
       }),
-    [commitGameMutation, selectedPlayerId],
+    [commitGameMutation, resolveActingPlayerId],
   )
 
   const handleMoveBureaucracyServiceCity = useCallback(
-    async (corridorId: string, cityId: string, routeId: string) =>
+    async (
+      corridorId: string,
+      cityId: string,
+      routeId: string,
+      sourceRouteId: string | null = null,
+    ) =>
       commitGameMutation(baseGame => {
-        const actingPlayerId = selectedPlayerId ?? baseGame.currentPlayerId
-        const result = moveBureaucracyServiceCity(baseGame, corridorId, cityId, routeId, actingPlayerId)
+        const actingPlayerId = resolveActingPlayerId(baseGame)
+        const result = moveBureaucracyServiceCity(
+          baseGame,
+          corridorId,
+          cityId,
+          routeId,
+          sourceRouteId,
+          actingPlayerId,
+        )
 
         if (!result.ok) {
           return result
@@ -1124,24 +1460,32 @@ export default function App() {
 
         const cityName = baseGame.cities.find(city => city.id === cityId)?.name ?? cityId
         const plan = findPlayerBureaucracyPlan(baseGame, actingPlayerId, routeId)
+        const sourcePlan =
+          sourceRouteId === null
+            ? null
+            : findPlayerBureaucracyPlan(baseGame, actingPlayerId, sourceRouteId)
+        const actionLabel =
+          plan?.isDisconnected
+            ? `removed ${cityName} from ${sourcePlan?.serviceLabel ?? "that route"}`
+            : `copied ${cityName} into ${plan?.serviceLabel ?? routeId}`
 
         return {
           ...result,
           game: appendActionLog(
             baseGame,
             result.game,
-            `moved ${cityName} into ${plan?.serviceLabel ?? routeId}`,
+            actionLabel,
             actingPlayerId,
           ),
         }
       }),
-    [commitGameMutation, selectedPlayerId],
+    [commitGameMutation, resolveActingPlayerId],
   )
 
   const handleDeleteBureaucracyServicePod = useCallback(
     async (corridorId: string, routeId: string) =>
       commitGameMutation(baseGame => {
-        const actingPlayerId = selectedPlayerId ?? baseGame.currentPlayerId
+        const actingPlayerId = resolveActingPlayerId(baseGame)
         const result = deleteBureaucracyServicePod(baseGame, corridorId, routeId, actingPlayerId)
 
         if (!result.ok) {
@@ -1152,20 +1496,22 @@ export default function App() {
         const movedCitiesLabel =
           result.cityIds.length === 0
             ? "deleted an empty route"
-            : `deleted ${plan?.serviceLabel ?? "a route"} and moved ${result.cityIds.length} cit${result.cityIds.length === 1 ? "y" : "ies"} to disconnected`
+            : result.disconnectedCityIds.length === 0
+              ? `deleted ${plan?.serviceLabel ?? "a route"}`
+              : `deleted ${plan?.serviceLabel ?? "a route"} and moved ${result.disconnectedCityIds.length} cit${result.disconnectedCityIds.length === 1 ? "y" : "ies"} to disconnected`
 
         return {
           ...result,
           game: appendActionLog(baseGame, result.game, movedCitiesLabel, actingPlayerId),
         }
       }),
-    [commitGameMutation, selectedPlayerId],
+    [commitGameMutation, resolveActingPlayerId],
   )
 
   const handleUpgradeRailRoute = useCallback(
     async (routeId: string) =>
       commitGameMutation(baseGame => {
-        const actingPlayerId = selectedPlayerId ?? baseGame.currentPlayerId
+        const actingPlayerId = resolveActingPlayerId(baseGame)
         const result = upgradeRailRoute(baseGame, routeId, actingPlayerId)
 
         if (!result.ok) {
@@ -1186,7 +1532,7 @@ export default function App() {
           ),
         }
       }),
-    [commitGameMutation, selectedPlayerId],
+    [commitGameMutation, resolveActingPlayerId],
   )
 
   const handleUndo = useCallback(() => {
@@ -1202,6 +1548,9 @@ export default function App() {
       }
 
       setGame(previousGame)
+      setSelectedPlayerId(currentSelectedPlayerId =>
+        getNextLocalViewingPlayerId(previousGame, currentSelectedPlayerId),
+      )
       saveSavedGame(previousGame)
       return current.slice(0, -1)
     })
@@ -1210,6 +1559,12 @@ export default function App() {
   const selectedPlayer = selectedPlayerId
     ? game.players.find(player => player.id === selectedPlayerId) ?? null
     : null
+  // Local hotseat can auto-follow whichever seat should currently be editing.
+  // LAN keeps the board pinned to the explicitly claimed seat because each client owns one seat.
+  const activeViewingPlayerId =
+    lanSession || appMode !== "ready"
+      ? selectedPlayerId
+      : selectedPlayerId ?? getDefaultLocalViewingPlayerId(game)
   const selectedLobbyPlayer = selectedPlayerId
     ? lanLobby?.players.find(player => player.playerId === selectedPlayerId) ?? null
     : null
@@ -1217,20 +1572,247 @@ export default function App() {
   const readyLobbyPlayers = claimedLobbyPlayers.filter(player => player.isReady)
   const canStartLobby = claimedLobbyPlayers.length > 0 && claimedLobbyPlayers.every(player => player.isReady)
   const currentTurnPlayer = game.players.find(player => player.id === game.currentPlayerId) ?? null
-  const isLocalPlayerInteractive = Boolean(selectedPlayerId) && (
+  const localBotPlayerIds = useMemo(
+    () => new Set(game.players.filter(player => player.isBot).map(player => player.id)),
+    [game.players],
+  )
+  const isLocalPlayerInteractive = Boolean(activeViewingPlayerId) && (
     game.currentPhase === "purchase-equipment"
-      ? selectedPlayerId === game.currentPlayerId
+      ? activeViewingPlayerId === game.currentPlayerId
       : game.currentPhase === "claim-routes"
-        ? selectedPlayerId === game.currentPlayerId || canPlayerEditOperations(game, selectedPlayerId)
+        ? activeViewingPlayerId === game.currentPlayerId || canPlayerEditOperations(game, activeViewingPlayerId)
         : game.currentPhase === "operations"
-          ? canPlayerEditOperations(game, selectedPlayerId)
+          ? canPlayerEditOperations(game, activeViewingPlayerId)
           : game.currentPhase === "bureaucracy"
-            ? !hasPlayerCompletedBureaucracy(game, selectedPlayerId)
+            ? !hasPlayerCompletedBureaucracy(game, activeViewingPlayerId)
             : false
   )
+  const pendingBotPlayerId = useMemo(
+    () => getPendingBotPlayerId(game, localBotPlayerIds),
+    [game, localBotPlayerIds],
+  )
+  const isBotOnlyLocalGame =
+    appMode === "ready" &&
+    lanSession === null &&
+    game.players.length > 0 &&
+    game.players.every(player => player.isBot)
+  const shouldRunLocalBots =
+    appMode === "ready" && lanSession === null && pendingBotPlayerId !== null
+  const shouldRunLanBots =
+    appMode === "ready" && lanSession !== null && pendingBotPlayerId !== null
+  const blockingLocalBotPlayerId =
+    lanSession === null && (isBotOnlyLocalGame || !isLocalPlayerInteractive) ? pendingBotPlayerId : null
+  const isLocalBotTurn = blockingLocalBotPlayerId !== null
+  const pendingBotPlayer = pendingBotPlayerId
+    ? game.players.find(player => player.id === pendingBotPlayerId) ?? null
+    : null
+
+  // Local bots share the same engine logic as LAN bots, but they can commit directly into local state.
+  useEffect(() => {
+    if (!shouldRunLocalBots || isPeriodSummaryVisible || !pendingBotPlayerId) {
+      localBotTurnSignatureRef.current = null
+      return
+    }
+
+    const turnSignature = JSON.stringify({
+      week: game.currentWeek,
+      phase: game.currentPhase,
+      currentPlayerId: game.currentPlayerId,
+      claimRoutesReadyPlayerIds: game.claimRoutesReadyPlayerIds,
+      operationsReadyPlayerIds: game.operationsReadyPlayerIds,
+      bureaucracyReadyPlayerIds: game.bureaucracyReadyPlayerIds,
+      pendingBotPlayerId,
+    })
+
+    if (localBotTurnSignatureRef.current === turnSignature) {
+      return
+    }
+
+    localBotTurnSignatureRef.current = turnSignature
+    const previousGame = game
+    const { game: nextGame, hasChanged } = runBotTurns(game, localBotPlayerIds)
+
+    if (!hasChanged || nextGame === previousGame) {
+      return
+    }
+
+    const commitId = window.setTimeout(() => {
+      setHistory(current => [...current, previousGame])
+      setGame(nextGame)
+      setSelectedPlayerId(currentSelectedPlayerId =>
+        getNextLocalViewingPlayerId(nextGame, currentSelectedPlayerId),
+      )
+      saveSavedGame(nextGame)
+    }, 0)
+
+    return () => {
+      window.clearTimeout(commitId)
+    }
+  }, [
+    game,
+    pendingBotPlayerId,
+    isPeriodSummaryVisible,
+    localBotPlayerIds,
+    shouldRunLocalBots,
+  ])
+
+  // LAN bots also use the shared engine logic, but every bot step still has to publish through the
+  // session server because the live session snapshot is the source of truth for all clients.
+  useEffect(() => {
+    if (!shouldRunLanBots || isPeriodSummaryVisible || !pendingBotPlayerId || !lanSession) {
+      lanBotTurnSignatureRef.current = null
+      return
+    }
+
+    const turnSignature = JSON.stringify({
+      sessionId: lanSession.sessionId,
+      version: lanSession.version,
+      week: game.currentWeek,
+      phase: game.currentPhase,
+      currentPlayerId: game.currentPlayerId,
+      claimRoutesReadyPlayerIds: game.claimRoutesReadyPlayerIds,
+      operationsReadyPlayerIds: game.operationsReadyPlayerIds,
+      bureaucracyReadyPlayerIds: game.bureaucracyReadyPlayerIds,
+      pendingBotPlayerId,
+    })
+
+    if (lanBotTurnSignatureRef.current === turnSignature) {
+      return
+    }
+
+    lanBotTurnSignatureRef.current = turnSignature
+    let isActive = true
+
+    void (async () => {
+      const activeLanSession = lanSessionRef.current
+
+      if (!activeLanSession) {
+        return
+      }
+
+      let baseGame = game
+      let baseVersion = activeLanSession.version
+
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const result = runBotTurns(baseGame, localBotPlayerIds)
+
+        if (!result.hasChanged || result.game === baseGame) {
+          return
+        }
+
+        try {
+          const snapshot = await pushLanSessionGame(
+            activeLanSession.serverUrl,
+            activeLanSession.sessionId,
+            result.game,
+            baseVersion,
+          )
+
+          if (!isActive) {
+            return
+          }
+
+          applyLanSnapshot(snapshot, activeLanSession.serverUrl)
+          setLanStatusTone("neutral")
+          setLanStatusMessage(`Synced ${snapshot.sessionName} (${snapshot.sessionId}).`)
+          return
+        } catch (error) {
+          if (isLanSessionConflictError(error)) {
+            if (!isActive) {
+              return
+            }
+
+            applyLanSnapshot(error.snapshot, activeLanSession.serverUrl)
+            baseGame = hydrateLanSessionGame(error.snapshot)
+            baseVersion = error.snapshot.version
+            await wait(40 * (attempt + 1) + Math.floor(Math.random() * 40))
+            continue
+          }
+
+          if (!isActive) {
+            return
+          }
+
+          setLanStatusTone("error")
+          setLanStatusMessage(
+            `Could not run the bot turn for ${activeLanSession.sessionName}: ${error instanceof Error ? error.message : "unknown error"}`,
+          )
+          return
+        }
+      }
+
+      if (!isActive) {
+        return
+      }
+
+      setLanStatusTone("error")
+      setLanStatusMessage("Bot turns kept colliding with other updates. Try again in a moment.")
+    })()
+
+    return () => {
+      isActive = false
+    }
+  }, [
+    applyLanSnapshot,
+    game,
+    isPeriodSummaryVisible,
+    lanSession,
+    localBotPlayerIds,
+    pendingBotPlayerId,
+    shouldRunLanBots,
+  ])
+
+  const handleStartLocalGame = useCallback(() => {
+    const players = normalizeSetupPlayers(localSetupPlayers)
+    const validationError = getSetupValidationError(players)
+
+    if (validationError) {
+      setLanStatusTone("error")
+      setLanStatusMessage(validationError)
+      return
+    }
+
+    const initialUserDecks = loadUserDecks()
+    const nextGame = createGameState(usMap, {
+      players,
+      vehicleCards: initialUserDecks.vehicleCards,
+      chanceCards: initialUserDecks.chanceCards,
+      startingMoney: DEFAULT_STARTING_MONEY,
+    })
+
+    setLanSession(null)
+    setLanLobby(null)
+    setHistory([])
+    setGame(nextGame)
+    setSetupLobbyKind(null)
+    setSelectedPlayerId(getDefaultLocalViewingPlayerId(nextGame))
+    setPlayerName(players.find(player => !player.isBot)?.name ?? "")
+    setAppMode("ready")
+    setLanStatusTone("neutral")
+    setLanStatusMessage(
+      players.every(player => player.isBot)
+        ? "Started a local bot-only game."
+        : players.some(player => player.isBot)
+          ? "Started a local game with bots."
+          : "Started a local hotseat game.",
+    )
+    clearActiveAdminLaunch()
+    clearPendingLocalLaunch()
+    const leadHumanPlayer = players.find(player => !player.isBot)
+    if (leadHumanPlayer) {
+      savePlayerName(leadHumanPlayer.name)
+    }
+    saveSavedGame(nextGame)
+  }, [localSetupPlayers])
 
   return (
-    <div style={{ position: "fixed", inset: 0, overflow: "hidden" }}>
+    <div
+      style={
+        hasStarted
+          ? { position: "fixed", inset: 0, overflow: "hidden" }
+          : { position: "relative", minHeight: "100vh", overflowX: "hidden", background: "#f3f6f2" }
+      }
+    >
       {appMode !== "ready" && (lanSession || lanStatusMessage) && (
         <div
           style={{
@@ -1282,10 +1864,9 @@ export default function App() {
       {appMode === "launcher" ? (
         <div
           style={{
-            minHeight: "100%",
-            background: "#f3f6f2",
+            minHeight: "100vh",
             padding: 24,
-            overflow: "auto",
+            overflowY: "auto",
           }}
         >
           <div
@@ -1298,30 +1879,36 @@ export default function App() {
           >
             <div
               style={{
-                borderRadius: 18,
-                border: "1px solid #d8dfd5",
-                background: "#ffffff",
-                padding: 24,
-                boxShadow: "0 12px 40px rgba(0, 0, 0, 0.14)",
                 display: "grid",
-                gap: 14,
+                gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+                gap: 20,
               }}
             >
-              <div style={{ display: "grid", gap: 6 }}>
-                <div style={{ fontSize: 32, fontWeight: 800, color: "#223024" }}>Transport Game LAN</div>
-                <div style={{ color: "#56635a" }}>
-                  Start a new game here, then open the join link in any browser on the same network.
+              <div
+                style={{
+                  borderRadius: 18,
+                  border: "1px solid #d8dfd5",
+                  background: "#ffffff",
+                  padding: 24,
+                  boxShadow: "0 12px 40px rgba(0, 0, 0, 0.14)",
+                  display: "grid",
+                  gap: 14,
+                }}
+              >
+                <div style={{ display: "grid", gap: 6 }}>
+                  <div style={{ fontSize: 32, fontWeight: 800, color: "#223024" }}>Local game</div>
+                  <div style={{ color: "#56635a" }}>
+                    Create a local lobby first, then set names and bots on the next screen.
+                  </div>
                 </div>
-              </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "end" }}>
-                <label style={{ display: "grid", gap: 6 }}>
-                  <strong>Max players</strong>
+                <label style={{ display: "grid", gap: 6, maxWidth: 180 }}>
+                  <strong>Seats</strong>
                   <select
-                    value={maxPlayers}
-                    onChange={event => setMaxPlayers(Number(event.target.value))}
+                    value={localSeatCount}
+                    onChange={event => setLocalSeatCount(Number(event.target.value))}
                     style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 15 }}
                   >
-                    {[1, 2, 3, 4, 5, 6].map(playerCount => (
+                    {Array.from({ length: MAX_SETUP_PLAYERS }, (_, index) => index + 1).map(playerCount => (
                       <option key={playerCount} value={playerCount}>
                         {playerCount}
                       </option>
@@ -1330,41 +1917,74 @@ export default function App() {
                 </label>
                 <button
                   type="button"
-                  onClick={() => void handleLaunchLanSession()}
-                  disabled={isLaunchingSession || launcherServerOnline === false}
+                  onClick={handleCreateLocalLobby}
                   style={{
                     padding: "10px 16px",
                     borderRadius: 999,
                     border: "1px solid #223024",
-                    background: isLaunchingSession || launcherServerOnline === false ? "#c7d0c4" : "#223024",
+                    background: "#223024",
                     color: "#ffffff",
-                    cursor: isLaunchingSession || launcherServerOnline === false ? "not-allowed" : "pointer",
+                    cursor: "pointer",
                     fontWeight: 700,
                   }}
                 >
-                  {isLaunchingSession ? "Launching..." : "Launch LAN game"}
+                  Create local lobby
                 </button>
               </div>
-              <label style={{ display: "grid", gap: 6 }}>
-                <strong>Share app URL</strong>
-                <input
-                  type="text"
-                  value={joinAppUrl}
-                  onChange={event => handleJoinAppUrlChange(event.target.value)}
-                  placeholder="http://192.168.1.42:5173"
-                  style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 15 }}
-                />
-              </label>
-              {!hasValidJoinAppUrl && (
-                <div style={{ color: "#9b1c1c", fontSize: 13 }}>
-                  Enter a full LAN address like http://192.168.1.42:5173.
+
+              <div
+                style={{
+                  borderRadius: 18,
+                  border: "1px solid #d8dfd5",
+                  background: "#ffffff",
+                  padding: 24,
+                  boxShadow: "0 12px 40px rgba(0, 0, 0, 0.14)",
+                  display: "grid",
+                  gap: 14,
+                }}
+              >
+                <div style={{ display: "grid", gap: 6 }}>
+                  <div style={{ fontSize: 32, fontWeight: 800, color: "#223024" }}>LAN game</div>
+                  <div style={{ color: "#56635a" }}>
+                    Create the LAN lobby first, then set names and bots before opening the join link.
+                  </div>
                 </div>
-              )}
-              <div style={{ color: "#56635a", fontSize: 13 }}>
-                Use this machine&apos;s LAN address so other computers can open the copied join link.
-              </div>
-              <div style={{ color: launcherServerOnline === false ? "#9b1c1c" : "#56635a", fontSize: 14 }}>
-                Session server: {defaultSessionServerUrl} {launcherServerOnline === false ? "offline" : launcherServerOnline ? "online" : "checking..."}
+                <label style={{ display: "grid", gap: 6, maxWidth: 180 }}>
+                  <strong>Seats</strong>
+                  <select
+                    value={lanSeatCount}
+                    onChange={event => setLanSeatCount(Number(event.target.value))}
+                    style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 15 }}
+                  >
+                    {Array.from({ length: MAX_SETUP_PLAYERS }, (_, index) => index + 1).map(playerCount => (
+                      <option key={playerCount} value={playerCount}>
+                        {playerCount}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div style={{ color: "#56635a", fontSize: 13 }}>
+                  Use this machine&apos;s LAN address so other computers can open the copied join link.
+                </div>
+                <div style={{ color: launcherServerOnline === false ? "#9b1c1c" : "#56635a", fontSize: 14 }}>
+                  Session server: {defaultSessionServerUrl} {launcherServerOnline === false ? "offline" : launcherServerOnline ? "online" : "checking..."}
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCreateLanLobby}
+                  disabled={launcherServerOnline === false}
+                  style={{
+                    padding: "10px 16px",
+                    borderRadius: 999,
+                    border: "1px solid #223024",
+                    background: launcherServerOnline === false ? "#c7d0c4" : "#223024",
+                    color: "#ffffff",
+                    cursor: launcherServerOnline === false ? "not-allowed" : "pointer",
+                    fontWeight: 700,
+                  }}
+                >
+                  Create LAN lobby
+                </button>
               </div>
             </div>
 
@@ -1461,6 +2081,156 @@ export default function App() {
                   })}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      ) : appMode === "setup-lobby" ? (
+        <div
+          style={{
+            minHeight: "100vh",
+            display: "grid",
+            placeItems: "start center",
+            padding: "88px 24px 24px",
+          }}
+        >
+          <div
+            style={{
+              maxWidth: 720,
+              width: "100%",
+              borderRadius: 18,
+              border: "1px solid #d8dfd5",
+              background: "#ffffff",
+              padding: 24,
+              boxShadow: "0 12px 40px rgba(0, 0, 0, 0.14)",
+              display: "grid",
+              gap: 16,
+            }}
+          >
+            <div style={{ display: "grid", gap: 6 }}>
+              <div style={{ fontSize: 28, fontWeight: 800, color: "#223024" }}>
+                {setupLobbyKind === "lan" ? "LAN lobby" : "Local lobby"}
+              </div>
+              <div style={{ color: "#56635a" }}>
+                {setupLobbyKind === "lan"
+                  ? "Set names and bot seats here before creating the LAN session."
+                  : "Set names and bot seats here before starting the local game."}
+              </div>
+            </div>
+            <div style={{ display: "grid", gap: 10 }}>
+              {(setupLobbyKind === "lan" ? lanSetupPlayers : localSetupPlayers).map((player, index) => (
+                <div
+                  key={player.id}
+                  style={{
+                    border: "1px solid #d8dfd5",
+                    borderRadius: 12,
+                    padding: 12,
+                    background: "#fbfcfb",
+                    display: "grid",
+                    gap: 10,
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+                    <div style={{ fontWeight: 800, color: "#223024" }}>Seat {index + 1}</div>
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, color: "#324236", fontSize: 14 }}>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(player.isBot)}
+                        onChange={event =>
+                          (setupLobbyKind === "lan"
+                            ? handleLanSetupPlayerChange
+                            : handleLocalSetupPlayerChange)(player.id, { isBot: event.target.checked })
+                        }
+                      />
+                      Bot
+                    </label>
+                  </div>
+                  <input
+                    type="text"
+                    value={player.name}
+                    onChange={event =>
+                      (setupLobbyKind === "lan"
+                        ? handleLanSetupPlayerChange
+                        : handleLocalSetupPlayerChange)(player.id, { name: event.target.value })
+                    }
+                    placeholder={getDefaultSetupPlayerName(index, Boolean(player.isBot))}
+                    style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 15 }}
+                  />
+                </div>
+              ))}
+            </div>
+            {setupLobbyKind === "lan" && (
+              <>
+                <label style={{ display: "grid", gap: 6 }}>
+                  <strong>Share app URL</strong>
+                  <input
+                    type="text"
+                    value={joinAppUrl}
+                    onChange={event => handleJoinAppUrlChange(event.target.value)}
+                    placeholder="http://192.168.1.42:5173"
+                    style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 15 }}
+                  />
+                </label>
+                {!hasValidJoinAppUrl && (
+                  <div style={{ color: "#9b1c1c", fontSize: 13 }}>
+                    Enter a full LAN address like http://192.168.1.42:5173.
+                  </div>
+                )}
+              </>
+            )}
+            {(setupLobbyKind === "lan" ? lanSetupError : localSetupError) && (
+              <div style={{ color: "#9b1c1c", fontSize: 13 }}>
+                {setupLobbyKind === "lan" ? lanSetupError : localSetupError}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={handleBackToLauncher}
+                style={{
+                  padding: "10px 16px",
+                  borderRadius: 999,
+                  border: "1px solid #c7d0c4",
+                  background: "#ffffff",
+                  cursor: "pointer",
+                  fontWeight: 700,
+                }}
+              >
+                Back
+              </button>
+              <button
+                type="button"
+                onClick={setupLobbyKind === "lan" ? () => void handleLaunchLanSession() : handleStartLocalGame}
+                disabled={
+                  setupLobbyKind === "lan"
+                    ? isLaunchingSession || launcherServerOnline === false || lanSetupError !== null || !hasValidJoinAppUrl
+                    : localSetupError !== null
+                }
+                style={{
+                  padding: "10px 16px",
+                  borderRadius: 999,
+                  border: "1px solid #223024",
+                  background:
+                    (setupLobbyKind === "lan"
+                      ? isLaunchingSession || launcherServerOnline === false || lanSetupError || !hasValidJoinAppUrl
+                      : localSetupError)
+                      ? "#c7d0c4"
+                      : "#223024",
+                  color: "#ffffff",
+                  cursor:
+                    (setupLobbyKind === "lan"
+                      ? isLaunchingSession || launcherServerOnline === false || lanSetupError !== null || !hasValidJoinAppUrl
+                      : localSetupError !== null)
+                      ? "not-allowed"
+                      : "pointer",
+                  fontWeight: 700,
+                }}
+              >
+                {setupLobbyKind === "lan"
+                  ? isLaunchingSession
+                    ? "Creating LAN lobby..."
+                    : "Create LAN lobby"
+                  : "Save and start local game"}
+              </button>
             </div>
           </div>
         </div>
@@ -1567,7 +2337,8 @@ export default function App() {
             <div style={{ display: "grid", gap: 4 }}>
               <div style={{ fontSize: 28, fontWeight: 800, color: "#223024" }}>Waiting in lobby</div>
               <div style={{ color: "#56635a" }}>
-                You will be assigned the next open slot automatically. Enter your name, click Ready, then start once every filled seat is ready.
+                Human players are assigned the next open seat automatically. Bot seats start filled and
+                ready, and the game can begin once every filled seat is ready.
               </div>
             </div>
             <div
@@ -1582,7 +2353,7 @@ export default function App() {
             >
               <div style={{ fontSize: 14, color: "#56635a", fontWeight: 700 }}>Assigned slot</div>
               <div style={{ fontSize: 18, fontWeight: 800, color: "#223024" }}>
-                {selectedPlayer ? `Seat ${selectedPlayer.id.replace(/^p/i, "")}` : "Assigning..."}
+                {selectedPlayer ? `Seat ${selectedPlayer.id.replace(/^p/i, "")}` : "Spectator"}
               </div>
               <div style={{ color: "#56635a", fontSize: 14 }}>
                 {lanLobby ? `${readyLobbyPlayers.length} of ${claimedLobbyPlayers.length} filled seats ready.` : ""}
@@ -1643,11 +2414,12 @@ export default function App() {
                 const lobbyPlayer = lanLobby?.players.find(candidate => candidate.playerId === player.id) ?? null
                 const isFilled = Boolean(lobbyPlayer?.claimedBy)
                 const isReady = Boolean(lobbyPlayer?.isReady)
+                const isBotSeat = Boolean(lobbyPlayer?.isBot)
                 const seatLabel = `Seat ${player.id.replace(/^p/i, "")}`
-                const statusLabel = isReady ? "Ready" : isFilled ? "Filled" : "Waiting"
-                const accentColor = isReady ? "#1f5f2c" : isFilled ? "#8a5a00" : "#56635a"
-                const borderColor = isReady ? "#98c7a4" : isFilled ? "#d7c08a" : "#d8dfd5"
-                const background = isReady ? "#f3fbf4" : isFilled ? "#fff9ef" : "#fbfcfb"
+                const statusLabel = isBotSeat ? (isReady ? "Bot ready" : "Bot") : isReady ? "Ready" : isFilled ? "Filled" : "Waiting"
+                const accentColor = isBotSeat ? "#5c4a8a" : isReady ? "#1f5f2c" : isFilled ? "#8a5a00" : "#56635a"
+                const borderColor = isBotSeat ? "#cbb9ec" : isReady ? "#98c7a4" : isFilled ? "#d7c08a" : "#d8dfd5"
+                const background = isBotSeat ? "#f8f4ff" : isReady ? "#f3fbf4" : isFilled ? "#fff9ef" : "#fbfcfb"
 
                 return (
                   <div
@@ -1720,14 +2492,14 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => void handleUpdateLobby({ startGame: true })}
-                disabled={!selectedPlayerId || !canStartLobby || isUpdatingLobby}
+                disabled={!canStartLobby || isUpdatingLobby}
                 style={{
                   padding: "10px 16px",
                   borderRadius: 999,
                   border: "1px solid #1f5f2c",
-                  background: !selectedPlayerId || !canStartLobby || isUpdatingLobby ? "#c7d0c4" : "#1f5f2c",
+                  background: !canStartLobby || isUpdatingLobby ? "#c7d0c4" : "#1f5f2c",
                   color: "#ffffff",
-                  cursor: !selectedPlayerId || !canStartLobby || isUpdatingLobby ? "not-allowed" : "pointer",
+                  cursor: !canStartLobby || isUpdatingLobby ? "not-allowed" : "pointer",
                   fontWeight: 700,
                 }}
               >
@@ -1740,13 +2512,15 @@ export default function App() {
         <>
           <div
             style={{
-              pointerEvents:
-                isLocalPlayerInteractive || lanSession === null || isPeriodSummaryVisible ? "auto" : "none",
+              pointerEvents: lanSession
+                ? isLocalPlayerInteractive || isPeriodSummaryVisible ? "auto" : "none"
+                : !isLocalBotTurn || isPeriodSummaryVisible ? "auto" : "none",
             }}
           >
             <Board
               game={game}
-              viewingPlayerId={selectedPlayerId}
+              viewingPlayerId={activeViewingPlayerId}
+              suppressPeriodSummary={isBotOnlyLocalGame}
               onPeriodSummaryVisibilityChange={setIsPeriodSummaryVisible}
               lanSessionStatus={
                 lanSession
@@ -1771,10 +2545,76 @@ export default function App() {
               onDeleteBureaucracyServicePod={handleDeleteBureaucracyServicePod}
               onAdvanceTurn={handleAdvanceTurn}
               onUndo={handleUndo}
-              canUndo={history.length > 0 && lanSession === null}
+              canUndo={history.length > 0 && lanSession === null && !isLocalBotTurn}
             />
           </div>
-          {lanSession && !isLocalPlayerInteractive && !isPeriodSummaryVisible && (
+          {isLocalBotTurn && !isPeriodSummaryVisible && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                display: "grid",
+                placeItems: "center",
+                background: "rgba(243, 246, 242, 0.2)",
+                pointerEvents: "none",
+                zIndex: 1,
+              }}
+            >
+              <div
+                style={{
+                  borderRadius: 18,
+                  border: "1px solid #d8dfd5",
+                  background: "rgba(255, 255, 255, 0.95)",
+                  padding: "18px 22px",
+                  boxShadow: "0 10px 28px rgba(0, 0, 0, 0.12)",
+                  display: "grid",
+                  gap: 4,
+                  textAlign: "center",
+                }}
+              >
+                <div style={{ fontSize: 22, fontWeight: 800, color: "#223024" }}>
+                  {pendingBotPlayer?.name ?? "Bot"} is taking its turn
+                </div>
+                <div style={{ color: "#56635a", fontSize: 14 }}>
+                  The board will unlock again once the bot finishes its actions.
+                </div>
+              </div>
+            </div>
+          )}
+          {lanSession && pendingBotPlayerId && !isLocalPlayerInteractive && !isPeriodSummaryVisible && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                display: "grid",
+                placeItems: "center",
+                background: "rgba(243, 246, 242, 0.2)",
+                pointerEvents: "none",
+                zIndex: 1,
+              }}
+            >
+              <div
+                style={{
+                  borderRadius: 18,
+                  border: "1px solid #d8dfd5",
+                  background: "rgba(255, 255, 255, 0.95)",
+                  padding: "18px 22px",
+                  boxShadow: "0 10px 28px rgba(0, 0, 0, 0.12)",
+                  display: "grid",
+                  gap: 4,
+                  textAlign: "center",
+                }}
+              >
+                <div style={{ fontSize: 22, fontWeight: 800, color: "#223024" }}>
+                  {pendingBotPlayer?.name ?? "Bot"} is taking its turn
+                </div>
+                <div style={{ color: "#56635a", fontSize: 14 }}>
+                  Bot seats in LAN games resolve automatically once their turn comes up.
+                </div>
+              </div>
+            </div>
+          )}
+          {lanSession && !pendingBotPlayerId && !isLocalPlayerInteractive && !isPeriodSummaryVisible && (
             <div
               style={{
                 position: "absolute",

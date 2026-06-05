@@ -367,10 +367,6 @@ export default function AdminApp() {
       })
   }
 
-  function handleOpenLauncher() {
-    window.location.assign("/")
-  }
-
   async function handleCopyJoinUrl() {
     if (!joinUrl) {
       return
@@ -437,8 +433,8 @@ export default function AdminApp() {
         >
           <div style={{ fontSize: 28, fontWeight: 800 }}>Transport Game Admin</div>
           <div style={{ color: "#56635a" }}>
-            Use the home page to create and start LAN games. Keep this page for live admin controls
-            like adding cash, reconnecting to the active game, and cancelling it.
+            Use the home page to create local or LAN games. Keep this page for live admin controls
+            like adding cash, reconnecting to the active game, and cancelling the current LAN session.
           </div>
           <div
             style={{
@@ -492,21 +488,6 @@ export default function AdminApp() {
             </div>
           )}
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            <button
-              type="button"
-              onClick={handleOpenLauncher}
-              style={{
-                padding: "8px 12px",
-                borderRadius: 999,
-                border: "1px solid #223024",
-                background: "#223024",
-                color: "#ffffff",
-                cursor: "pointer",
-                fontWeight: 700,
-              }}
-            >
-              Open game launcher
-            </button>
             <button
               type="button"
               onClick={handleReload}

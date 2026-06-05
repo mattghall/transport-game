@@ -109,10 +109,24 @@ export type OperatingConfig = {
   revenuePerPassengerMile: Record<RouteMode, number>
 }
 
+export type RouteModeBreakdown = Record<RouteMode, number>
+
+export type PlayerPeriodHistoryEntry = {
+  period: number
+  passengersServed: number
+  passengersServedByMode: RouteModeBreakdown
+  podCountByMode: RouteModeBreakdown
+  grossRevenue: number
+  operatingCosts: number
+  netRevenue: number
+  endingCash: number
+}
+
 export type Player = {
   id: string
   name: string
   color: string
+  isBot?: boolean
   money: number
   totalPassengersServed: number
   startingCityId?: string
@@ -123,6 +137,7 @@ export type Player = {
   weeklyPayout: number
   lastPeriodPassengersServed: number
   ownedCityCardIds: string[]
+  periodHistory?: PlayerPeriodHistoryEntry[]
 }
 
 export type RouteMode = "rail" | "air" | "bus"
@@ -170,6 +185,7 @@ export type GameState = {
   map: GameMap
   cities: City[]
   routes: Route[]
+  randomState: number
   currentWeek: number
   currentPhase: WeeklyPhase
   isGameOver: boolean

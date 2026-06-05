@@ -14,6 +14,7 @@ import type {
 } from "./types"
 import { CITY_DECK_REGIONS as CITY_DECK_REGION_LIST } from "./types"
 import { defaultDecks } from "../data/deckData"
+import { createInitialRandomState, shuffleWithRandomState } from "./random"
 
 const OPENING_VEHICLE_POOL_SIZE = 5
 const EMPTY_VEHICLE_PURCHASES_BY_TYPE: VehiclePurchasesByType = {
@@ -91,6 +92,7 @@ export type GameSetupPlayer = {
   id: string
   name: string
   color: string
+  isBot?: boolean
 }
 
 export type CreateGameStateOptions = {
@@ -98,35 +100,31 @@ export type CreateGameStateOptions = {
   vehicleCards?: VehicleCard[]
   chanceCards?: ChanceCard[]
   startingMoney?: number
+  seed?: number
 }
 
-function shuffleCards<T>(cards: T[]) {
-  const shuffledCards = [...cards]
-
-  for (let index = shuffledCards.length - 1; index > 0; index -= 1) {
-    const swapIndex = Math.floor(Math.random() * (index + 1))
-    const currentCard = shuffledCards[index]
-    shuffledCards[index] = shuffledCards[swapIndex]
-    shuffledCards[swapIndex] = currentCard
-  }
-
-  return shuffledCards
-}
-
-function shuffleVehicleCards(cards: VehicleCard[]) {
-  return (["bus", "train", "air"] as const).flatMap(type => {
+function shuffleVehicleCards(cards: VehicleCard[], initialRandomState: number) {
+  let randomState = initialRandomState
+  const shuffledCards = (["bus", "train", "air"] as const).flatMap(type => {
     const typeCards = cards
       .filter(card => card.type === type)
       .sort((cardA, cardB) => cardA.number - cardB.number)
-    const openingCards = shuffleCards(typeCards.slice(0, OPENING_VEHICLE_POOL_SIZE))
-    const remainingCards = shuffleCards(typeCards.slice(OPENING_VEHICLE_POOL_SIZE))
+    const openingShuffle = shuffleWithRandomState(typeCards.slice(0, OPENING_VEHICLE_POOL_SIZE), randomState)
+    randomState = openingShuffle.randomState
+    const remainingShuffle = shuffleWithRandomState(typeCards.slice(OPENING_VEHICLE_POOL_SIZE), randomState)
+    randomState = remainingShuffle.randomState
 
-    return [...openingCards, ...remainingCards]
+    return [...openingShuffle.items, ...remainingShuffle.items]
   })
+
+  return {
+    cards: shuffledCards,
+    randomState,
+  }
 }
 
-function shuffleChanceCards(cards: ChanceCard[]) {
-  return shuffleCards(cards)
+function shuffleChanceCards(cards: ChanceCard[], randomState: number) {
+  return shuffleWithRandomState(cards, randomState)
 }
 
 function getPrimaryRegion(region: GameMap["cities"][number]["region"]): CityDeckRegion | null {
@@ -136,7 +134,7 @@ function getPrimaryRegion(region: GameMap["cities"][number]["region"]): CityDeck
     : null
 }
 
-function shuffleCityDecks(map: GameMap): CityDecksByRegion {
+function shuffleCityDecks(map: GameMap, initialRandomState: number) {
   const decks = CITY_DECK_REGION_LIST.reduce<CityDecksByRegion>(
     (result, region) => ({
       ...result,
@@ -151,6 +149,7 @@ function shuffleCityDecks(map: GameMap): CityDecksByRegion {
       Northeast: [],
     },
   )
+  let randomState = initialRandomState
 
   for (const city of map.cities) {
     const primaryRegion = getPrimaryRegion(city.region)
@@ -163,10 +162,15 @@ function shuffleCityDecks(map: GameMap): CityDecksByRegion {
   }
 
   for (const region of CITY_DECK_REGION_LIST) {
-    decks[region] = shuffleCards(decks[region])
+    const shuffledRegion = shuffleWithRandomState(decks[region], randomState)
+    decks[region] = shuffledRegion.items
+    randomState = shuffledRegion.randomState
   }
 
-  return decks
+  return {
+    decks,
+    randomState,
+  }
 }
 
 function createPlayer(player: GameSetupPlayer, startingMoney: number): Player {
@@ -174,6 +178,7 @@ function createPlayer(player: GameSetupPlayer, startingMoney: number): Player {
     id: player.id,
     name: player.name,
     color: player.color,
+    isBot: player.isBot ?? false,
     money: startingMoney,
     totalPassengersServed: 0,
     startingCityId: undefined,
@@ -194,6 +199,7 @@ function createPlayer(player: GameSetupPlayer, startingMoney: number): Player {
     weeklyPayout: 0,
     lastPeriodPassengersServed: 0,
     ownedCityCardIds: [],
+    periodHistory: [],
   }
 }
 
@@ -253,20 +259,23 @@ export function createGameState(
 ): GameState {
   const vehicleCards = options.vehicleCards ?? defaultDecks.vehicleCards
   const chanceCards = options.chanceCards ?? defaultDecks.chanceCards
-  const shuffledVehicleCards = shuffleVehicleCards(vehicleCards)
-  const shuffledChanceCards = shuffleChanceCards(chanceCards)
+  const initialRandomState = createInitialRandomState(options.seed)
+  const vehicleShuffle = shuffleVehicleCards(vehicleCards, initialRandomState)
+  const chanceShuffle = shuffleChanceCards(chanceCards, vehicleShuffle.randomState)
   const startingMoney = options.startingMoney ?? DEFAULT_STARTING_MONEY
-  const [activeChanceCard, ...chanceDeck] = shuffledChanceCards
+  const [activeChanceCard, ...chanceDeck] = chanceShuffle.items
   const initialPlayers = getSetupPlayers(options.players).map(player =>
     createPlayer(player, startingMoney),
   )
-  const openingSetup = applyOpeningBusPurchases(initialPlayers, shuffledVehicleCards)
+  const openingSetup = applyOpeningBusPurchases(initialPlayers, vehicleShuffle.cards)
   const players = openingSetup.players
- 
+  const cityDeckShuffle = shuffleCityDecks(map, chanceShuffle.randomState)
+
   return {
     map,
     cities: map.cities,
     routes: [],
+    randomState: cityDeckShuffle.randomState,
     currentWeek: 1,
     currentPhase: "claim-routes",
     isGameOver: false,
@@ -281,13 +290,13 @@ export function createGameState(
     bureaucracyServiceSlotCountsByCorridorId: {},
     resourceMarket: INITIAL_RESOURCE_MARKET,
     resourceSupply: INITIAL_RESOURCE_SUPPLY,
-    vehicleCatalog: shuffledVehicleCards,
-    vehicleMarketCardIds: shuffledVehicleCards
+    vehicleCatalog: vehicleShuffle.cards,
+    vehicleMarketCardIds: vehicleShuffle.cards
       .filter(card => !openingSetup.seededVehicleCardIds.includes(card.id))
       .map(card => card.id),
     routeCatalog: [],
     routeMarketCardIdsByMode: { bus: [], rail: [], air: [] },
-    cityDeckCardIdsByRegion: shuffleCityDecks(map),
+    cityDeckCardIdsByRegion: cityDeckShuffle.decks,
     activeCityOffer: null,
     claimRoutesReadyPlayerIds: [],
     operationsReadyPlayerIds: [],

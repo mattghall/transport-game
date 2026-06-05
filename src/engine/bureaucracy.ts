@@ -7,6 +7,8 @@ import {
   getFuelPriceMultiplier,
   getWeeklyMaintenanceCostForCard,
 } from "./economy"
+import { getImplicitBusRoutes } from "./playerNetwork"
+import { getOwnedVehicleCountForCard } from "./playerVehicles"
 import {
   calculateRealFuelFromUnits,
   calculateRouteDistanceMiles,
@@ -17,6 +19,7 @@ import type {
   GameState,
   Player,
   PurchasableResource,
+  RouteModeBreakdown,
   Route,
   RouteMode,
   VehicleCard,
@@ -146,6 +149,14 @@ type ServiceSlot = {
   isDisconnected: boolean
 }
 
+function createEmptyRouteModeBreakdown(): RouteModeBreakdown {
+  return {
+    bus: 0,
+    rail: 0,
+    air: 0,
+  }
+}
+
 export function isValidServicePodSelection(
   cityIds: string[],
   corridorSegmentPairs: Array<[string, string]>,
@@ -202,6 +213,8 @@ export function isValidServicePodSelection(
 export type PlayerBureaucracySummary = {
   player: Player
   routePlans: BureaucracyRoutePlan[]
+  passengersServedByMode: RouteModeBreakdown
+  podCountByMode: RouteModeBreakdown
   fuelUsedUnits: Record<PurchasableResource, number>
   fuelUsedReal: Record<PurchasableResource, number>
   fuelRemainingUnits: Record<PurchasableResource, number>
@@ -615,56 +628,11 @@ function buildConnectedServiceGroup(routes: Route[]): ServiceGroup | null {
   }
 }
 
-function buildImplicitBusRouteId(cityAId: string, cityBId: string) {
-  return `implicit-bus:${[cityAId, cityBId].sort().join(":")}`
-}
-
-function buildImplicitBusRoutes(game: GameState, player: Player): Route[] {
-  const ownedCityIdSet = new Set(player.ownedCityCardIds)
-
-  if (ownedCityIdSet.size < 2) {
-    return []
-  }
-
-  const existingPairKeys = new Set(
-    game.routes
-      .filter(route => route.ownerId === player.id && route.mode === "bus")
-      .map(route => [route.cityA, route.cityB].sort().join("|")),
-  )
-
-  return game.cities.flatMap(city =>
-    (city.adjacentCities ?? []).flatMap(adjacentCity => {
-      if (!ownedCityIdSet.has(city.id) || !ownedCityIdSet.has(adjacentCity.id)) {
-        return []
-      }
-
-      const pairKey = [city.id, adjacentCity.id].sort().join("|")
-
-      if (existingPairKeys.has(pairKey)) {
-        return []
-      }
-
-      existingPairKeys.add(pairKey)
-
-      return [
-        {
-          id: buildImplicitBusRouteId(city.id, adjacentCity.id),
-          cityA: city.id,
-          cityB: adjacentCity.id,
-          mode: "bus" as const,
-          railTraction: undefined,
-          ownerId: player.id,
-        },
-      ]
-    }),
-  )
-}
-
 function buildOwnedServiceGroups(game: GameState, player: Player) {
   const explicitOwnedRoutes = game.routes
     .filter(route => route.ownerId === player.id && route.mode !== "bus")
     .sort((routeA, routeB) => routeA.id.localeCompare(routeB.id))
-  const implicitBusRoutes = buildImplicitBusRoutes(game, player)
+  const implicitBusRoutes = getImplicitBusRoutes(game, player)
   const ownedRoutes = [...explicitOwnedRoutes, ...implicitBusRoutes].sort((routeA, routeB) =>
     routeA.id.localeCompare(routeB.id),
   )
@@ -1159,7 +1127,7 @@ export function buildPlayerBureaucracySummary(
               ),
             )
       const ownedFleetSize =
-        vehicleCard === null ? 0 : Math.max(0, player.ownedVehicleCountsByCardId[vehicleCard.id] ?? 0)
+        vehicleCard === null ? 0 : getOwnedVehicleCountForCard(player, vehicleCard.id)
       const weeklyMaintenanceCostPerVehicle =
         vehicleCard === null ? 0 : getWeeklyMaintenanceCostForCard(game, vehicleCard, 1)
       const crewCostPerTrip =
@@ -1418,6 +1386,8 @@ export function buildPlayerBureaucracySummary(
     diesel: calculateRealFuelFromUnits(fuelUsedUnits.diesel, "diesel", game),
     jetFuel: calculateRealFuelFromUnits(fuelUsedUnits.jetFuel, "jetFuel", game),
   }
+  const passengersServedByMode = createEmptyRouteModeBreakdown()
+  const podCountByMode = createEmptyRouteModeBreakdown()
 
   const fuelRemainingUnits: Record<PurchasableResource, number> = {
     diesel: 0,
@@ -1429,9 +1399,25 @@ export function buildPlayerBureaucracySummary(
     jetFuel: calculateRealFuelFromUnits(fuelRemainingUnits.jetFuel, "jetFuel", game),
   }
 
+  for (const plan of routePlans) {
+    const mode = plan.route.mode
+    passengersServedByMode[mode] += plan.passengersServed
+
+    if (
+      !plan.isDisconnected &&
+      plan.vehicleCard !== null &&
+      plan.selectedCityIds.length >= 2 &&
+      plan.routes.length > 0
+    ) {
+      podCountByMode[mode] += 1
+    }
+  }
+
   return {
     player,
     routePlans,
+    passengersServedByMode,
+    podCountByMode,
     fuelUsedUnits,
     fuelUsedReal,
     fuelRemainingUnits,
@@ -1516,14 +1502,29 @@ export function applyBureaucracyFuelConsumption(game: GameState): GameState {
         return player
       }
 
+      const nextMoney = player.money + summary.netRevenue
+
       return {
         ...player,
-        money: player.money + summary.netRevenue,
+        money: nextMoney,
         totalPassengersServed:
           player.totalPassengersServed + summary.totalPassengersServed,
         operatingCosts: summary.totalOperatingCost,
         weeklyPayout: summary.totalRevenue,
         lastPeriodPassengersServed: summary.totalPassengersServed,
+        periodHistory: [
+          ...(player.periodHistory ?? []),
+          {
+            period: game.currentWeek,
+            passengersServed: summary.totalPassengersServed,
+            passengersServedByMode: summary.passengersServedByMode,
+            podCountByMode: summary.podCountByMode,
+            grossRevenue: summary.totalRevenue,
+            operatingCosts: summary.totalOperatingCost,
+            netRevenue: summary.netRevenue,
+            endingCash: nextMoney,
+          },
+        ],
       }
     }),
   }

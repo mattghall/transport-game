@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "preview:lan": "vite preview --host",
-    "session-server": "node server/sessionServer.mjs"
+    "session-server": "node server/sessionServer.mjs",
+    "simulate:bots": "tsx scripts/runBotSimulation.ts"
   },
   "dependencies": {
     "leaflet": "^1.9.4",
@@ -30,6 +31,7 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.5.0",
+    "tsx": "^4.20.6",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.58.2",
     "vite": "^8.0.10"

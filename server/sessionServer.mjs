@@ -6,6 +6,7 @@ const PORT = Number(process.env.PORT ?? 8787)
 const sessions = new Map()
 const sessionStreams = new Map()
 let activeSessionId = null
+const BOT_CLAIM_PREFIX = "bot:"
 
 function getLanAddresses() {
   const interfaces = networkInterfaces()
@@ -33,8 +34,9 @@ function createLobby(players) {
     players: Array.isArray(players)
       ? players.map(player => ({
           playerId: player.id,
-          claimedBy: null,
-          isReady: false,
+          claimedBy: player.isBot ? `${BOT_CLAIM_PREFIX}${player.id}` : null,
+          isReady: Boolean(player.isBot),
+          isBot: Boolean(player.isBot),
         }))
       : [],
   }

@@ -10,6 +10,7 @@ export type LanSessionLobbyPlayer = {
   playerId: string
   claimedBy: string | null
   isReady: boolean
+  isBot: boolean
 }
 
 export type LanSessionLobby = {
