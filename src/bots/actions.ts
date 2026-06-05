@@ -16,7 +16,10 @@ import {
   setActiveCityOfferKeptCityIds,
 } from "../engine/actions"
 import { CITY_DECK_REGIONS, type CityDeckRegion, type GameState } from "../engine/types"
+import { getOwnedCityPairs } from "./strategy"
 import type { BotAction } from "./types"
+
+const MAX_BOT_OPERATION_CLAIM_ACTIONS = 8
 
 function getAvailableBotVehicleActions(game: GameState, playerId: string): BotAction[] {
   const player = getPlayerById(game, playerId)
@@ -104,30 +107,6 @@ function getAvailableClaimActions(game: GameState, playerId: string): BotAction[
   ]
 }
 
-function getOwnedCityPairs(game: GameState, playerId: string): Array<[string, string]> {
-  const player = getPlayerById(game, playerId)
-
-  if (!player || player.ownedCityCardIds.length < 2) {
-    return []
-  }
-
-  const cityMap = new Map(game.cities.map(city => [city.id, city]))
-  const ownedCityIds = [...new Set(player.ownedCityCardIds)].sort((cityIdA, cityIdB) => {
-    const cityA = cityMap.get(cityIdA)
-    const cityB = cityMap.get(cityIdB)
-    return (cityB?.population ?? cityB?.size ?? 0) - (cityA?.population ?? cityA?.size ?? 0)
-  })
-  const pairs: Array<[string, string]> = []
-
-  for (let firstIndex = 0; firstIndex < ownedCityIds.length - 1; firstIndex += 1) {
-    for (let secondIndex = firstIndex + 1; secondIndex < ownedCityIds.length; secondIndex += 1) {
-      pairs.push([ownedCityIds[firstIndex], ownedCityIds[secondIndex]])
-    }
-  }
-
-  return pairs
-}
-
 function getAvailableOperationsActions(game: GameState, playerId: string): BotAction[] {
   if (!canPlayerEditOperations(game, playerId)) {
     return []
@@ -147,7 +126,17 @@ function getAvailableOperationsActions(game: GameState, playerId: string): BotAc
         mode: option.mode,
         cityIds: [cityAId, cityBId] as [string, string],
       }))
-  })
+  }).sort((actionA, actionB) => {
+    const actionACityScore = actionA.cityIds.reduce(
+      (total, cityId) => total + (cityMap.get(cityId)?.population ?? cityMap.get(cityId)?.size ?? 0),
+      0,
+    )
+    const actionBCityScore = actionB.cityIds.reduce(
+      (total, cityId) => total + (cityMap.get(cityId)?.population ?? cityMap.get(cityId)?.size ?? 0),
+      0,
+    )
+    return actionBCityScore - actionACityScore
+  }).slice(0, MAX_BOT_OPERATION_CLAIM_ACTIONS)
 
   return [...claimActions, { type: "ready-operations" }]
 }

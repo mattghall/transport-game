@@ -44,7 +44,15 @@ import {
   upgradeRailRoute,
 } from "./engine/actions"
 import { applyBotAction, getBotLegalActions, getPendingBotPlayerId } from "./bots/actions"
-import { createScriptedBot } from "./bots/scriptedBot"
+import {
+  BOT_PRESETS,
+  createPresetBotController,
+  DEFAULT_BOT_PRESET_ID,
+  fetchManagedBotPresetWeightOverrides,
+  getBotPresetLabel,
+  getPlayerBotPreset,
+  normalizeBotPresetId,
+} from "./bots/presets"
 import { findPlayerBureaucracyPlan } from "./engine/bureaucracy"
 import {
   createGameState,
@@ -181,11 +189,15 @@ function normalizeSetupPlayers(players: GameSetupPlayer[]) {
     const existingPlayer = players[index]
     const isBot = existingPlayer?.isBot ?? false
     const trimmedName = existingPlayer?.name?.trim() ?? ""
+    const existingBotPreset = existingPlayer?.botPreset
+      ? normalizeBotPresetId(existingPlayer.botPreset)
+      : undefined
 
     return {
       ...preset,
       ...existingPlayer,
       isBot,
+      botPreset: isBot ? existingBotPreset ?? DEFAULT_BOT_PRESET_ID : existingBotPreset,
       name: trimmedName || getDefaultSetupPlayerName(index, isBot),
     }
   })
@@ -198,15 +210,18 @@ function createSetupPlayers(playerCount: number, botSeatIndexes: number[] = []) 
     PLAYER_SETUP_PRESETS.slice(0, clampSetupPlayerCount(playerCount)).map((player, index) => ({
       ...player,
       isBot: botSeatIndexSet.has(index),
+      botPreset: botSeatIndexSet.has(index) ? DEFAULT_BOT_PRESET_ID : undefined,
       name: getDefaultSetupPlayerName(index, botSeatIndexSet.has(index)),
     })),
   )
 }
 
+type SetupPlayerUpdates = Partial<Pick<GameSetupPlayer, "name" | "isBot" | "botPreset">>
+
 function updateSetupPlayer(
   players: GameSetupPlayer[],
   playerId: string,
-  updates: Partial<Pick<GameSetupPlayer, "name" | "isBot">>,
+  updates: SetupPlayerUpdates,
 ) {
   return normalizeSetupPlayers(
     players.map((player, index) => {
@@ -219,11 +234,18 @@ function updateSetupPlayer(
       const previousDefaultName = getDefaultSetupPlayerName(index, previousIsBot)
       const nextDefaultName = getDefaultSetupPlayerName(index, nextIsBot)
       const requestedName = updates.name ?? player.name
+      const nextBotPreset =
+        updates.botPreset !== undefined
+          ? normalizeBotPresetId(updates.botPreset)
+          : player.botPreset
+            ? normalizeBotPresetId(player.botPreset)
+            : DEFAULT_BOT_PRESET_ID
 
       return {
         ...player,
         ...updates,
         isBot: nextIsBot,
+        botPreset: nextIsBot ? nextBotPreset : player.botPreset,
         name: requestedName === previousDefaultName ? nextDefaultName : requestedName,
       }
     }),
@@ -372,7 +394,11 @@ function runBotTurns(game: GameState, botPlayerIds: ReadonlySet<string>) {
       break
     }
 
-    const action = createScriptedBot(actingBotPlayerId).pickAction({
+    const action = createPresetBotController(
+      actingBotPlayerId,
+      getPlayerBotPreset(nextGame.players.find(player => player.id === actingBotPlayerId) ?? null),
+      nextGame.botPresetWeightsById,
+    ).pickAction({
       game: nextGame,
       playerId: actingBotPlayerId,
       legalActions,
@@ -553,13 +579,13 @@ export default function App() {
     setAppMode("launcher")
   }, [])
   const handleLocalSetupPlayerChange = useCallback(
-    (playerId: string, updates: Partial<Pick<GameSetupPlayer, "name" | "isBot">>) => {
+    (playerId: string, updates: SetupPlayerUpdates) => {
       setLocalSetupPlayers(currentPlayers => updateSetupPlayer(currentPlayers, playerId, updates))
     },
     [],
   )
   const handleLanSetupPlayerChange = useCallback(
-    (playerId: string, updates: Partial<Pick<GameSetupPlayer, "name" | "isBot">>) => {
+    (playerId: string, updates: SetupPlayerUpdates) => {
       setLanSetupPlayers(currentPlayers => updateSetupPlayer(currentPlayers, playerId, updates))
     },
     [],
@@ -1085,6 +1111,7 @@ export default function App() {
 
     try {
       const initialUserDecks = loadUserDecks()
+      const managedBotPresetWeights = await fetchManagedBotPresetWeightOverrides()
       const snapshot = await createLanSession(defaultSessionServerUrl, {
         sessionName: `Transport Game LAN (${launchPlayers.length} seats)`,
         game: createGameState(usMap, {
@@ -1092,6 +1119,7 @@ export default function App() {
           vehicleCards: initialUserDecks.vehicleCards,
           chanceCards: initialUserDecks.chanceCards,
           startingMoney: DEFAULT_STARTING_MONEY,
+          botPresetWeightsById: managedBotPresetWeights,
         }),
       })
 
@@ -1762,7 +1790,7 @@ export default function App() {
     shouldRunLanBots,
   ])
 
-  const handleStartLocalGame = useCallback(() => {
+  const handleStartLocalGame = useCallback(async () => {
     const players = normalizeSetupPlayers(localSetupPlayers)
     const validationError = getSetupValidationError(players)
 
@@ -1773,11 +1801,13 @@ export default function App() {
     }
 
     const initialUserDecks = loadUserDecks()
+    const managedBotPresetWeights = await fetchManagedBotPresetWeightOverrides()
     const nextGame = createGameState(usMap, {
       players,
       vehicleCards: initialUserDecks.vehicleCards,
       chanceCards: initialUserDecks.chanceCards,
       startingMoney: DEFAULT_STARTING_MONEY,
+      botPresetWeightsById: managedBotPresetWeights,
     })
 
     setLanSession(null)
@@ -2155,6 +2185,31 @@ export default function App() {
                     placeholder={getDefaultSetupPlayerName(index, Boolean(player.isBot))}
                     style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 15 }}
                   />
+                  {player.isBot && (
+                    <label style={{ display: "grid", gap: 6 }}>
+                      <span style={{ fontSize: 13, color: "#56635a", fontWeight: 700 }}>Bot preset</span>
+                      <select
+                        value={normalizeBotPresetId(player.botPreset)}
+                        onChange={event =>
+                          (setupLobbyKind === "lan"
+                            ? handleLanSetupPlayerChange
+                            : handleLocalSetupPlayerChange)(player.id, {
+                            botPreset: normalizeBotPresetId(event.target.value),
+                          })
+                        }
+                        style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 15 }}
+                      >
+                        {BOT_PRESETS.map(preset => (
+                          <option key={preset.id} value={preset.id}>
+                            {preset.label}
+                          </option>
+                        ))}
+                      </select>
+                      <div style={{ color: "#56635a", fontSize: 13 }}>
+                        {BOT_PRESETS.find(preset => preset.id === normalizeBotPresetId(player.botPreset))?.description}
+                      </div>
+                    </label>
+                  )}
                 </div>
               ))}
             </div>
@@ -2199,7 +2254,7 @@ export default function App() {
               </button>
               <button
                 type="button"
-                onClick={setupLobbyKind === "lan" ? () => void handleLaunchLanSession() : handleStartLocalGame}
+                onClick={() => void (setupLobbyKind === "lan" ? handleLaunchLanSession() : handleStartLocalGame())}
                 disabled={
                   setupLobbyKind === "lan"
                     ? isLaunchingSession || launcherServerOnline === false || lanSetupError !== null || !hasValidJoinAppUrl
@@ -2415,6 +2470,7 @@ export default function App() {
                 const isFilled = Boolean(lobbyPlayer?.claimedBy)
                 const isReady = Boolean(lobbyPlayer?.isReady)
                 const isBotSeat = Boolean(lobbyPlayer?.isBot)
+                const botPresetLabel = isBotSeat ? getBotPresetLabel(player.botPreset) : null
                 const seatLabel = `Seat ${player.id.replace(/^p/i, "")}`
                 const statusLabel = isBotSeat ? (isReady ? "Bot ready" : "Bot") : isReady ? "Ready" : isFilled ? "Filled" : "Waiting"
                 const accentColor = isBotSeat ? "#5c4a8a" : isReady ? "#1f5f2c" : isFilled ? "#8a5a00" : "#56635a"
@@ -2438,6 +2494,11 @@ export default function App() {
                       {isFilled ? player.name : "Waiting"}
                     </div>
                     <div style={{ fontSize: 13, color: accentColor, fontWeight: 700 }}>{statusLabel}</div>
+                    {botPresetLabel && (
+                      <div style={{ fontSize: 12, color: "#6b5a93", fontWeight: 700 }}>
+                        {botPresetLabel}
+                      </div>
+                    )}
                   </div>
                 )
               })}

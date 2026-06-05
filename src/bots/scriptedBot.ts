@@ -3,36 +3,110 @@ import { getConnectedCityIds } from "../engine/economy"
 import { getPlayerOwnedNetworkRoutes } from "../engine/playerNetwork"
 import type { VehicleType } from "../engine/types"
 import { getBotLegalActions } from "./actions"
+import { getBotGameStage, getOwnedCityPairs, type BotGameStage } from "./strategy"
 import type { BotAction, BotController } from "./types"
 
-const VEHICLE_PRIORITY: Record<VehicleType, number> = {
-  bus: 88,
-  train: 58,
-  air: 42,
+export type ScriptedBotWeights = {
+  vehiclePriorityBus: number
+  vehiclePriorityTrain: number
+  vehiclePriorityAir: number
+  claimRailBaseScore: number
+  claimAirBaseScore: number
+  claimPopulationPerMillionScore: number
+  claimNewCityBonus: number
+  claimFirstModeBonus: number
+  claimRailCostPenaltyPerMillion: number
+  buyBusOwnedCityBonus: number
+  buyTrainPotentialClaimBonus: number
+  buyTrainFallbackOwnedCityBonus: number
+  buyTrainNoClaimPenalty: number
+  buyAirPotentialClaimBonus: number
+  buyAirFallbackOwnedCityBonus: number
+  buyAirNoClaimPenalty: number
+  buyDuplicateVehiclePenalty: number
+  buyFirstTrainBonus: number
+  buyFirstAirBonus: number
+  earlyExpansionMultiplier: number
+  midExpansionMultiplier: number
+  lateExpansionMultiplier: number
+  earlyPopulationMultiplier: number
+  midPopulationMultiplier: number
+  latePopulationMultiplier: number
+  earlyReadyOperationsScore: number
+  midReadyOperationsScore: number
+  lateReadyOperationsScore: number
+  earlyClaimBudget: number
+  midClaimBudget: number
+  lateClaimBudget: number
 }
 
-function getOwnedCityPairs(game: Parameters<BotController["pickAction"]>[0]["game"], playerId: string) {
-  const player = getPlayerById(game, playerId)
+export const DEFAULT_SCRIPTED_BOT_WEIGHTS: ScriptedBotWeights = {
+  vehiclePriorityBus: 88,
+  vehiclePriorityTrain: 58,
+  vehiclePriorityAir: 42,
+  claimRailBaseScore: 120,
+  claimAirBaseScore: 104,
+  claimPopulationPerMillionScore: 5,
+  claimNewCityBonus: 24,
+  claimFirstModeBonus: 18,
+  claimRailCostPenaltyPerMillion: 1,
+  buyBusOwnedCityBonus: 4,
+  buyTrainPotentialClaimBonus: 38,
+  buyTrainFallbackOwnedCityBonus: 6,
+  buyTrainNoClaimPenalty: 20,
+  buyAirPotentialClaimBonus: 34,
+  buyAirFallbackOwnedCityBonus: 8,
+  buyAirNoClaimPenalty: 24,
+  buyDuplicateVehiclePenalty: 10,
+  buyFirstTrainBonus: 26,
+  buyFirstAirBonus: 30,
+  earlyExpansionMultiplier: 1.45,
+  midExpansionMultiplier: 1,
+  lateExpansionMultiplier: 0.45,
+  earlyPopulationMultiplier: 0.8,
+  midPopulationMultiplier: 1,
+  latePopulationMultiplier: 1.5,
+  earlyReadyOperationsScore: 42,
+  midReadyOperationsScore: 128,
+  lateReadyOperationsScore: 228,
+  earlyClaimBudget: 3,
+  midClaimBudget: 2,
+  lateClaimBudget: 1,
+}
 
-  if (!player || player.ownedCityCardIds.length < 2) {
-    return []
+export function mergeScriptedBotWeights(
+  overrides: Partial<ScriptedBotWeights> = {},
+): ScriptedBotWeights {
+  return {
+    ...DEFAULT_SCRIPTED_BOT_WEIGHTS,
+    ...overrides,
   }
+}
 
-  const cityMap = new Map(game.cities.map(city => [city.id, city]))
-  const ownedCityIds = [...new Set(player.ownedCityCardIds)].sort((cityIdA, cityIdB) => {
-    const cityA = cityMap.get(cityIdA)
-    const cityB = cityMap.get(cityIdB)
-    return (cityB?.population ?? cityB?.size ?? 0) - (cityA?.population ?? cityA?.size ?? 0)
-  })
-  const pairs: Array<[string, string]> = []
-
-  for (let firstIndex = 0; firstIndex < ownedCityIds.length - 1; firstIndex += 1) {
-    for (let secondIndex = firstIndex + 1; secondIndex < ownedCityIds.length; secondIndex += 1) {
-      pairs.push([ownedCityIds[firstIndex], ownedCityIds[secondIndex]])
-    }
+function getVehiclePriority(type: VehicleType, weights: ScriptedBotWeights) {
+  switch (type) {
+    case "bus":
+      return weights.vehiclePriorityBus
+    case "train":
+      return weights.vehiclePriorityTrain
+    case "air":
+      return weights.vehiclePriorityAir
   }
+}
 
-  return pairs
+function getStageWeight(
+  stage: BotGameStage,
+  weights: ScriptedBotWeights,
+  keyPrefix: "ExpansionMultiplier" | "PopulationMultiplier" | "ReadyOperationsScore" | "ClaimBudget",
+) {
+  switch (stage) {
+    case "early":
+      return weights[`early${keyPrefix}`]
+    case "mid":
+      return weights[`mid${keyPrefix}`]
+    case "late":
+      return weights[`late${keyPrefix}`]
+  }
 }
 
 function countPotentialClaims(
@@ -76,7 +150,9 @@ function scoreClaimRouteAction(
   action: Extract<BotAction, { type: "claim-route" }>,
   game: Parameters<BotController["pickAction"]>[0]["game"],
   playerId: string,
+  weights: ScriptedBotWeights,
 ) {
+  const stage = getBotGameStage(game)
   const cityMap = new Map(game.cities.map(city => [city.id, city]))
   const connectedCityIdSet = new Set(getConnectedCityIds(game, playerId))
   const existingRoutesOfMode = getPlayerOwnedNetworkRoutes(game, playerId).filter(
@@ -93,21 +169,37 @@ function scoreClaimRouteAction(
   })
 
   return (
-    (action.mode === "rail" ? 120 : 104) +
-    totalPopulation / 200_000 +
-    newCityCount * 24 +
-    (existingRoutesOfMode.length === 0 ? 18 : 0) -
-    cost / 1_000_000
+    (action.mode === "rail" ? weights.claimRailBaseScore : weights.claimAirBaseScore) +
+    (totalPopulation / 1_000_000) *
+      weights.claimPopulationPerMillionScore *
+      getStageWeight(stage, weights, "PopulationMultiplier") +
+    newCityCount *
+      weights.claimNewCityBonus *
+      getStageWeight(stage, weights, "ExpansionMultiplier") +
+    (existingRoutesOfMode.length === 0
+      ? weights.claimFirstModeBonus * getStageWeight(stage, weights, "ExpansionMultiplier")
+      : 0) -
+    (cost / 1_000_000) * weights.claimRailCostPenaltyPerMillion
   )
 }
 
-function scoreBotAction(action: BotAction, game: Parameters<BotController["pickAction"]>[0]["game"], playerId: string) {
+function scoreBotAction(
+  action: BotAction,
+  game: Parameters<BotController["pickAction"]>[0]["game"],
+  playerId: string,
+  weights: ScriptedBotWeights,
+) {
+  const stage = getBotGameStage(game)
   if (action.type === "claim-route") {
-    return scoreClaimRouteAction(action, game, playerId)
+    return scoreClaimRouteAction(action, game, playerId, weights)
   }
 
   if (action.type !== "buy-vehicle") {
-    if (action.type === "ready-operations" || action.type === "end-turn") {
+    if (action.type === "ready-operations") {
+      return getStageWeight(stage, weights, "ReadyOperationsScore")
+    }
+
+    if (action.type === "end-turn") {
       return 0
     }
 
@@ -130,40 +222,60 @@ function scoreBotAction(action: BotAction, game: Parameters<BotController["pickA
   const potentialAirClaims = countPotentialClaims(game, playerId, "air")
   const cityBonus =
     card.type === "bus"
-      ? Math.min(ownedCityCount, 6) * 4
+      ? Math.min(ownedCityCount, 6) * weights.buyBusOwnedCityBonus
       : card.type === "train"
-        ? potentialRailClaims > 0 ? 38 : ownedCityCount >= 4 ? 6 : -20
-        : potentialAirClaims > 0 ? 34 : ownedCityCount >= 5 ? 8 : -24
+        ? potentialRailClaims > 0
+          ? weights.buyTrainPotentialClaimBonus
+          : ownedCityCount >= 4
+            ? weights.buyTrainFallbackOwnedCityBonus
+            : -weights.buyTrainNoClaimPenalty
+        : potentialAirClaims > 0
+          ? weights.buyAirPotentialClaimBonus
+          : ownedCityCount >= 5
+            ? weights.buyAirFallbackOwnedCityBonus
+            : -weights.buyAirNoClaimPenalty
   const firstOfTypeBonus =
     card.type === "train"
-      ? ownedVehicleCount === 0 && potentialRailClaims > 0 ? 26 : 0
+      ? ownedVehicleCount === 0 && potentialRailClaims > 0 ? weights.buyFirstTrainBonus : 0
       : card.type === "air"
-        ? ownedVehicleCount === 0 && potentialAirClaims > 0 ? 30 : 0
+        ? ownedVehicleCount === 0 && potentialAirClaims > 0 ? weights.buyFirstAirBonus : 0
         : 0
 
   return (
-    VEHICLE_PRIORITY[card.type] +
+    getVehiclePriority(card.type, weights) +
     cityBonus -
-    ownedVehicleCount * 10 +
+    ownedVehicleCount * weights.buyDuplicateVehiclePenalty +
     firstOfTypeBonus -
     card.purchasePrice / 1_000_000
   )
 }
 
-export function createScriptedBot(id: string): BotController {
+export function createScriptedBot(id: string, weights: Partial<ScriptedBotWeights> = {}): BotController {
+  const resolvedWeights = mergeScriptedBotWeights(weights)
+
   return {
     id,
     pickAction({ game, playerId, legalActions }) {
       const availableActions = legalActions.length > 0 ? legalActions : getBotLegalActions(game, playerId)
+      const stage = getBotGameStage(game)
+      const stageClaimBudget = Math.max(0, Math.round(getStageWeight(stage, resolvedWeights, "ClaimBudget")))
+      const claimedRouteCountThisTurn = game.claimedRouteCountsByPlayerIdThisTurn[playerId] ?? 0
 
       if (availableActions.length === 0) {
         return { type: "end-turn" }
       }
 
+      if (
+        claimedRouteCountThisTurn >= stageClaimBudget &&
+        availableActions.some(action => action.type === "ready-operations")
+      ) {
+        return { type: "ready-operations" }
+      }
+
       return [...availableActions].sort(
         (actionA, actionB) =>
-          scoreBotAction(actionB, game, playerId) -
-          scoreBotAction(actionA, game, playerId),
+          scoreBotAction(actionB, game, playerId, resolvedWeights) -
+          scoreBotAction(actionA, game, playerId, resolvedWeights),
       )[0]
     },
   }

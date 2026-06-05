@@ -1671,6 +1671,7 @@ export function advancePhase(game: GameState): GameState {
       hasPurchasedVehicleThisPhase: false,
       purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
       claimedRoutePlayerIdsThisTurn: [],
+      claimedRouteCountsByPlayerIdThisTurn: {},
       claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
       vehicleMarketCardIds: nextVehicleMarketCardIds,
       activeCityOffer: null,
@@ -1700,6 +1701,7 @@ export function advancePhase(game: GameState): GameState {
       hasPurchasedVehicleThisPhase: false,
       purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
       claimedRoutePlayerIdsThisTurn: [],
+      claimedRouteCountsByPlayerIdThisTurn: {},
       claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
       activeCityOffer: null,
     }
@@ -1721,6 +1723,7 @@ export function advancePhase(game: GameState): GameState {
         hasPurchasedVehicleThisPhase: false,
         purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
         claimedRoutePlayerIdsThisTurn: [],
+        claimedRouteCountsByPlayerIdThisTurn: {},
         claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
         activeCityOffer: null,
       }
@@ -1770,6 +1773,7 @@ export function advancePhase(game: GameState): GameState {
       hasPurchasedVehicleThisPhase: false,
       purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
       claimedRoutePlayerIdsThisTurn: [],
+      claimedRouteCountsByPlayerIdThisTurn: {},
       claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
       activeCityOffer: null,
       resourceMarket: {
@@ -1796,6 +1800,7 @@ export function advancePhase(game: GameState): GameState {
     hasPurchasedVehicleThisPhase: false,
     purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
     claimedRoutePlayerIdsThisTurn: [],
+    claimedRouteCountsByPlayerIdThisTurn: {},
     claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
     activeCityOffer: null,
   }
@@ -2703,6 +2708,10 @@ export function claimRoute(
       ...game.claimedRoutePlayerIdsThisTurn,
       playerId,
     ]),
+    claimedRouteCountsByPlayerIdThisTurn: {
+      ...game.claimedRouteCountsByPlayerIdThisTurn,
+      [playerId]: (game.claimedRouteCountsByPlayerIdThisTurn[playerId] ?? 0) + 1,
+    },
     claimedRouteModesThisPhase: {
       ...game.claimedRouteModesThisPhase,
       [input.mode]: true,

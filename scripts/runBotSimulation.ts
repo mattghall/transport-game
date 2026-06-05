@@ -3,10 +3,11 @@ import { runBotSimulation } from "../src/bots/simulate.ts"
 
 const simulationCount = Number.parseInt(process.argv[2] ?? "1", 10)
 const baseSeed = Number.parseInt(process.argv[3] ?? "1", 10)
+const maxSteps = Number.parseInt(process.argv[4] ?? "2000", 10)
 
 for (let index = 0; index < simulationCount; index += 1) {
   const seed = baseSeed + index
-  const result = runBotSimulation({ seed })
+  const result = runBotSimulation({ seed, maxSteps, recordTrace: false })
   const standings = buildVictoryStandings(result.game)
 
   console.log(
@@ -15,6 +16,8 @@ for (let index = 0; index < simulationCount; index += 1) {
         seed,
         steps: result.steps,
         winnerId: result.winnerId,
+        timedOut: result.timedOut,
+        maxSteps,
         standings: standings.map((standing, standingIndex) => ({
           rank: standingIndex + 1,
           playerId: standing.player.id,

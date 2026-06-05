@@ -1,10 +1,10 @@
 import type { GameState } from "../engine/types"
 
-export const SAVED_GAME_STORAGE_KEY = "transport-game-saved-game-v1"
-export const ACTIVE_ADMIN_LAUNCH_STORAGE_KEY = "transport-game-active-admin-launch-v1"
-export const PENDING_LOCAL_LAUNCH_STORAGE_KEY = "transport-game-pending-local-launch-v1"
+export const SAVED_GAME_STORAGE_KEY = "transport-game-saved-game-v2"
+export const ACTIVE_ADMIN_LAUNCH_STORAGE_KEY = "transport-game-active-admin-launch-v2"
+export const PENDING_LOCAL_LAUNCH_STORAGE_KEY = "transport-game-pending-local-launch-v2"
 export const LOBBY_CLIENT_ID_STORAGE_KEY = "transport-game-lobby-client-id-v1"
-const ACTIVE_SESSION_PLAYER_STORAGE_KEY_PREFIX = "transport-game-active-session-player-v1"
+const ACTIVE_SESSION_PLAYER_STORAGE_KEY_PREFIX = "transport-game-active-session-player-v2"
 const PLAYER_NAME_STORAGE_KEY = "transport-game-player-name-v1"
 const JOIN_APP_URL_STORAGE_KEY = "transport-game-join-app-url-v1"
 

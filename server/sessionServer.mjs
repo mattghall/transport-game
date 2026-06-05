@@ -1,12 +1,595 @@
 import { createServer } from "node:http"
 import { randomBytes } from "node:crypto"
 import { networkInterfaces } from "node:os"
+import { spawn } from "node:child_process"
+import { fileURLToPath } from "node:url"
+import { dirname, resolve } from "node:path"
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 
 const PORT = Number(process.env.PORT ?? 8787)
 const sessions = new Map()
 const sessionStreams = new Map()
 let activeSessionId = null
 const BOT_CLAIM_PREFIX = "bot:"
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const PROJECT_ROOT = resolve(__dirname, "..")
+const TSX_CLI_PATH = resolve(PROJECT_ROOT, "node_modules/tsx/dist/cli.mjs")
+const TRAINING_SCRIPT_PATH = resolve(PROJECT_ROOT, "scripts/trainBotWeights.ts")
+const TRAINING_IMPORTANCE_SCRIPT_PATH = resolve(PROJECT_ROOT, "scripts/analyzeBotWeights.ts")
+const TRAINING_RESULTS_PATH = resolve(PROJECT_ROOT, "public/training-results/latest.json")
+const TRAINING_IMPORTANCE_RESULTS_PATH = resolve(PROJECT_ROOT, "public/training-results/latest-importance.json")
+const MANAGED_BOT_PRESETS_PATH = resolve(PROJECT_ROOT, "public/training-results/bot-presets.json")
+const TRAINING_LOG_LIMIT = 400
+const TRAINED_WEIGHT_KEYS = [
+  "vehiclePriorityBus",
+  "vehiclePriorityTrain",
+  "vehiclePriorityAir",
+  "claimRailBaseScore",
+  "claimAirBaseScore",
+  "claimPopulationPerMillionScore",
+  "claimNewCityBonus",
+  "claimFirstModeBonus",
+  "claimRailCostPenaltyPerMillion",
+  "buyBusOwnedCityBonus",
+  "buyTrainPotentialClaimBonus",
+  "buyTrainFallbackOwnedCityBonus",
+  "buyTrainNoClaimPenalty",
+  "buyAirPotentialClaimBonus",
+  "buyAirFallbackOwnedCityBonus",
+  "buyAirNoClaimPenalty",
+  "buyDuplicateVehiclePenalty",
+  "buyFirstTrainBonus",
+  "buyFirstAirBonus",
+  "earlyExpansionMultiplier",
+  "midExpansionMultiplier",
+  "lateExpansionMultiplier",
+  "earlyPopulationMultiplier",
+  "midPopulationMultiplier",
+  "latePopulationMultiplier",
+  "earlyReadyOperationsScore",
+  "midReadyOperationsScore",
+  "lateReadyOperationsScore",
+  "earlyClaimBudget",
+  "midClaimBudget",
+  "lateClaimBudget",
+]
+let activeTrainingProcess = null
+let activeTrainingKillTimeoutId = null
+let activeTrainingImportanceProcess = null
+let trainingStatus = {
+  status: "idle",
+  args: null,
+  pid: null,
+  startedAt: null,
+  finishedAt: null,
+  exitCode: null,
+  signal: null,
+  outputPath: TRAINING_RESULTS_PATH,
+  logs: [],
+}
+let trainingImportanceStatus = {
+  status: "idle",
+  pid: null,
+  startedAt: null,
+  finishedAt: null,
+  exitCode: null,
+  signal: null,
+  outputPath: TRAINING_IMPORTANCE_RESULTS_PATH,
+  sourceTrainingGeneratedAt: null,
+  error: null,
+}
+
+function isLoopbackRemoteAddress(address) {
+  return (
+    address === "127.0.0.1" ||
+    address === "::1" ||
+    address === "::ffff:127.0.0.1"
+  )
+}
+
+function isLocalTrainingRequest(request) {
+  return isLoopbackRemoteAddress(request.socket.remoteAddress ?? "")
+}
+
+function appendTrainingLog(line) {
+  const trimmedLine = line.trim()
+
+  if (!trimmedLine) {
+    return
+  }
+
+  trainingStatus.logs = [...trainingStatus.logs, `[${new Date().toISOString()}] ${trimmedLine}`].slice(-TRAINING_LOG_LIMIT)
+}
+
+function getTrainingStatusPayload() {
+  return {
+    ...trainingStatus,
+    isRunning: activeTrainingProcess !== null,
+  }
+}
+
+function readTrainingResults() {
+  if (!existsSync(TRAINING_RESULTS_PATH)) {
+    return null
+  }
+
+  try {
+    const parsedValue = JSON.parse(readFileSync(TRAINING_RESULTS_PATH, "utf8"))
+    return isRecord(parsedValue) ? parsedValue : null
+  } catch {
+    return null
+  }
+}
+
+function readTrainingImportanceResults() {
+  if (!existsSync(TRAINING_IMPORTANCE_RESULTS_PATH)) {
+    return null
+  }
+
+  try {
+    const parsedValue = JSON.parse(readFileSync(TRAINING_IMPORTANCE_RESULTS_PATH, "utf8"))
+
+    if (
+      !isRecord(parsedValue) ||
+      typeof parsedValue.generatedAt !== "string" ||
+      typeof parsedValue.sourceTrainingGeneratedAt !== "string" ||
+      !isRecord(parsedValue.reference) ||
+      !Array.isArray(parsedValue.rows) ||
+      !isRecord(parsedValue.config)
+    ) {
+      return null
+    }
+
+    return parsedValue
+  } catch {
+    return null
+  }
+}
+
+function getTrainingImportancePayload() {
+  return {
+    ...trainingImportanceStatus,
+    isRunning: activeTrainingImportanceProcess !== null,
+    result: readTrainingImportanceResults(),
+  }
+}
+
+function isRecord(value) {
+  return typeof value === "object" && value !== null
+}
+
+function isFiniteNumber(value) {
+  return typeof value === "number" && Number.isFinite(value)
+}
+
+function isValidWeights(value) {
+  return isRecord(value) && TRAINED_WEIGHT_KEYS.every(key => isFiniteNumber(value[key]))
+}
+
+function getTrainingPresetPayload() {
+  return {
+    outputPath: MANAGED_BOT_PRESETS_PATH,
+    presets: readManagedBotPresetStore()?.presets ?? {},
+  }
+}
+
+function readManagedBotPresetStore() {
+  if (!existsSync(MANAGED_BOT_PRESETS_PATH)) {
+    return null
+  }
+
+  try {
+    const parsedValue = JSON.parse(readFileSync(MANAGED_BOT_PRESETS_PATH, "utf8"))
+
+    if (
+      !isRecord(parsedValue) ||
+      parsedValue.version !== 1 ||
+      typeof parsedValue.updatedAt !== "string" ||
+      !isRecord(parsedValue.presets)
+    ) {
+      return null
+    }
+
+    return {
+      version: 1,
+      updatedAt: parsedValue.updatedAt,
+      presets: Object.fromEntries(
+        ["bot-avg", "bot-best"].flatMap(presetId => {
+          const preset = parsedValue.presets[presetId]
+
+          if (!preset) {
+            return []
+          }
+
+          if (
+            !isRecord(preset) ||
+            preset.presetId !== presetId ||
+            typeof preset.promotedAt !== "string" ||
+            typeof preset.sourceTrainingGeneratedAt !== "string" ||
+            !isValidWeights(preset.weights) ||
+            !isRecord(preset.sourceSummary) ||
+            !isRecord(preset.sourceConfig)
+          ) {
+            return []
+          }
+
+          return [[presetId, {
+            presetId,
+            promotedAt: preset.promotedAt,
+            sourceTrainingGeneratedAt: preset.sourceTrainingGeneratedAt,
+            weights: preset.weights,
+            sourceSummary: preset.sourceSummary,
+            sourceConfig: preset.sourceConfig,
+          }]]
+        }),
+      ),
+    }
+  } catch {
+    return null
+  }
+}
+
+function writeManagedBotPresetStore(store) {
+  mkdirSync(dirname(MANAGED_BOT_PRESETS_PATH), { recursive: true })
+  const temporaryPath = `${MANAGED_BOT_PRESETS_PATH}.tmp`
+  writeFileSync(temporaryPath, JSON.stringify(store, null, 2))
+  renameSync(temporaryPath, MANAGED_BOT_PRESETS_PATH)
+}
+
+function promoteLatestTrainingResultsToPreset(presetId) {
+  if (activeTrainingProcess) {
+    const error = new Error("Cannot promote training results while training is still running.")
+    error.statusCode = 409
+    throw error
+  }
+
+  if (presetId !== "bot-best" && presetId !== "bot-avg") {
+    const error = new Error("Only Malcolm Gladwell or Stickbug can be overwritten from training results right now.")
+    error.statusCode = 400
+    throw error
+  }
+
+  if (!existsSync(TRAINING_RESULTS_PATH)) {
+    const error = new Error("No training results file exists yet. Run training first.")
+    error.statusCode = 404
+    throw error
+  }
+
+  let trainingResults
+
+  try {
+    trainingResults = JSON.parse(readFileSync(TRAINING_RESULTS_PATH, "utf8"))
+  } catch {
+    const error = new Error("The latest training results file could not be read.")
+    error.statusCode = 500
+    throw error
+  }
+
+  if (
+    !isRecord(trainingResults) ||
+    typeof trainingResults.generatedAt !== "string" ||
+    !isRecord(trainingResults.config) ||
+    !isRecord(trainingResults.final) ||
+    !isValidWeights(trainingResults.final.weights)
+  ) {
+    const error = new Error("The latest training results file does not contain a complete final preset.")
+    error.statusCode = 422
+    throw error
+  }
+
+  const promotedAt = new Date().toISOString()
+  const nextStore = {
+    version: 1,
+    updatedAt: promotedAt,
+    presets: {
+      ...(readManagedBotPresetStore()?.presets ?? {}),
+      [presetId]: {
+        presetId,
+        weights: trainingResults.final.weights,
+        promotedAt,
+        sourceTrainingGeneratedAt: trainingResults.generatedAt,
+        sourceSummary: {
+          score: trainingResults.final.score,
+          winRate: trainingResults.final.winRate,
+          averageRank: trainingResults.final.averageRank,
+          averagePassengers: trainingResults.final.averagePassengers,
+          averageConnectedCities: trainingResults.final.averageConnectedCities,
+          averageMoney: trainingResults.final.averageMoney,
+          timeoutRate: trainingResults.final.timeoutRate,
+          sampleCount: trainingResults.final.sampleCount,
+        },
+        sourceConfig: {
+          iterations: trainingResults.config.iterations,
+          gamesPerCandidate: trainingResults.config.gamesPerCandidate,
+          baseSeed: trainingResults.config.baseSeed,
+          candidatesPerIteration: trainingResults.config.candidatesPerIteration,
+          mutationSeed: trainingResults.config.mutationSeed,
+          maxSteps: trainingResults.config.maxSteps,
+          outputPath: trainingResults.config.outputPath,
+        },
+      },
+    },
+  }
+
+  writeManagedBotPresetStore(nextStore)
+  appendTrainingLog(`Promoted the latest training results into preset "${presetId}".`)
+  return nextStore
+}
+
+function isValidTrainingStartPayload(value) {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof value.iterations === "number" &&
+    Number.isFinite(value.iterations) &&
+    typeof value.gamesPerCandidate === "number" &&
+    Number.isFinite(value.gamesPerCandidate) &&
+    typeof value.baseSeed === "number" &&
+    Number.isFinite(value.baseSeed) &&
+    typeof value.candidatesPerIteration === "number" &&
+    Number.isFinite(value.candidatesPerIteration) &&
+    typeof value.mutationSeed === "number" &&
+    Number.isFinite(value.mutationSeed) &&
+    typeof value.maxSteps === "number" &&
+    Number.isFinite(value.maxSteps)
+  )
+}
+
+function isValidTrainingPresetPromotionPayload(value) {
+  return isRecord(value) && (value.presetId === "bot-best" || value.presetId === "bot-avg")
+}
+
+function normalizeTrainingArgs(body) {
+  const args = {
+    iterations: Math.trunc(body.iterations),
+    gamesPerCandidate: Math.trunc(body.gamesPerCandidate),
+    baseSeed: Math.trunc(body.baseSeed),
+    candidatesPerIteration: Math.trunc(body.candidatesPerIteration),
+    mutationSeed: Math.trunc(body.mutationSeed),
+    maxSteps: Math.trunc(body.maxSteps),
+  }
+
+  if (
+    args.iterations < 1 ||
+    args.gamesPerCandidate < 1 ||
+    args.candidatesPerIteration < 1 ||
+    args.maxSteps < 1
+  ) {
+    const error = new Error("Training parameters must all be positive integers.")
+    error.statusCode = 400
+    throw error
+  }
+
+  if (
+    args.iterations > 200 ||
+    args.gamesPerCandidate > 50 ||
+    args.candidatesPerIteration > 20 ||
+    args.maxSteps > 5000
+  ) {
+    const error = new Error("Training parameters exceed safe local limits.")
+    error.statusCode = 400
+    throw error
+  }
+
+  return args
+}
+
+function startTrainingProcess(args) {
+  if (activeTrainingProcess) {
+    const error = new Error("Training is already running.")
+    error.statusCode = 409
+    throw error
+  }
+
+  trainingStatus = {
+    status: "running",
+    args,
+    pid: null,
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    exitCode: null,
+    signal: null,
+    outputPath: TRAINING_RESULTS_PATH,
+    logs: [
+      `[${new Date().toISOString()}] Starting training run with args ${JSON.stringify(args)}`,
+    ],
+  }
+  trainingImportanceStatus = {
+    status: "idle",
+    pid: null,
+    startedAt: null,
+    finishedAt: null,
+    exitCode: null,
+    signal: null,
+    outputPath: TRAINING_IMPORTANCE_RESULTS_PATH,
+    sourceTrainingGeneratedAt: null,
+    error: null,
+  }
+
+  const child = spawn(
+    process.execPath,
+    [
+      TSX_CLI_PATH,
+      TRAINING_SCRIPT_PATH,
+      String(args.iterations),
+      String(args.gamesPerCandidate),
+      String(args.baseSeed),
+      String(args.candidatesPerIteration),
+      String(args.mutationSeed),
+      String(args.maxSteps),
+    ],
+    {
+      cwd: PROJECT_ROOT,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  )
+
+  activeTrainingProcess = child
+  trainingStatus.pid = child.pid ?? null
+  let stdoutRemainder = ""
+  let stderrRemainder = ""
+
+  child.stdout.on("data", chunk => {
+    const combinedOutput = stdoutRemainder + chunk.toString("utf8")
+    const lines = combinedOutput.split(/\r?\n/)
+    stdoutRemainder = lines.pop() ?? ""
+    lines.forEach(appendTrainingLog)
+  })
+
+  child.stderr.on("data", chunk => {
+    const combinedOutput = stderrRemainder + chunk.toString("utf8")
+    const lines = combinedOutput.split(/\r?\n/)
+    stderrRemainder = lines.pop() ?? ""
+    lines.forEach(line => appendTrainingLog(`stderr: ${line}`))
+  })
+
+  child.on("error", error => {
+    appendTrainingLog(`Failed to launch training: ${error.message}`)
+  })
+
+  child.on("exit", (exitCode, signal) => {
+    if (stdoutRemainder) {
+      appendTrainingLog(stdoutRemainder)
+    }
+
+    if (stderrRemainder) {
+      appendTrainingLog(`stderr: ${stderrRemainder}`)
+    }
+
+    if (activeTrainingKillTimeoutId) {
+      clearTimeout(activeTrainingKillTimeoutId)
+      activeTrainingKillTimeoutId = null
+    }
+
+    activeTrainingProcess = null
+    trainingStatus = {
+      ...trainingStatus,
+      status:
+        trainingStatus.status === "cancelled"
+          ? "cancelled"
+          : exitCode === 0
+            ? "completed"
+            : "failed",
+      finishedAt: new Date().toISOString(),
+      exitCode: exitCode ?? null,
+      signal: signal ?? null,
+      pid: null,
+    }
+    appendTrainingLog(
+      trainingStatus.status === "completed"
+        ? "Training finished successfully."
+        : trainingStatus.status === "cancelled"
+          ? "Training was cancelled."
+          : `Training exited with code ${exitCode ?? "unknown"}${signal ? ` (${signal})` : ""}.`,
+    )
+  })
+}
+
+function startTrainingImportanceProcess() {
+  if (activeTrainingProcess) {
+    const error = new Error("Wait for the active training run to finish before analyzing lever importance.")
+    error.statusCode = 409
+    throw error
+  }
+
+  if (activeTrainingImportanceProcess) {
+    return
+  }
+
+  const trainingResults = readTrainingResults()
+
+  if (!trainingResults || typeof trainingResults.generatedAt !== "string") {
+    const error = new Error("No completed training results are available to analyze yet.")
+    error.statusCode = 404
+    throw error
+  }
+
+  const cachedImportance = readTrainingImportanceResults()
+
+  if (cachedImportance?.sourceTrainingGeneratedAt === trainingResults.generatedAt) {
+    trainingImportanceStatus = {
+      ...trainingImportanceStatus,
+      status: "completed",
+      pid: null,
+      startedAt: trainingImportanceStatus.startedAt,
+      finishedAt: trainingImportanceStatus.finishedAt ?? cachedImportance.generatedAt,
+      exitCode: 0,
+      signal: null,
+      sourceTrainingGeneratedAt: trainingResults.generatedAt,
+      error: null,
+    }
+    return
+  }
+
+  trainingImportanceStatus = {
+    status: "running",
+    pid: null,
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    exitCode: null,
+    signal: null,
+    outputPath: TRAINING_IMPORTANCE_RESULTS_PATH,
+    sourceTrainingGeneratedAt: trainingResults.generatedAt,
+    error: null,
+  }
+
+  const child = spawn(
+    process.execPath,
+    [TSX_CLI_PATH, TRAINING_IMPORTANCE_SCRIPT_PATH],
+    {
+      cwd: PROJECT_ROOT,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  )
+
+  activeTrainingImportanceProcess = child
+  trainingImportanceStatus.pid = child.pid ?? null
+  let stderrOutput = ""
+
+  child.stdout.on("data", () => {})
+  child.stderr.on("data", chunk => {
+    stderrOutput += chunk.toString("utf8")
+  })
+
+  child.on("exit", (exitCode, signal) => {
+    activeTrainingImportanceProcess = null
+    trainingImportanceStatus = {
+      ...trainingImportanceStatus,
+      status: exitCode === 0 ? "completed" : "failed",
+      pid: null,
+      finishedAt: new Date().toISOString(),
+      exitCode: exitCode ?? null,
+      signal: signal ?? null,
+      error:
+        exitCode === 0
+          ? null
+          : stderrOutput.trim() || `Importance analysis exited with code ${exitCode ?? "unknown"}.`,
+    }
+  })
+}
+
+function cancelTrainingProcess() {
+  if (!activeTrainingProcess) {
+    const error = new Error("No training process is currently running.")
+    error.statusCode = 409
+    throw error
+  }
+
+  trainingStatus = {
+    ...trainingStatus,
+    status: "cancelled",
+  }
+  appendTrainingLog("Cancellation requested.")
+  activeTrainingProcess.kill("SIGTERM")
+  activeTrainingKillTimeoutId = setTimeout(() => {
+    if (activeTrainingProcess) {
+      appendTrainingLog("Training did not stop after SIGTERM; sending SIGKILL.")
+      activeTrainingProcess.kill("SIGKILL")
+    }
+  }, 2000)
+}
 
 function getLanAddresses() {
   const interfaces = networkInterfaces()
@@ -37,6 +620,7 @@ function createLobby(players) {
           claimedBy: player.isBot ? `${BOT_CLAIM_PREFIX}${player.id}` : null,
           isReady: Boolean(player.isBot),
           isBot: Boolean(player.isBot),
+          botPreset: player.isBot ? player.botPreset ?? null : null,
         }))
       : [],
   }
@@ -347,6 +931,105 @@ const server = createServer(async (request, response) => {
       activeSessionId,
       lanAddresses: getLanAddresses(),
     })
+    return
+  }
+
+  if (url.pathname.startsWith("/training")) {
+    if (!isLocalTrainingRequest(request)) {
+      sendJson(response, 403, { error: "Training endpoints are local-only." })
+      return
+    }
+
+    if (request.method === "GET" && url.pathname === "/training/status") {
+      sendJson(response, 200, getTrainingStatusPayload())
+      return
+    }
+
+    if (request.method === "GET" && url.pathname === "/training/importance") {
+      sendJson(response, 200, getTrainingImportancePayload())
+      return
+    }
+
+    if (request.method === "GET" && url.pathname === "/training/presets") {
+      sendJson(response, 200, getTrainingPresetPayload())
+      return
+    }
+
+    if (request.method === "POST" && url.pathname === "/training/start") {
+      try {
+        const body = await readJsonBody(request)
+
+        if (!isValidTrainingStartPayload(body)) {
+          sendJson(response, 400, {
+            error: "Training start requests must include iterations, gamesPerCandidate, baseSeed, candidatesPerIteration, mutationSeed, and maxSteps.",
+          })
+          return
+        }
+
+        const args = normalizeTrainingArgs(body)
+        startTrainingProcess(args)
+        sendJson(response, 202, getTrainingStatusPayload())
+        return
+      } catch (error) {
+        sendJson(response, error?.statusCode ?? 400, {
+          error: error instanceof Error ? error.message : "Could not start training.",
+        })
+        return
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/training/cancel") {
+      try {
+        cancelTrainingProcess()
+        sendJson(response, 202, getTrainingStatusPayload())
+        return
+      } catch (error) {
+        sendJson(response, error?.statusCode ?? 400, {
+          error: error instanceof Error ? error.message : "Could not cancel training.",
+        })
+        return
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/training/importance/start") {
+      try {
+        startTrainingImportanceProcess()
+        sendJson(response, 202, getTrainingImportancePayload())
+        return
+      } catch (error) {
+        sendJson(response, error?.statusCode ?? 400, {
+          error: error instanceof Error ? error.message : "Could not start lever importance analysis.",
+        })
+        return
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/training/presets/promote") {
+      try {
+        const body = await readJsonBody(request)
+
+        if (!isValidTrainingPresetPromotionPayload(body)) {
+          sendJson(response, 400, {
+            error: "Preset promotion requests must include presetId: \"bot-avg\" or \"bot-best\".",
+          })
+          return
+        }
+
+        const nextStore = promoteLatestTrainingResultsToPreset(body.presetId)
+        sendJson(response, 200, {
+          outputPath: MANAGED_BOT_PRESETS_PATH,
+          presets: nextStore.presets,
+        })
+        return
+      } catch (error) {
+        sendJson(response, error?.statusCode ?? 400, {
+          error: error instanceof Error ? error.message : "Could not promote training results.",
+        })
+        return
+      }
+    }
+
+    sendJson(response, 405, { error: "Method not allowed for this training route." })
     return
   }
 

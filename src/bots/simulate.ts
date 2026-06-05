@@ -2,22 +2,23 @@ import { createGameState, type CreateGameStateOptions } from "../engine/createGa
 import { buildVictoryStandings } from "../engine/economy"
 import type { GameState } from "../engine/types"
 import { usMap } from "../data/maps/usMap"
+import { createPresetBotController, DEFAULT_BOT_PRESET_ID } from "./presets"
 import { PLAYER_SETUP_PRESETS } from "../gameSetup/defaultPlayers"
 import { applyBotAction, getBotLegalActions, getNextBotPlayerId } from "./actions"
-import { createScriptedBot } from "./scriptedBot"
 import type { BotAction, BotController } from "./types"
 
 export type SimulationTraceEntry = {
   step: number
   playerId: string
   phase: GameState["currentPhase"]
-  action: BotAction["type"]
+  action: BotAction
 }
 
 export type SimulationOptions = CreateGameStateOptions & {
   seed?: number
   players?: CreateGameStateOptions["players"]
   maxSteps?: number
+  recordTrace?: boolean
   botsByPlayerId?: Record<string, BotController>
 }
 
@@ -26,6 +27,7 @@ export type SimulationResult = {
   steps: number
   trace: SimulationTraceEntry[]
   winnerId: string | null
+  timedOut: boolean
 }
 
 function getDefaultSimulationPlayers(playerCount = 4) {
@@ -33,11 +35,19 @@ function getDefaultSimulationPlayers(playerCount = 4) {
     ...player,
     name: `Bot ${index + 1}`,
     isBot: true,
+    botPreset: DEFAULT_BOT_PRESET_ID,
   }))
 }
 
-function getBotController(playerId: string, botsByPlayerId: Record<string, BotController>) {
-  return botsByPlayerId[playerId] ?? createScriptedBot(playerId)
+function getBotController(game: GameState, playerId: string, botsByPlayerId: Record<string, BotController>) {
+  return (
+    botsByPlayerId[playerId] ??
+    createPresetBotController(
+      playerId,
+      game.players.find(player => player.id === playerId)?.botPreset,
+      game.botPresetWeightsById,
+    )
+  )
 }
 
 export function createSimulationGame(options: SimulationOptions = {}) {
@@ -59,11 +69,12 @@ export function runBotSimulation(options: SimulationOptions = {}): SimulationRes
     Object.fromEntries(
       (options.players ?? getDefaultSimulationPlayers()).map(player => [
         player.id,
-        createScriptedBot(player.id),
+        createPresetBotController(player.id, player.botPreset, options.botPresetWeightsById),
       ]),
     )
   let game = createSimulationGame(options)
-  const maxSteps = options.maxSteps ?? 20_000
+  const maxSteps = options.maxSteps ?? 2_000
+  const recordTrace = options.recordTrace ?? true
 
   for (let step = 1; step <= maxSteps; step += 1) {
     if (game.isGameOver) {
@@ -73,6 +84,7 @@ export function runBotSimulation(options: SimulationOptions = {}): SimulationRes
         steps: step - 1,
         trace,
         winnerId,
+        timedOut: false,
       }
     }
 
@@ -83,7 +95,7 @@ export function runBotSimulation(options: SimulationOptions = {}): SimulationRes
     }
 
     const legalActions = getBotLegalActions(game, playerId)
-    const bot = getBotController(playerId, botsByPlayerId)
+    const bot = getBotController(game, playerId, botsByPlayerId)
     const action = bot.pickAction({
       game,
       playerId,
@@ -91,14 +103,22 @@ export function runBotSimulation(options: SimulationOptions = {}): SimulationRes
       phase: game.currentPhase,
     })
 
-    trace.push({
-      step,
-      playerId,
-      phase: game.currentPhase,
-      action: action.type,
-    })
+    if (recordTrace) {
+      trace.push({
+        step,
+        playerId,
+        phase: game.currentPhase,
+        action,
+      })
+    }
     game = applyBotAction(game, playerId, action)
   }
 
-  throw new Error(`Bot simulation exceeded ${maxSteps} steps without reaching game over.`)
+  return {
+    game,
+    steps: maxSteps,
+    trace,
+    winnerId: null,
+    timedOut: true,
+  }
 }

@@ -1,4 +1,6 @@
 import { usMap } from "../data/maps/usMap"
+import type { BotPresetId, ManagedBotPresetEntry, ManagedBotPresetId } from "../bots/presets"
+import type { ScriptedBotLeverImportanceResults } from "../bots/training"
 import type { GameState } from "../engine/types"
 
 const DEFAULT_SESSION_SERVER_PORT = "8787"
@@ -11,6 +13,7 @@ export type LanSessionLobbyPlayer = {
   claimedBy: string | null
   isReady: boolean
   isBot: boolean
+  botPreset: BotPresetId | null
 }
 
 export type LanSessionLobby = {
@@ -56,6 +59,51 @@ export type SessionServerHealth = {
   sessions: number
   activeSessionId: string | null
   lanAddresses: string[]
+}
+
+export type TrainingStartRequest = {
+  iterations: number
+  gamesPerCandidate: number
+  baseSeed: number
+  candidatesPerIteration: number
+  mutationSeed: number
+  maxSteps: number
+}
+
+export type TrainingStatus = {
+  status: "idle" | "running" | "completed" | "failed" | "cancelled"
+  args: TrainingStartRequest | null
+  pid: number | null
+  startedAt: string | null
+  finishedAt: string | null
+  exitCode: number | null
+  signal: string | null
+  outputPath: string
+  logs: string[]
+  isRunning: boolean
+}
+
+export type TrainingPresetStatus = {
+  outputPath: string
+  presets: Partial<Record<ManagedBotPresetId, ManagedBotPresetEntry>>
+}
+
+export type PromoteTrainingPresetRequest = {
+  presetId: ManagedBotPresetId
+}
+
+export type TrainingImportanceStatus = {
+  status: "idle" | "running" | "completed" | "failed"
+  pid: number | null
+  startedAt: string | null
+  finishedAt: string | null
+  exitCode: number | null
+  signal: string | null
+  outputPath: string
+  sourceTrainingGeneratedAt: string | null
+  error: string | null
+  isRunning: boolean
+  result: ScriptedBotLeverImportanceResults | null
 }
 
 export type LanSessionSummary = {
@@ -319,6 +367,57 @@ export async function fetchLanSession(serverUrl: string, sessionId: string) {
 export async function fetchSessionServerHealth(serverUrl: string) {
   const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
   return requestSessionJson<SessionServerHealth>(`${normalizedServerUrl}/health`)
+}
+
+export async function fetchTrainingStatus(serverUrl: string) {
+  const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
+  return requestSessionJson<TrainingStatus>(`${normalizedServerUrl}/training/status`)
+}
+
+export async function startTraining(serverUrl: string, request: TrainingStartRequest) {
+  const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
+  return requestSessionJson<TrainingStatus>(`${normalizedServerUrl}/training/start`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+  })
+}
+
+export async function cancelTraining(serverUrl: string) {
+  const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
+  return requestSessionJson<TrainingStatus>(`${normalizedServerUrl}/training/cancel`, {
+    method: "POST",
+  })
+}
+
+export async function fetchTrainingPresets(serverUrl: string) {
+  const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
+  return requestSessionJson<TrainingPresetStatus>(`${normalizedServerUrl}/training/presets`)
+}
+
+export async function promoteTrainingPreset(serverUrl: string, request: PromoteTrainingPresetRequest) {
+  const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
+  return requestSessionJson<TrainingPresetStatus>(`${normalizedServerUrl}/training/presets/promote`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+  })
+}
+
+export async function fetchTrainingImportance(serverUrl: string) {
+  const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
+  return requestSessionJson<TrainingImportanceStatus>(`${normalizedServerUrl}/training/importance`)
+}
+
+export async function startTrainingImportance(serverUrl: string) {
+  const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
+  return requestSessionJson<TrainingImportanceStatus>(`${normalizedServerUrl}/training/importance/start`, {
+    method: "POST",
+  })
 }
 
 export async function listLanSessions(serverUrl: string) {

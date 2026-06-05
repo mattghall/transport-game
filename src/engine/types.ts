@@ -1,3 +1,5 @@
+import type { BotPresetId } from "../bots/presets"
+import type { ScriptedBotWeights } from "../bots/scriptedBot"
 import type { AdjacentCity, GameMap } from "./maps/types"
 
 export type PlayerInventory = {
@@ -127,6 +129,7 @@ export type Player = {
   name: string
   color: string
   isBot?: boolean
+  botPreset?: BotPresetId
   money: number
   totalPassengersServed: number
   startingCityId?: string
@@ -213,7 +216,9 @@ export type GameState = {
   hasPurchasedVehicleThisPhase: boolean
   purchasedVehicleTypesThisPhase: VehiclePurchasesByType
   claimedRoutePlayerIdsThisTurn: string[]
+  claimedRouteCountsByPlayerIdThisTurn: Record<string, number>
   claimedRouteModesThisPhase: RouteClaimsByMode
+  botPresetWeightsById?: Partial<Record<BotPresetId, ScriptedBotWeights>>
 
   players: Player[]
   leadPlayerIndex: number

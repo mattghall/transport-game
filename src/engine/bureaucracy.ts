@@ -870,19 +870,35 @@ export function migrateBureaucracyServiceState(
     const nextServiceGroups = buildOwnedServiceGroups(nextGame, nextPlayer)
 
     for (const nextServiceGroup of nextServiceGroups) {
-      const matchingPreviousSlots = previousSlotStates
-        .filter(
-          slot =>
-            slot.mode === nextServiceGroup.mode &&
-            slot.availableCityIds.some(cityId => nextServiceGroup.cityIds.includes(cityId)),
-        )
-        .sort((slotA, slotB) => {
-          if (slotA.corridorId !== slotB.corridorId) {
-            return slotA.corridorId.localeCompare(slotB.corridorId)
-          }
+      const matchingPreviousSlotGroups = Array.from(
+        previousSlotStates
+          .filter(
+            slot =>
+              slot.mode === nextServiceGroup.mode &&
+              slot.availableCityIds.some(cityId => nextServiceGroup.cityIds.includes(cityId)),
+          )
+          .reduce((groups, slot) => {
+            const currentGroup = groups.get(slot.corridorId) ?? []
+            currentGroup.push(slot)
+            groups.set(slot.corridorId, currentGroup)
+            return groups
+          }, new Map<string, PersistedServiceSlotState[]>()),
+      )
+      const matchingPreviousSlots =
+        matchingPreviousSlotGroups
+          .sort(([, slotGroupA], [, slotGroupB]) => {
+            const overlapA = new Set(slotGroupA.flatMap(slot => slot.availableCityIds))
+            const overlapB = new Set(slotGroupB.flatMap(slot => slot.availableCityIds))
+            const overlapScoreA = nextServiceGroup.cityIds.filter(cityId => overlapA.has(cityId)).length
+            const overlapScoreB = nextServiceGroup.cityIds.filter(cityId => overlapB.has(cityId)).length
 
-          return slotA.slotIndex - slotB.slotIndex
-        })
+            if (overlapScoreA !== overlapScoreB) {
+              return overlapScoreB - overlapScoreA
+            }
+
+            return slotGroupA[0]?.corridorId.localeCompare(slotGroupB[0]?.corridorId ?? "") ?? 0
+          })[0]?.[1]
+          ?.sort((slotA, slotB) => slotA.slotIndex - slotB.slotIndex) ?? []
 
       if (matchingPreviousSlots.length === 0) {
         continue

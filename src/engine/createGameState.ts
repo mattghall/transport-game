@@ -1,3 +1,5 @@
+import { DEFAULT_BOT_PRESET_ID, normalizeBotPresetId, type BotPresetId } from "../bots/presets"
+import type { ScriptedBotWeights } from "../bots/scriptedBot"
 import type { GameMap } from "./maps/types"
 import type {
   ChanceCard,
@@ -93,6 +95,7 @@ export type GameSetupPlayer = {
   name: string
   color: string
   isBot?: boolean
+  botPreset?: BotPresetId
 }
 
 export type CreateGameStateOptions = {
@@ -101,6 +104,7 @@ export type CreateGameStateOptions = {
   chanceCards?: ChanceCard[]
   startingMoney?: number
   seed?: number
+  botPresetWeightsById?: Partial<Record<BotPresetId, ScriptedBotWeights>>
 }
 
 function shuffleVehicleCards(cards: VehicleCard[], initialRandomState: number) {
@@ -179,6 +183,7 @@ function createPlayer(player: GameSetupPlayer, startingMoney: number): Player {
     name: player.name,
     color: player.color,
     isBot: player.isBot ?? false,
+    botPreset: player.isBot ? normalizeBotPresetId(player.botPreset ?? DEFAULT_BOT_PRESET_ID) : undefined,
     money: startingMoney,
     totalPassengersServed: 0,
     startingCityId: undefined,
@@ -305,7 +310,9 @@ export function createGameState(
     hasPurchasedVehicleThisPhase: false,
     purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
     claimedRoutePlayerIdsThisTurn: [],
+    claimedRouteCountsByPlayerIdThisTurn: {},
     claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
+    botPresetWeightsById: options.botPresetWeightsById ? { ...options.botPresetWeightsById } : undefined,
     players,
     leadPlayerIndex: 0,
     currentPlayerId: players[0]?.id ?? "p1",
