@@ -16,9 +16,11 @@ const PROJECT_ROOT = resolve(__dirname, "..")
 const TSX_CLI_PATH = resolve(PROJECT_ROOT, "node_modules/tsx/dist/cli.mjs")
 const TRAINING_SCRIPT_PATH = resolve(PROJECT_ROOT, "scripts/trainBotWeights.ts")
 const TRAINING_IMPORTANCE_SCRIPT_PATH = resolve(PROJECT_ROOT, "scripts/analyzeBotWeights.ts")
+const AUTOTUNE_SCRIPT_PATH = resolve(PROJECT_ROOT, "scripts/autotuneBots.ts")
 const TRAINING_RESULTS_PATH = resolve(PROJECT_ROOT, "public/training-results/latest.json")
 const TRAINING_IMPORTANCE_RESULTS_PATH = resolve(PROJECT_ROOT, "public/training-results/latest-importance.json")
 const MANAGED_BOT_PRESETS_PATH = resolve(PROJECT_ROOT, "public/training-results/bot-presets.json")
+const AUTOTUNE_STATUS_PATH = resolve(PROJECT_ROOT, "public/training-results/autotune-status.json")
 const TRAINING_LOG_LIMIT = 400
 const TRAINED_WEIGHT_KEYS = [
   "vehiclePriorityBus",
@@ -56,6 +58,7 @@ const TRAINED_WEIGHT_KEYS = [
 let activeTrainingProcess = null
 let activeTrainingKillTimeoutId = null
 let activeTrainingImportanceProcess = null
+let activeAutotuneProcess = null
 let trainingStatus = {
   status: "idle",
   args: null,
@@ -77,6 +80,16 @@ let trainingImportanceStatus = {
   outputPath: TRAINING_IMPORTANCE_RESULTS_PATH,
   sourceTrainingGeneratedAt: null,
   error: null,
+}
+let autotuneControlStatus = {
+  status: "idle",
+  pid: null,
+  startedAt: null,
+  finishedAt: null,
+  exitCode: null,
+  signal: null,
+  outputPath: AUTOTUNE_STATUS_PATH,
+  logs: [],
 }
 
 function isLoopbackRemoteAddress(address) {
@@ -151,6 +164,51 @@ function getTrainingImportancePayload() {
     ...trainingImportanceStatus,
     isRunning: activeTrainingImportanceProcess !== null,
     result: readTrainingImportanceResults(),
+  }
+}
+
+function appendAutotuneLog(line) {
+  const trimmedLine = line.trim()
+
+  if (!trimmedLine) {
+    return
+  }
+
+  autotuneControlStatus.logs = [...autotuneControlStatus.logs, `[${new Date().toISOString()}] ${trimmedLine}`].slice(
+    -TRAINING_LOG_LIMIT,
+  )
+}
+
+function readAutotuneStatusFile() {
+  if (!existsSync(AUTOTUNE_STATUS_PATH)) {
+    return null
+  }
+
+  try {
+    const parsedValue = JSON.parse(readFileSync(AUTOTUNE_STATUS_PATH, "utf8"))
+    return isRecord(parsedValue) ? parsedValue : null
+  } catch {
+    return null
+  }
+}
+
+function hasStaleAutotuneRun() {
+  const existingAutotuneStatus = readAutotuneStatusFile()
+  return isRecord(existingAutotuneStatus) && isRecord(existingAutotuneStatus.currentRun)
+}
+
+function getAutotuneControlStatusPayload() {
+  if (activeAutotuneProcess === null && hasStaleAutotuneRun()) {
+    return {
+      ...autotuneControlStatus,
+      status: "unknown",
+      isRunning: false,
+    }
+  }
+
+  return {
+    ...autotuneControlStatus,
+    isRunning: activeAutotuneProcess !== null,
   }
 }
 
@@ -301,6 +359,7 @@ function promoteLatestTrainingResultsToPreset(presetId) {
         sourceConfig: {
           iterations: trainingResults.config.iterations,
           gamesPerCandidate: trainingResults.config.gamesPerCandidate,
+          playerCount: trainingResults.config.playerCount ?? 4,
           baseSeed: trainingResults.config.baseSeed,
           candidatesPerIteration: trainingResults.config.candidatesPerIteration,
           mutationSeed: trainingResults.config.mutationSeed,
@@ -324,6 +383,8 @@ function isValidTrainingStartPayload(value) {
     Number.isFinite(value.iterations) &&
     typeof value.gamesPerCandidate === "number" &&
     Number.isFinite(value.gamesPerCandidate) &&
+    typeof value.playerCount === "number" &&
+    Number.isFinite(value.playerCount) &&
     typeof value.baseSeed === "number" &&
     Number.isFinite(value.baseSeed) &&
     typeof value.candidatesPerIteration === "number" &&
@@ -343,6 +404,7 @@ function normalizeTrainingArgs(body) {
   const args = {
     iterations: Math.trunc(body.iterations),
     gamesPerCandidate: Math.trunc(body.gamesPerCandidate),
+    playerCount: Math.trunc(body.playerCount),
     baseSeed: Math.trunc(body.baseSeed),
     candidatesPerIteration: Math.trunc(body.candidatesPerIteration),
     mutationSeed: Math.trunc(body.mutationSeed),
@@ -352,10 +414,12 @@ function normalizeTrainingArgs(body) {
   if (
     args.iterations < 1 ||
     args.gamesPerCandidate < 1 ||
+    args.playerCount < 2 ||
+    args.playerCount > 4 ||
     args.candidatesPerIteration < 1 ||
     args.maxSteps < 1
   ) {
-    const error = new Error("Training parameters must all be positive integers.")
+    const error = new Error("Training parameters must be positive integers, and player count must be between 2 and 4.")
     error.statusCode = 400
     throw error
   }
@@ -377,6 +441,18 @@ function normalizeTrainingArgs(body) {
 function startTrainingProcess(args) {
   if (activeTrainingProcess) {
     const error = new Error("Training is already running.")
+    error.statusCode = 409
+    throw error
+  }
+
+  if (activeAutotuneProcess) {
+    const error = new Error("Autotune is already running. Stop it before starting a manual training run.")
+    error.statusCode = 409
+    throw error
+  }
+
+  if (hasStaleAutotuneRun()) {
+    const error = new Error("Autotune may still be running from a previous server session. Verify it is stopped before starting a manual training run.")
     error.statusCode = 409
     throw error
   }
@@ -413,6 +489,7 @@ function startTrainingProcess(args) {
       TRAINING_SCRIPT_PATH,
       String(args.iterations),
       String(args.gamesPerCandidate),
+      String(args.playerCount),
       String(args.baseSeed),
       String(args.candidatesPerIteration),
       String(args.mutationSeed),
@@ -589,6 +666,123 @@ function cancelTrainingProcess() {
       activeTrainingProcess.kill("SIGKILL")
     }
   }, 2000)
+}
+
+function startAutotuneProcess() {
+  if (activeAutotuneProcess) {
+    const error = new Error("Autotune is already running.")
+    error.statusCode = 409
+    throw error
+  }
+
+  if (activeTrainingProcess) {
+    const error = new Error("A manual training run is already running. Wait for it to finish before starting autotune.")
+    error.statusCode = 409
+    throw error
+  }
+
+  if (hasStaleAutotuneRun()) {
+    autotuneControlStatus = {
+      ...autotuneControlStatus,
+      status: "unknown",
+      logs: [
+        ...autotuneControlStatus.logs,
+        `[${new Date().toISOString()}] Autotune status file still shows an active run. Verify no older autotune process is still running before starting another one.`,
+      ].slice(-TRAINING_LOG_LIMIT),
+    }
+    const error = new Error("Autotune may still be running from a previous server session. Verify it is stopped before starting another autotune loop.")
+    error.statusCode = 409
+    throw error
+  }
+
+  autotuneControlStatus = {
+    status: "running",
+    pid: null,
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    exitCode: null,
+    signal: null,
+    outputPath: AUTOTUNE_STATUS_PATH,
+    logs: [`[${new Date().toISOString()}] Starting autotune loop.`],
+  }
+
+  const child = spawn(process.execPath, [TSX_CLI_PATH, AUTOTUNE_SCRIPT_PATH], {
+    cwd: PROJECT_ROOT,
+    env: process.env,
+    stdio: ["ignore", "pipe", "pipe"],
+  })
+
+  activeAutotuneProcess = child
+  autotuneControlStatus.pid = child.pid ?? null
+  let stdoutRemainder = ""
+  let stderrRemainder = ""
+
+  child.stdout.on("data", chunk => {
+    const combinedOutput = stdoutRemainder + chunk.toString("utf8")
+    const lines = combinedOutput.split(/\r?\n/)
+    stdoutRemainder = lines.pop() ?? ""
+    lines.forEach(appendAutotuneLog)
+  })
+
+  child.stderr.on("data", chunk => {
+    const combinedOutput = stderrRemainder + chunk.toString("utf8")
+    const lines = combinedOutput.split(/\r?\n/)
+    stderrRemainder = lines.pop() ?? ""
+    lines.forEach(line => appendAutotuneLog(`stderr: ${line}`))
+  })
+
+  child.on("error", error => {
+    appendAutotuneLog(`Failed to launch autotune: ${error.message}`)
+  })
+
+  child.on("exit", (exitCode, signal) => {
+    if (stdoutRemainder) {
+      appendAutotuneLog(stdoutRemainder)
+    }
+
+    if (stderrRemainder) {
+      appendAutotuneLog(`stderr: ${stderrRemainder}`)
+    }
+
+    activeAutotuneProcess = null
+    autotuneControlStatus = {
+      ...autotuneControlStatus,
+      status:
+        autotuneControlStatus.status === "stopping"
+          ? "completed"
+          : exitCode === 0
+            ? "completed"
+            : "failed",
+      finishedAt: new Date().toISOString(),
+      exitCode: exitCode ?? null,
+      signal: signal ?? null,
+      pid: null,
+    }
+    appendAutotuneLog(
+      autotuneControlStatus.status === "completed"
+        ? "Autotune loop stopped."
+        : `Autotune exited with code ${exitCode ?? "unknown"}${signal ? ` (${signal})` : ""}.`,
+    )
+  })
+}
+
+function stopAutotuneProcess() {
+  if (!activeAutotuneProcess) {
+    const error = new Error("No autotune process is currently running.")
+    error.statusCode = 409
+    throw error
+  }
+
+  if (autotuneControlStatus.status === "stopping") {
+    return
+  }
+
+  autotuneControlStatus = {
+    ...autotuneControlStatus,
+    status: "stopping",
+  }
+  appendAutotuneLog("Stop requested. The autotune loop will exit after the current cycle finishes.")
+  activeAutotuneProcess.kill("SIGINT")
 }
 
 function getLanAddresses() {
@@ -950,6 +1144,11 @@ const server = createServer(async (request, response) => {
       return
     }
 
+    if (request.method === "GET" && url.pathname === "/training/autotune/status") {
+      sendJson(response, 200, getAutotuneControlStatusPayload())
+      return
+    }
+
     if (request.method === "GET" && url.pathname === "/training/presets") {
       sendJson(response, 200, getTrainingPresetPayload())
       return
@@ -961,7 +1160,7 @@ const server = createServer(async (request, response) => {
 
         if (!isValidTrainingStartPayload(body)) {
           sendJson(response, 400, {
-            error: "Training start requests must include iterations, gamesPerCandidate, baseSeed, candidatesPerIteration, mutationSeed, and maxSteps.",
+            error: "Training start requests must include iterations, gamesPerCandidate, playerCount, baseSeed, candidatesPerIteration, mutationSeed, and maxSteps.",
           })
           return
         }
@@ -986,6 +1185,32 @@ const server = createServer(async (request, response) => {
       } catch (error) {
         sendJson(response, error?.statusCode ?? 400, {
           error: error instanceof Error ? error.message : "Could not cancel training.",
+        })
+        return
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/training/autotune/start") {
+      try {
+        startAutotuneProcess()
+        sendJson(response, 202, getAutotuneControlStatusPayload())
+        return
+      } catch (error) {
+        sendJson(response, error?.statusCode ?? 400, {
+          error: error instanceof Error ? error.message : "Could not start autotune.",
+        })
+        return
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/training/autotune/stop") {
+      try {
+        stopAutotuneProcess()
+        sendJson(response, 202, getAutotuneControlStatusPayload())
+        return
+      } catch (error) {
+        sendJson(response, error?.statusCode ?? 400, {
+          error: error instanceof Error ? error.message : "Could not stop autotune.",
         })
         return
       }

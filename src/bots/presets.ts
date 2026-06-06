@@ -1,10 +1,15 @@
 import type { GameState, Player } from "../engine/types"
-import { createScriptedBot, type ScriptedBotWeights } from "./scriptedBot"
+import {
+  FROZEN_SCRIPTED_BOT_WEIGHT_KEYS,
+  MUTABLE_SCRIPTED_BOT_WEIGHT_KEYS,
+} from "./leverMetadata"
+import { createScriptedBot, mergeScriptedBotWeights, type ScriptedBotWeights } from "./scriptedBot"
 import type { BotAction, BotController } from "./types"
 import type { ScriptedBotTrainingResults } from "./training"
 
 export const BOT_PRESET_IDS = ["bot-avg", "bot-best", "bot-chaos"] as const
 export type BotPresetId = (typeof BOT_PRESET_IDS)[number]
+type SupportedTrainingPlayerCount = 2 | 3 | 4
 
 export const DEFAULT_BOT_PRESET_ID: BotPresetId = "bot-avg"
 export const MANAGED_BOT_PRESETS_PATH = "/training-results/bot-presets.json"
@@ -19,6 +24,15 @@ export const BEST_BOT_WEIGHTS: ScriptedBotWeights = {
   claimNewCityBonus: 16.025491999462247,
   claimFirstModeBonus: 30.775275547988713,
   claimRailCostPenaltyPerMillion: 1.902319767108808,
+  claimPacificPreference: 0,
+  claimMountainPreference: 0,
+  claimSouthPreference: 0,
+  claimSoutheastPreference: 0,
+  claimMidwestPreference: 0,
+  claimNortheastPreference: 0,
+  claimSameRegionLinkBonus: 0,
+  claimNewRegionBonus: 0,
+  claimLongDistancePreference: 0,
   buyBusOwnedCityBonus: 5.059903667370479,
   buyTrainPotentialClaimBonus: 38.80726578099032,
   buyTrainFallbackOwnedCityBonus: 6.749551630578935,
@@ -56,7 +70,7 @@ export const BOT_PRESETS: ReadonlyArray<{
   {
     id: "bot-best",
     label: "Stickbug",
-    description: "The strongest trained preset from the current saved run.",
+    description: "Uses the saved autotuned champion for this player count when available.",
   },
   {
     id: "bot-chaos",
@@ -93,6 +107,15 @@ export type ManagedBotPresetStore = {
   presets: Partial<Record<ManagedBotPresetId, ManagedBotPresetEntry>>
 }
 
+type AutotunedChampionEntry = {
+  version: 1
+  updatedAt: string
+  cycle: number
+  playerCount: SupportedTrainingPlayerCount
+  benchmark: ScriptedBotTrainingResults["final"]
+  training: ScriptedBotTrainingResults
+}
+
 export function normalizeBotPresetId(value: string | null | undefined): BotPresetId {
   return BOT_PRESET_IDS.find(presetId => presetId === value) ?? DEFAULT_BOT_PRESET_ID
 }
@@ -115,7 +138,10 @@ export function isScriptedBotWeights(value: unknown): value is ScriptedBotWeight
     return false
   }
 
-  return Object.keys(BEST_BOT_WEIGHTS).every(key => isFiniteNumber(value[key]))
+  return Object.entries(BEST_BOT_WEIGHTS).every(([key, fallback]) => {
+    const candidateValue = value[key]
+    return candidateValue === undefined || isFiniteNumber(candidateValue) || typeof fallback !== "number"
+  })
 }
 
 function parseManagedBotPresetEntry(value: unknown): ManagedBotPresetEntry | null {
@@ -148,6 +174,7 @@ function parseManagedBotPresetEntry(value: unknown): ManagedBotPresetEntry | nul
     !isFiniteNumber(sourceSummary.sampleCount) ||
     !isFiniteNumber(sourceConfig.iterations) ||
     !isFiniteNumber(sourceConfig.gamesPerCandidate) ||
+    (sourceConfig.playerCount !== undefined && !isFiniteNumber(sourceConfig.playerCount)) ||
     !isFiniteNumber(sourceConfig.baseSeed) ||
     !isFiniteNumber(sourceConfig.candidatesPerIteration) ||
     !isFiniteNumber(sourceConfig.mutationSeed) ||
@@ -161,7 +188,7 @@ function parseManagedBotPresetEntry(value: unknown): ManagedBotPresetEntry | nul
     presetId: value.presetId as ManagedBotPresetId,
     promotedAt: value.promotedAt,
     sourceTrainingGeneratedAt: value.sourceTrainingGeneratedAt,
-    weights: value.weights,
+    weights: mergeScriptedBotWeights(value.weights as Partial<ScriptedBotWeights>),
     sourceSummary: {
       score: sourceSummary.score,
       winRate: sourceSummary.winRate,
@@ -175,11 +202,18 @@ function parseManagedBotPresetEntry(value: unknown): ManagedBotPresetEntry | nul
     sourceConfig: {
       iterations: sourceConfig.iterations,
       gamesPerCandidate: sourceConfig.gamesPerCandidate,
+      playerCount: sourceConfig.playerCount ?? 4,
       baseSeed: sourceConfig.baseSeed,
       candidatesPerIteration: sourceConfig.candidatesPerIteration,
       mutationSeed: sourceConfig.mutationSeed,
       maxSteps: sourceConfig.maxSteps,
       outputPath: sourceConfig.outputPath,
+      mutableLeverKeys: Array.isArray(sourceConfig.mutableLeverKeys)
+        ? (sourceConfig.mutableLeverKeys as Array<keyof ScriptedBotWeights>)
+        : MUTABLE_SCRIPTED_BOT_WEIGHT_KEYS,
+      frozenLeverKeys: Array.isArray(sourceConfig.frozenLeverKeys)
+        ? (sourceConfig.frozenLeverKeys as Array<keyof ScriptedBotWeights>)
+        : [...FROZEN_SCRIPTED_BOT_WEIGHT_KEYS],
     },
   }
 }
@@ -227,14 +261,78 @@ export async function fetchManagedBotPresetStore() {
   }
 }
 
-export async function fetchManagedBotPresetWeightOverrides() {
+function parseAutotunedChampionEntry(
+  value: unknown,
+  playerCount: SupportedTrainingPlayerCount,
+): AutotunedChampionEntry | null {
+  if (
+    !isRecord(value) ||
+    value.version !== 1 ||
+    typeof value.updatedAt !== "string" ||
+    !isFiniteNumber(value.cycle) ||
+    value.playerCount !== playerCount ||
+    !isRecord(value.training) ||
+    !isRecord(value.training.final) ||
+    !isScriptedBotWeights(value.training.final.weights)
+  ) {
+    return null
+  }
+
+  return {
+    version: 1,
+    updatedAt: value.updatedAt,
+    cycle: value.cycle,
+    playerCount,
+    benchmark: value.training.final as ScriptedBotTrainingResults["final"],
+    training: value.training as ScriptedBotTrainingResults,
+  }
+}
+
+async function fetchAutotunedChampionEntry(playerCount: SupportedTrainingPlayerCount) {
+  let response: Response
+
+  try {
+    response = await fetch(`/training-results/champion-${playerCount}p.json?tick=${Date.now()}`, {
+      cache: "no-store",
+    })
+  } catch {
+    return null
+  }
+
+  if (!response.ok) {
+    return null
+  }
+
+  try {
+    return parseAutotunedChampionEntry(await response.json(), playerCount)
+  } catch {
+    return null
+  }
+}
+
+export async function fetchManagedBotPresetWeightOverrides(playerCount?: number) {
   const store = await fetchManagedBotPresetStore()
-  return Object.fromEntries(
+  const baseWeights = Object.fromEntries(
     MANAGED_BOT_PRESET_IDS.flatMap(presetId => {
       const preset = store?.presets[presetId]
       return preset ? [[presetId, preset.weights]] : []
     }),
   ) satisfies Partial<Record<BotPresetId, ScriptedBotWeights>>
+
+  if (playerCount !== 2 && playerCount !== 3 && playerCount !== 4) {
+    return baseWeights
+  }
+
+  const champion = await fetchAutotunedChampionEntry(playerCount)
+
+  if (!champion) {
+    return baseWeights
+  }
+
+  return {
+    ...baseWeights,
+    "bot-best": champion.training.final.weights,
+  } satisfies Partial<Record<BotPresetId, ScriptedBotWeights>>
 }
 
 function hashText(value: string) {

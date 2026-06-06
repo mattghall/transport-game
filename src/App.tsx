@@ -1111,7 +1111,7 @@ export default function App() {
 
     try {
       const initialUserDecks = loadUserDecks()
-      const managedBotPresetWeights = await fetchManagedBotPresetWeightOverrides()
+      const managedBotPresetWeights = await fetchManagedBotPresetWeightOverrides(launchPlayers.length)
       const snapshot = await createLanSession(defaultSessionServerUrl, {
         sessionName: `Transport Game LAN (${launchPlayers.length} seats)`,
         game: createGameState(usMap, {
@@ -1801,7 +1801,7 @@ export default function App() {
     }
 
     const initialUserDecks = loadUserDecks()
-    const managedBotPresetWeights = await fetchManagedBotPresetWeightOverrides()
+    const managedBotPresetWeights = await fetchManagedBotPresetWeightOverrides(players.length)
     const nextGame = createGameState(usMap, {
       players,
       vehicleCards: initialUserDecks.vehicleCards,

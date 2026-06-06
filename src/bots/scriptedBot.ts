@@ -1,7 +1,9 @@
 import { getPlayerById, calculateClaimRouteCost, resolveRouteSelection } from "../engine/actions"
+import { getPayoutMultiplierForDistance } from "../engine/bureaucracy"
 import { getConnectedCityIds } from "../engine/economy"
 import { getPlayerOwnedNetworkRoutes } from "../engine/playerNetwork"
-import type { VehicleType } from "../engine/types"
+import { CITY_DECK_REGIONS, type City, type CityDeckRegion, type VehicleType } from "../engine/types"
+import { calculateDistanceMiles } from "../engine/trips"
 import { getBotLegalActions } from "./actions"
 import { getBotGameStage, getOwnedCityPairs, type BotGameStage } from "./strategy"
 import type { BotAction, BotController } from "./types"
@@ -16,6 +18,15 @@ export type ScriptedBotWeights = {
   claimNewCityBonus: number
   claimFirstModeBonus: number
   claimRailCostPenaltyPerMillion: number
+  claimPacificPreference: number
+  claimMountainPreference: number
+  claimSouthPreference: number
+  claimSoutheastPreference: number
+  claimMidwestPreference: number
+  claimNortheastPreference: number
+  claimSameRegionLinkBonus: number
+  claimNewRegionBonus: number
+  claimLongDistancePreference: number
   buyBusOwnedCityBonus: number
   buyTrainPotentialClaimBonus: number
   buyTrainFallbackOwnedCityBonus: number
@@ -50,6 +61,15 @@ export const DEFAULT_SCRIPTED_BOT_WEIGHTS: ScriptedBotWeights = {
   claimNewCityBonus: 24,
   claimFirstModeBonus: 18,
   claimRailCostPenaltyPerMillion: 1,
+  claimPacificPreference: 0,
+  claimMountainPreference: 0,
+  claimSouthPreference: 0,
+  claimSoutheastPreference: 0,
+  claimMidwestPreference: 0,
+  claimNortheastPreference: 0,
+  claimSameRegionLinkBonus: 0,
+  claimNewRegionBonus: 0,
+  claimLongDistancePreference: 0,
   buyBusOwnedCityBonus: 4,
   buyTrainPotentialClaimBonus: 38,
   buyTrainFallbackOwnedCityBonus: 6,
@@ -83,6 +103,15 @@ export function mergeScriptedBotWeights(
   }
 }
 
+const REGION_WEIGHT_KEY_BY_REGION: Record<CityDeckRegion, keyof ScriptedBotWeights> = {
+  Pacific: "claimPacificPreference",
+  Mountain: "claimMountainPreference",
+  South: "claimSouthPreference",
+  Southeast: "claimSoutheastPreference",
+  Midwest: "claimMidwestPreference",
+  Northeast: "claimNortheastPreference",
+}
+
 function getVehiclePriority(type: VehicleType, weights: ScriptedBotWeights) {
   switch (type) {
     case "bus":
@@ -107,6 +136,17 @@ function getStageWeight(
     case "late":
       return weights[`late${keyPrefix}`]
   }
+}
+
+function getPrimaryRegion(city: City | undefined): CityDeckRegion | null {
+  const primaryRegion = city?.region?.[0]
+  return primaryRegion && CITY_DECK_REGIONS.includes(primaryRegion as CityDeckRegion)
+    ? (primaryRegion as CityDeckRegion)
+    : null
+}
+
+function getRegionPreference(region: CityDeckRegion, weights: ScriptedBotWeights) {
+  return weights[REGION_WEIGHT_KEY_BY_REGION[region]]
 }
 
 function countPotentialClaims(
@@ -163,10 +203,45 @@ function scoreClaimRouteAction(
     0,
   )
   const newCityCount = action.cityIds.filter(cityId => !connectedCityIdSet.has(cityId)).length
+  const candidateRegions = action.cityIds
+    .map(cityId => getPrimaryRegion(cityMap.get(cityId)))
+    .filter((region): region is CityDeckRegion => region !== null)
+  const connectedRegions = new Set(
+    [...connectedCityIdSet]
+      .map(cityId => getPrimaryRegion(cityMap.get(cityId)))
+      .filter((region): region is CityDeckRegion => region !== null),
+  )
+  const newRegionCount = [...new Set(candidateRegions)].filter(region => !connectedRegions.has(region)).length
   const cost = calculateClaimRouteCost(game, {
     mode: action.mode,
     cityIds: action.cityIds,
   })
+  const regionPreferenceScore = candidateRegions.reduce(
+    (total, region) => total + getRegionPreference(region, weights),
+    0,
+  )
+  const sameRegionLinkBonus =
+    action.cityIds.length >= 2 &&
+    candidateRegions.length === action.cityIds.length &&
+    new Set(candidateRegions).size === 1
+      ? weights.claimSameRegionLinkBonus
+      : 0
+  const resolvedSelection = resolveRouteSelection(game, action.cityIds, action.mode)
+  const totalDistanceMiles =
+    resolvedSelection.ok
+      ? resolvedSelection.segmentPairs.reduce((total, [cityAId, cityBId]) => {
+          const cityA = cityMap.get(cityAId)
+          const cityB = cityMap.get(cityBId)
+
+          if (!cityA || !cityB) {
+            return total
+          }
+
+          return total + calculateDistanceMiles(cityA, cityB)
+        }, 0)
+      : 0
+  const distancePreferenceScore =
+    getPayoutMultiplierForDistance(totalDistanceMiles) * weights.claimLongDistancePreference
 
   return (
     (action.mode === "rail" ? weights.claimRailBaseScore : weights.claimAirBaseScore) +
@@ -178,7 +253,11 @@ function scoreClaimRouteAction(
       getStageWeight(stage, weights, "ExpansionMultiplier") +
     (existingRoutesOfMode.length === 0
       ? weights.claimFirstModeBonus * getStageWeight(stage, weights, "ExpansionMultiplier")
-      : 0) -
+      : 0) +
+    regionPreferenceScore +
+    sameRegionLinkBonus +
+    distancePreferenceScore +
+    newRegionCount * weights.claimNewRegionBonus * getStageWeight(stage, weights, "ExpansionMultiplier") -
     (cost / 1_000_000) * weights.claimRailCostPenaltyPerMillion
   )
 }

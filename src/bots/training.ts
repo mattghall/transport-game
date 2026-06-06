@@ -1,7 +1,14 @@
 import { buildVictoryStandings } from "../engine/economy"
-import { randomFloatFromState } from "../engine/random"
+import { createInitialRandomState, randomFloatFromState } from "../engine/random"
 import { PLAYER_SETUP_PRESETS } from "../gameSetup/defaultPlayers"
 import type { GameSetupPlayer } from "../engine/createGameState"
+import {
+  FROZEN_SCRIPTED_BOT_WEIGHT_KEYS,
+  MUTABLE_SCRIPTED_BOT_WEIGHT_KEYS,
+  SCRIPTED_BOT_LEVER_METADATA,
+  SCRIPTED_BOT_WEIGHT_KEYS,
+  applyFrozenScriptedBotWeights,
+} from "./leverMetadata"
 import { runBotSimulation } from "./simulate"
 import {
   createScriptedBot,
@@ -9,61 +16,6 @@ import {
   mergeScriptedBotWeights,
   type ScriptedBotWeights,
 } from "./scriptedBot"
-
-const WEIGHT_MUTATION_STEP: Record<keyof ScriptedBotWeights, number> = {
-  vehiclePriorityBus: 18,
-  vehiclePriorityTrain: 18,
-  vehiclePriorityAir: 18,
-  claimRailBaseScore: 24,
-  claimAirBaseScore: 24,
-  claimPopulationPerMillionScore: 2.5,
-  claimNewCityBonus: 10,
-  claimFirstModeBonus: 10,
-  claimRailCostPenaltyPerMillion: 1,
-  buyBusOwnedCityBonus: 2,
-  buyTrainPotentialClaimBonus: 14,
-  buyTrainFallbackOwnedCityBonus: 6,
-  buyTrainNoClaimPenalty: 12,
-  buyAirPotentialClaimBonus: 14,
-  buyAirFallbackOwnedCityBonus: 6,
-  buyAirNoClaimPenalty: 12,
-  buyDuplicateVehiclePenalty: 4,
-  buyFirstTrainBonus: 10,
-  buyFirstAirBonus: 10,
-  earlyExpansionMultiplier: 0.25,
-  midExpansionMultiplier: 0.2,
-  lateExpansionMultiplier: 0.2,
-  earlyPopulationMultiplier: 0.2,
-  midPopulationMultiplier: 0.2,
-  latePopulationMultiplier: 0.25,
-  earlyReadyOperationsScore: 20,
-  midReadyOperationsScore: 24,
-  lateReadyOperationsScore: 28,
-  earlyClaimBudget: 1,
-  midClaimBudget: 1,
-  lateClaimBudget: 1,
-}
-
-const WEIGHT_MINIMUM: Partial<Record<keyof ScriptedBotWeights, number>> = {
-  claimPopulationPerMillionScore: 0,
-  claimRailCostPenaltyPerMillion: 0,
-  buyBusOwnedCityBonus: 0,
-  buyTrainFallbackOwnedCityBonus: 0,
-  buyAirFallbackOwnedCityBonus: 0,
-  buyDuplicateVehiclePenalty: 0,
-  earlyExpansionMultiplier: 0.1,
-  midExpansionMultiplier: 0.1,
-  lateExpansionMultiplier: 0.1,
-  earlyPopulationMultiplier: 0.1,
-  midPopulationMultiplier: 0.1,
-  latePopulationMultiplier: 0.1,
-  earlyReadyOperationsScore: 0,
-  midReadyOperationsScore: 0,
-  lateReadyOperationsScore: 0,
-  earlyClaimBudget: 0,
-  midClaimBudget: 0,
-  lateClaimBudget: 0,
-}
 
 export type ScriptedBotWeightSample = {
   seed: number
@@ -111,15 +63,32 @@ export type ScriptedBotTrainingResults = {
   config: {
     iterations: number
     gamesPerCandidate: number
+    playerCount: number
     baseSeed: number
     candidatesPerIteration: number
     mutationSeed: number
     maxSteps: number
     outputPath: string
+    mutableLeverKeys: Array<keyof ScriptedBotWeights>
+    frozenLeverKeys: Array<keyof ScriptedBotWeights>
   }
   baseline: ScriptedBotWeightEvaluationSummary
   history: ScriptedBotTrainingHistoryEntry[]
   final: ScriptedBotWeightEvaluationSummary
+}
+
+export type ScriptedBotTrainingRunOptions = {
+  iterations: number
+  gamesPerCandidate: number
+  playerCount: number
+  baseSeed: number
+  candidatesPerIteration: number
+  mutationSeed: number
+  maxSteps: number
+  outputPath: string
+  initialWeights?: Partial<ScriptedBotWeights>
+  opponentWeights?: Partial<ScriptedBotWeights>
+  frozenWeights?: Partial<ScriptedBotWeights>
 }
 
 export type ScriptedBotLeverImportanceEntry = {
@@ -142,9 +111,12 @@ export type ScriptedBotLeverImportanceResults = {
   rows: ScriptedBotLeverImportanceEntry[]
   config: {
     gamesPerCandidate: number
+    playerCount: number
     baseSeed: number
     maxSteps: number
     outputPath: string
+    mutableLeverKeys: Array<keyof ScriptedBotWeights>
+    frozenLeverKeys: Array<keyof ScriptedBotWeights>
   }
 }
 
@@ -154,6 +126,10 @@ function createTrainingPlayers(playerCount = 4): GameSetupPlayer[] {
     name: `Bot ${index + 1}`,
     isBot: true,
   }))
+}
+
+export function createTrainingSeeds(start: number, count: number) {
+  return Array.from({ length: count }, (_, index) => start + index)
 }
 
 export function evaluateScriptedBotWeights(options: {
@@ -253,16 +229,24 @@ export function mutateScriptedBotWeights(
   baseWeights: Partial<ScriptedBotWeights>,
   randomState: number,
   temperature = 1,
+  frozenWeights?: Partial<ScriptedBotWeights>,
 ) {
-  const resolvedBaseWeights = mergeScriptedBotWeights(baseWeights)
+  const resolvedBaseWeights = applyFrozenScriptedBotWeights(baseWeights, frozenWeights)
   let nextRandomState = randomState
   const nextWeights = { ...resolvedBaseWeights }
 
-  for (const key of Object.keys(resolvedBaseWeights) as Array<keyof ScriptedBotWeights>) {
+  for (const key of SCRIPTED_BOT_WEIGHT_KEYS) {
     const nextRandom = randomFloatFromState(nextRandomState)
     nextRandomState = nextRandom.randomState
-    const delta = (nextRandom.value * 2 - 1) * WEIGHT_MUTATION_STEP[key] * temperature
-    const minimum = WEIGHT_MINIMUM[key]
+    const metadata = SCRIPTED_BOT_LEVER_METADATA[key]
+
+    if (!metadata.enabled) {
+      nextWeights[key] = resolvedBaseWeights[key]
+      continue
+    }
+
+    const delta = (nextRandom.value * 2 - 1) * metadata.mutationStep * temperature
+    const minimum = metadata.minimum
     nextWeights[key] =
       minimum === undefined
         ? resolvedBaseWeights[key] + delta
@@ -270,7 +254,7 @@ export function mutateScriptedBotWeights(
   }
 
   return {
-    weights: nextWeights,
+    weights: applyFrozenScriptedBotWeights(nextWeights, frozenWeights),
     randomState: nextRandomState,
   }
 }
@@ -280,6 +264,7 @@ export function analyzeScriptedBotLeverImportance(options: {
   finalWeights: Partial<ScriptedBotWeights>
   baselineWeights?: Partial<ScriptedBotWeights>
   opponentWeights?: Partial<ScriptedBotWeights>
+  playerCount?: number
   maxSteps?: number
 }): {
   reference: ScriptedBotWeightEvaluationSummary
@@ -294,6 +279,7 @@ export function analyzeScriptedBotLeverImportance(options: {
       seeds: options.seeds,
       candidateWeights: resolvedFinalWeights,
       opponentWeights: options.opponentWeights ?? resolvedBaselineWeights,
+      playerCount: options.playerCount,
       maxSteps: options.maxSteps,
     }),
   )
@@ -309,6 +295,7 @@ export function analyzeScriptedBotLeverImportance(options: {
           seeds: options.seeds,
           candidateWeights: ablatedWeights,
           opponentWeights: options.opponentWeights ?? resolvedBaselineWeights,
+          playerCount: options.playerCount,
           maxSteps: options.maxSteps,
         }),
       )
@@ -341,5 +328,84 @@ export function analyzeScriptedBotLeverImportance(options: {
   return {
     reference,
     rows,
+  }
+}
+
+export function runScriptedBotTraining(options: ScriptedBotTrainingRunOptions): ScriptedBotTrainingResults {
+  let randomState = createInitialRandomState(options.mutationSeed)
+  const initialWeights = applyFrozenScriptedBotWeights(
+    options.initialWeights ?? DEFAULT_SCRIPTED_BOT_WEIGHTS,
+    options.frozenWeights,
+  )
+  let best = evaluateScriptedBotWeights({
+    seeds: createTrainingSeeds(options.baseSeed, options.gamesPerCandidate),
+    candidateWeights: initialWeights,
+    opponentWeights: options.opponentWeights,
+    playerCount: options.playerCount,
+    maxSteps: options.maxSteps,
+  })
+  const baselineSummary = summarizeScriptedBotWeightEvaluation(best)
+  const history: ScriptedBotTrainingHistoryEntry[] = []
+
+  for (let iteration = 0; iteration < options.iterations; iteration += 1) {
+    const temperature = Math.max(0.2, 1 - iteration / Math.max(options.iterations, 1))
+    const candidates = Array.from(
+      { length: Math.max(options.candidatesPerIteration, 1) },
+      (_, candidateIndex) => {
+        const mutated = mutateScriptedBotWeights(
+          best.weights,
+          randomState,
+          temperature,
+          options.frozenWeights,
+        )
+        randomState = mutated.randomState
+
+        return evaluateScriptedBotWeights({
+          seeds: createTrainingSeeds(
+            options.baseSeed +
+              (iteration + 1) * options.gamesPerCandidate +
+              candidateIndex * options.gamesPerCandidate,
+            options.gamesPerCandidate,
+          ),
+          candidateWeights: mutated.weights,
+          opponentWeights: options.opponentWeights,
+          playerCount: options.playerCount,
+          maxSteps: options.maxSteps,
+        })
+      },
+    ).sort((evaluationA, evaluationB) => evaluationB.score - evaluationA.score)
+
+    const candidateBest = candidates[0]
+    const candidateSummary = candidateBest ? summarizeScriptedBotWeightEvaluation(candidateBest) : null
+
+    if (candidateBest && candidateBest.score > best.score) {
+      best = candidateBest
+    }
+
+    history.push({
+      iteration: iteration + 1,
+      temperature,
+      best: summarizeScriptedBotWeightEvaluation(best),
+      candidate: candidateSummary,
+    })
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    config: {
+      iterations: options.iterations,
+      gamesPerCandidate: options.gamesPerCandidate,
+      playerCount: options.playerCount,
+      baseSeed: options.baseSeed,
+      candidatesPerIteration: options.candidatesPerIteration,
+      mutationSeed: options.mutationSeed,
+      maxSteps: options.maxSteps,
+      outputPath: options.outputPath,
+      mutableLeverKeys: MUTABLE_SCRIPTED_BOT_WEIGHT_KEYS,
+      frozenLeverKeys: [...FROZEN_SCRIPTED_BOT_WEIGHT_KEYS],
+    },
+    baseline: baselineSummary,
+    history,
+    final: summarizeScriptedBotWeightEvaluation(best),
   }
 }

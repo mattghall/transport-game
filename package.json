@@ -12,7 +12,8 @@
     "preview:lan": "vite preview --host",
     "session-server": "node server/sessionServer.mjs",
     "simulate:bots": "tsx scripts/runBotSimulation.ts",
-    "train:bots": "tsx scripts/trainBotWeights.ts"
+    "train:bots": "tsx scripts/trainBotWeights.ts",
+    "autotune:bots": "tsx scripts/autotuneBots.ts"
   },
   "dependencies": {
     "leaflet": "^1.9.4",

@@ -64,6 +64,7 @@ export type SessionServerHealth = {
 export type TrainingStartRequest = {
   iterations: number
   gamesPerCandidate: number
+  playerCount: number
   baseSeed: number
   candidatesPerIteration: number
   mutationSeed: number
@@ -104,6 +105,18 @@ export type TrainingImportanceStatus = {
   error: string | null
   isRunning: boolean
   result: ScriptedBotLeverImportanceResults | null
+}
+
+export type AutotuneControlStatus = {
+  status: "idle" | "running" | "stopping" | "completed" | "failed" | "unknown"
+  pid: number | null
+  startedAt: string | null
+  finishedAt: string | null
+  exitCode: number | null
+  signal: string | null
+  outputPath: string
+  logs: string[]
+  isRunning: boolean
 }
 
 export type LanSessionSummary = {
@@ -416,6 +429,25 @@ export async function fetchTrainingImportance(serverUrl: string) {
 export async function startTrainingImportance(serverUrl: string) {
   const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
   return requestSessionJson<TrainingImportanceStatus>(`${normalizedServerUrl}/training/importance/start`, {
+    method: "POST",
+  })
+}
+
+export async function fetchAutotuneStatus(serverUrl: string) {
+  const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
+  return requestSessionJson<AutotuneControlStatus>(`${normalizedServerUrl}/training/autotune/status`)
+}
+
+export async function startAutotune(serverUrl: string) {
+  const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
+  return requestSessionJson<AutotuneControlStatus>(`${normalizedServerUrl}/training/autotune/start`, {
+    method: "POST",
+  })
+}
+
+export async function stopAutotune(serverUrl: string) {
+  const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
+  return requestSessionJson<AutotuneControlStatus>(`${normalizedServerUrl}/training/autotune/stop`, {
     method: "POST",
   })
 }

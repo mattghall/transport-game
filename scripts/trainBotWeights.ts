@@ -1,25 +1,23 @@
-import { mkdirSync, renameSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
-import { createInitialRandomState } from "../src/engine/random.ts"
 import {
   DEFAULT_SCRIPTED_BOT_WEIGHTS,
   type ScriptedBotWeights,
 } from "../src/bots/scriptedBot.ts"
 import {
-  evaluateScriptedBotWeights,
-  mutateScriptedBotWeights,
-  summarizeScriptedBotWeightEvaluation,
-  type ScriptedBotTrainingHistoryEntry,
-  type ScriptedBotTrainingResults,
+  runScriptedBotTraining,
 } from "../src/bots/training.ts"
 
 const iterations = Number.parseInt(process.argv[2] ?? "12", 10)
 const gamesPerCandidate = Number.parseInt(process.argv[3] ?? "8", 10)
-const baseSeed = Number.parseInt(process.argv[4] ?? "1", 10)
-const candidatesPerIteration = Number.parseInt(process.argv[5] ?? "6", 10)
-const mutationSeed = Number.parseInt(process.argv[6] ?? `${baseSeed}`, 10)
-const maxSteps = Number.parseInt(process.argv[7] ?? "2000", 10)
+const playerCount = Number.parseInt(process.argv[4] ?? "4", 10)
+const baseSeed = Number.parseInt(process.argv[5] ?? "1", 10)
+const candidatesPerIteration = Number.parseInt(process.argv[6] ?? "6", 10)
+const mutationSeed = Number.parseInt(process.argv[7] ?? `${baseSeed}`, 10)
+const maxSteps = Number.parseInt(process.argv[8] ?? "2000", 10)
+const warmStartPath = process.argv[9]
 const outputPath = resolve(process.cwd(), "public/training-results/latest.json")
+const modeOutputPath = resolve(process.cwd(), `public/training-results/latest-${playerCount}p.json`)
 
 function roundWeights(weights: ScriptedBotWeights) {
   return Object.fromEntries(
@@ -27,40 +25,59 @@ function roundWeights(weights: ScriptedBotWeights) {
   ) as ScriptedBotWeights
 }
 
-function createSeeds(start: number, count: number) {
-  return Array.from({ length: count }, (_, index) => start + index)
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
 }
 
-let randomState = createInitialRandomState(mutationSeed)
-let best = evaluateScriptedBotWeights({
-  seeds: createSeeds(baseSeed, gamesPerCandidate),
-  candidateWeights: DEFAULT_SCRIPTED_BOT_WEIGHTS,
-  maxSteps,
-})
-const baselineSummary = summarizeScriptedBotWeightEvaluation(best)
-const history: ScriptedBotTrainingHistoryEntry[] = []
+function isValidWeights(value: unknown): value is Partial<ScriptedBotWeights> {
+  return (
+    isRecord(value) &&
+    Object.values(value).every(entry => typeof entry === "number" && Number.isFinite(entry))
+  )
+}
 
-function writeTrainingResults() {
-  const payload: ScriptedBotTrainingResults = {
-    generatedAt: new Date().toISOString(),
-    config: {
-      iterations,
-      gamesPerCandidate,
-      baseSeed,
-      candidatesPerIteration,
-      mutationSeed,
-      maxSteps,
-      outputPath,
-    },
-    baseline: baselineSummary,
-    history,
-    final: summarizeScriptedBotWeightEvaluation(best),
+function readWarmStartWeights(path: string | undefined) {
+  if (!path) {
+    return DEFAULT_SCRIPTED_BOT_WEIGHTS
   }
 
+  const parsedValue = JSON.parse(readFileSync(resolve(process.cwd(), path), "utf8")) as unknown
+
+  if (isValidWeights(parsedValue)) {
+    return parsedValue
+  }
+
+  if (isRecord(parsedValue) && isRecord(parsedValue.final) && isValidWeights(parsedValue.final.weights)) {
+    return parsedValue.final.weights
+  }
+
+  if (isRecord(parsedValue) && isValidWeights(parsedValue.weights)) {
+    return parsedValue.weights
+  }
+
+  throw new Error(`Warm-start file ${path} does not contain bot weights.`)
+}
+
+const trainingResults = runScriptedBotTraining({
+  iterations,
+  gamesPerCandidate,
+  playerCount,
+  baseSeed,
+  candidatesPerIteration,
+  mutationSeed,
+  maxSteps,
+  outputPath,
+  initialWeights: readWarmStartWeights(warmStartPath),
+  frozenWeights: readWarmStartWeights(warmStartPath),
+})
+
+function writeTrainingResults() {
   mkdirSync(dirname(outputPath), { recursive: true })
-  const tempOutputPath = `${outputPath}.tmp`
-  writeFileSync(tempOutputPath, JSON.stringify(payload, null, 2))
-  renameSync(tempOutputPath, outputPath)
+  for (const path of [outputPath, modeOutputPath]) {
+    const tempOutputPath = `${path}.tmp`
+    writeFileSync(tempOutputPath, JSON.stringify(trainingResults, null, 2))
+    renameSync(tempOutputPath, path)
+  }
 }
 
 writeTrainingResults()
@@ -69,63 +86,32 @@ console.log(
   JSON.stringify(
     {
       stage: "baseline",
-      score: Number(baselineSummary.score.toFixed(3)),
-      winRate: Number(baselineSummary.winRate.toFixed(3)),
-      averageRank: Number(baselineSummary.averageRank.toFixed(3)),
-      averagePassengers: Number(baselineSummary.averagePassengers.toFixed(3)),
-      averageConnectedCities: Number(baselineSummary.averageConnectedCities.toFixed(3)),
-      timeoutRate: Number(baselineSummary.timeoutRate.toFixed(3)),
+      score: Number(trainingResults.baseline.score.toFixed(3)),
+      winRate: Number(trainingResults.baseline.winRate.toFixed(3)),
+      averageRank: Number(trainingResults.baseline.averageRank.toFixed(3)),
+      averagePassengers: Number(trainingResults.baseline.averagePassengers.toFixed(3)),
+      averageConnectedCities: Number(trainingResults.baseline.averageConnectedCities.toFixed(3)),
+      timeoutRate: Number(trainingResults.baseline.timeoutRate.toFixed(3)),
       maxSteps,
-      weights: roundWeights(baselineSummary.weights),
+      weights: roundWeights(trainingResults.baseline.weights),
     },
     null,
     2,
   ),
 )
 
-for (let iteration = 0; iteration < iterations; iteration += 1) {
-  const temperature = Math.max(0.2, 1 - iteration / Math.max(iterations, 1))
-  const candidates = Array.from({ length: Math.max(candidatesPerIteration, 1) }, (_, candidateIndex) => {
-    const mutated = mutateScriptedBotWeights(best.weights, randomState, temperature)
-    randomState = mutated.randomState
-
-    return evaluateScriptedBotWeights({
-      seeds: createSeeds(
-        baseSeed + (iteration + 1) * gamesPerCandidate + candidateIndex * gamesPerCandidate,
-        gamesPerCandidate,
-      ),
-      candidateWeights: mutated.weights,
-      maxSteps,
-    })
-  }).sort((evaluationA, evaluationB) => evaluationB.score - evaluationA.score)
-
-  const candidateBest = candidates[0]
-  const candidateSummary = candidateBest ? summarizeScriptedBotWeightEvaluation(candidateBest) : null
-
-  if (candidateBest && candidateBest.score > best.score) {
-    best = candidateBest
-  }
-  const bestSummary = summarizeScriptedBotWeightEvaluation(best)
-
-  history.push({
-    iteration: iteration + 1,
-    temperature,
-    best: bestSummary,
-    candidate: candidateSummary,
-  })
-  writeTrainingResults()
-
+for (const entry of trainingResults.history) {
   console.log(
     JSON.stringify(
       {
         stage: "iteration",
-        iteration: iteration + 1,
-        temperature: Number(temperature.toFixed(3)),
-        bestScore: Number(bestSummary.score.toFixed(3)),
-        candidateScore: Number((candidateSummary?.score ?? Number.NEGATIVE_INFINITY).toFixed(3)),
-        bestWinRate: Number(bestSummary.winRate.toFixed(3)),
-        bestAveragePassengers: Number(bestSummary.averagePassengers.toFixed(3)),
-        bestAverageRank: Number(bestSummary.averageRank.toFixed(3)),
+        iteration: entry.iteration,
+        temperature: Number(entry.temperature.toFixed(3)),
+        bestScore: Number(entry.best.score.toFixed(3)),
+        candidateScore: Number((entry.candidate?.score ?? Number.NEGATIVE_INFINITY).toFixed(3)),
+        bestWinRate: Number(entry.best.winRate.toFixed(3)),
+        bestAveragePassengers: Number(entry.best.averagePassengers.toFixed(3)),
+        bestAverageRank: Number(entry.best.averageRank.toFixed(3)),
         maxSteps,
       },
       null,
@@ -134,24 +120,21 @@ for (let iteration = 0; iteration < iterations; iteration += 1) {
   )
 }
 
-const finalSummary = summarizeScriptedBotWeightEvaluation(best)
-writeTrainingResults()
-
 console.log(
   JSON.stringify(
     {
       stage: "final",
-      score: Number(finalSummary.score.toFixed(3)),
-      winRate: Number(finalSummary.winRate.toFixed(3)),
-      averageRank: Number(finalSummary.averageRank.toFixed(3)),
-      averagePassengers: Number(finalSummary.averagePassengers.toFixed(3)),
-      averageConnectedCities: Number(finalSummary.averageConnectedCities.toFixed(3)),
-      averageMoney: Number(finalSummary.averageMoney.toFixed(3)),
-      timeoutRate: Number(finalSummary.timeoutRate.toFixed(3)),
-      sampleCount: finalSummary.sampleCount,
+      score: Number(trainingResults.final.score.toFixed(3)),
+      winRate: Number(trainingResults.final.winRate.toFixed(3)),
+      averageRank: Number(trainingResults.final.averageRank.toFixed(3)),
+      averagePassengers: Number(trainingResults.final.averagePassengers.toFixed(3)),
+      averageConnectedCities: Number(trainingResults.final.averageConnectedCities.toFixed(3)),
+      averageMoney: Number(trainingResults.final.averageMoney.toFixed(3)),
+      timeoutRate: Number(trainingResults.final.timeoutRate.toFixed(3)),
+      sampleCount: trainingResults.final.sampleCount,
       maxSteps,
       outputPath,
-      weights: roundWeights(finalSummary.weights),
+      weights: roundWeights(trainingResults.final.weights),
     },
     null,
     2,
