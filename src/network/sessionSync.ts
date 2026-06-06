@@ -1,5 +1,11 @@
 import { usMap } from "../data/maps/usMap"
-import type { BotPresetId, ManagedBotPresetEntry, ManagedBotPresetId } from "../bots/presets"
+import { normalizeGameState } from "../engine/normalizeGameState"
+import type {
+  BotPresetId,
+  ManagedBotPresetEntry,
+  ManagedBotPresetId,
+  ManagedBotPresetStorageId,
+} from "../bots/presets"
 import type { ScriptedBotLeverImportanceResults } from "../bots/training"
 import type { GameState } from "../engine/types"
 
@@ -71,6 +77,14 @@ export type TrainingStartRequest = {
   maxSteps: number
 }
 
+export type TrainingIterationProgress = {
+  currentIteration: number
+  totalIterations: number
+  temperature: number | null
+  bestScore: number | null
+  candidateScore: number | null
+}
+
 export type TrainingStatus = {
   status: "idle" | "running" | "completed" | "failed" | "cancelled"
   args: TrainingStartRequest | null
@@ -82,15 +96,21 @@ export type TrainingStatus = {
   outputPath: string
   logs: string[]
   isRunning: boolean
+  progress: TrainingIterationProgress | null
 }
 
 export type TrainingPresetStatus = {
   outputPath: string
-  presets: Partial<Record<ManagedBotPresetId, ManagedBotPresetEntry>>
+  presets: Partial<Record<ManagedBotPresetStorageId, ManagedBotPresetEntry>>
 }
 
 export type PromoteTrainingPresetRequest = {
   presetId: ManagedBotPresetId
+}
+
+export type PromoteAutotuneRunPresetRequest = {
+  playerCount: number
+  generatedAt: string
 }
 
 export type TrainingImportanceStatus = {
@@ -117,6 +137,7 @@ export type AutotuneControlStatus = {
   outputPath: string
   logs: string[]
   isRunning: boolean
+  progress: TrainingIterationProgress | null
 }
 
 export type LanSessionSummary = {
@@ -306,7 +327,7 @@ function getSupportedMap(mapId: string) {
 }
 
 export function hydrateLanSessionGame(snapshot: LanSessionSnapshot): GameState {
-  return {
+  return normalizeGameState({
     map: getSupportedMap(snapshot.staticData.mapId),
     cities: snapshot.staticData.cities,
     operatingConfig: snapshot.staticData.operatingConfig,
@@ -314,7 +335,7 @@ export function hydrateLanSessionGame(snapshot: LanSessionSnapshot): GameState {
     vehicleCatalog: snapshot.staticData.vehicleCatalog,
     routeCatalog: snapshot.staticData.routeCatalog,
     ...snapshot.game,
-  }
+  })
 }
 
 async function requestSessionJson<T>(url: string, init?: RequestInit) {
@@ -421,6 +442,17 @@ export async function promoteTrainingPreset(serverUrl: string, request: PromoteT
   })
 }
 
+export async function promoteAutotuneRunToStickbug(serverUrl: string, request: PromoteAutotuneRunPresetRequest) {
+  const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
+  return requestSessionJson<TrainingPresetStatus>(`${normalizedServerUrl}/training/presets/promote-autotune-run`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+  })
+}
+
 export async function fetchTrainingImportance(serverUrl: string) {
   const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
   return requestSessionJson<TrainingImportanceStatus>(`${normalizedServerUrl}/training/importance`)
@@ -448,6 +480,13 @@ export async function startAutotune(serverUrl: string) {
 export async function stopAutotune(serverUrl: string) {
   const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
   return requestSessionJson<AutotuneControlStatus>(`${normalizedServerUrl}/training/autotune/stop`, {
+    method: "POST",
+  })
+}
+
+export async function forceStopAutotune(serverUrl: string) {
+  const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
+  return requestSessionJson<AutotuneControlStatus>(`${normalizedServerUrl}/training/autotune/force-stop`, {
     method: "POST",
   })
 }

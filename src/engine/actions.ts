@@ -124,7 +124,7 @@ const STEP_ONE_REFILL: Record<PurchasableResource, number> = {
 
 const WEEKLY_PHASES: WeeklyPhase[] = [
   "purchase-equipment",
-  "claim-routes",
+  "add-city",
   "operations",
   "bureaucracy",
 ]
@@ -352,8 +352,8 @@ export function getPlayerById(game: GameState, playerId: string | null | undefin
   return game.players.find(player => player.id === playerId) ?? null
 }
 
-export function hasPlayerConfirmedClaimRoutes(game: GameState, playerId: string | null | undefined) {
-  return typeof playerId === "string" && game.claimRoutesReadyPlayerIds.includes(playerId)
+export function hasPlayerCompletedAddCity(game: GameState, playerId: string | null | undefined) {
+  return typeof playerId === "string" && game.addCityReadyPlayerIds.includes(playerId)
 }
 
 export function hasPlayerCompletedOperations(game: GameState, playerId: string | null | undefined) {
@@ -371,8 +371,8 @@ export function hasPlayerClaimedRouteThisTurn(game: GameState, playerId: string 
 export function isOperationsUnlockedForPlayer(game: GameState, playerId: string | null | undefined) {
   return (
     Boolean(playerId) &&
-    (game.currentPhase === "claim-routes" || game.currentPhase === "operations") &&
-    hasPlayerConfirmedClaimRoutes(game, playerId)
+    (game.currentPhase === "add-city" || game.currentPhase === "operations") &&
+    hasPlayerCompletedAddCity(game, playerId)
   )
 }
 
@@ -1350,10 +1350,10 @@ export function drawCityOffer(
     }
   }
 
-  if (game.currentPhase !== "claim-routes") {
+  if (game.currentPhase !== "add-city") {
     return {
       ok: false,
-      error: "City cards can only be drawn during the claim routes phase.",
+      error: "City cards can only be drawn during the add city phase.",
     }
   }
 
@@ -1430,10 +1430,10 @@ export function setActiveCityOfferKeptCityIds(
     }
   }
 
-  if (game.currentPhase !== "claim-routes") {
+  if (game.currentPhase !== "add-city") {
     return {
       ok: false,
-      error: "City cards can only be picked during the claim routes phase.",
+      error: "City cards can only be picked during the add city phase.",
     }
   }
 
@@ -1475,7 +1475,7 @@ export function setActiveCityOfferKeptCityIds(
   }
 }
 
-export function confirmClaimPicks(game: GameState): ReadyPhaseResult {
+export function confirmAddCityPicks(game: GameState): ReadyPhaseResult {
   if (isGameLocked(game)) {
     return {
       ok: false,
@@ -1483,10 +1483,10 @@ export function confirmClaimPicks(game: GameState): ReadyPhaseResult {
     }
   }
 
-  if (game.currentPhase !== "claim-routes") {
+  if (game.currentPhase !== "add-city") {
     return {
       ok: false,
-      error: "City picks can only be confirmed during the claim routes phase.",
+      error: "City picks can only be confirmed during the add city phase.",
     }
   }
 
@@ -1504,11 +1504,11 @@ export function confirmClaimPicks(game: GameState): ReadyPhaseResult {
     game,
     gameWithKeptCityCards,
   )
-  const claimRoutesReadyPlayerIds = dedupePlayerIds([
-    ...game.claimRoutesReadyPlayerIds,
+  const addCityReadyPlayerIds = dedupePlayerIds([
+    ...game.addCityReadyPlayerIds,
     game.currentPlayerId,
   ])
-  const advancedPhase = claimRoutesReadyPlayerIds.length >= game.players.length
+  const advancedPhase = addCityReadyPlayerIds.length >= game.players.length
   const firstPlayerId = game.players[game.leadPlayerIndex]?.id ?? game.players[0]?.id ?? game.currentPlayerId
 
   return {
@@ -1518,14 +1518,14 @@ export function confirmClaimPicks(game: GameState): ReadyPhaseResult {
     game: {
       ...gameWithKeptCityCards,
       ...migratedBureaucracyState,
-      claimRoutesReadyPlayerIds,
+      addCityReadyPlayerIds,
       operationsReadyPlayerIds: game.operationsReadyPlayerIds.filter(playerId =>
-        claimRoutesReadyPlayerIds.includes(playerId),
+        addCityReadyPlayerIds.includes(playerId),
       ),
-      currentPhase: advancedPhase ? "operations" : "claim-routes",
+      currentPhase: advancedPhase ? "operations" : "add-city",
       currentPlayerId: advancedPhase
         ? firstPlayerId
-        : getNextPendingPlayerId(game, claimRoutesReadyPlayerIds),
+        : getNextPendingPlayerId(game, addCityReadyPlayerIds),
       activeCityOffer: null,
     },
   }
@@ -1664,7 +1664,7 @@ export function advancePhase(game: GameState): GameState {
       currentPhase: WEEKLY_PHASES[nextPhaseIndex],
       leadPlayerIndex: nextLeadPlayerIndex,
       currentPlayerId: firstPlayerId,
-      claimRoutesReadyPlayerIds: [],
+      addCityReadyPlayerIds: [],
       operationsReadyPlayerIds: [],
       bureaucracyReadyPlayerIds: [],
       hasPurchasedVehicleThisTurn: false,
@@ -1678,7 +1678,7 @@ export function advancePhase(game: GameState): GameState {
     }
   }
 
-  if (game.currentPhase === "claim-routes") {
+  if (game.currentPhase === "add-city") {
     const gameWithKeptCityCards = returnUnkeptCityOfferCardsToDecks(
       applyKeptCityOfferToCurrentPlayer(game),
     )
@@ -1694,7 +1694,7 @@ export function advancePhase(game: GameState): GameState {
       currentPhase: WEEKLY_PHASES[nextPhaseIndex],
       leadPlayerIndex: nextLeadPlayerIndex,
       currentPlayerId: firstPlayerId,
-      claimRoutesReadyPlayerIds: [],
+      addCityReadyPlayerIds: [],
       operationsReadyPlayerIds: [],
       bureaucracyReadyPlayerIds: [],
       hasPurchasedVehicleThisTurn: false,
@@ -1716,7 +1716,7 @@ export function advancePhase(game: GameState): GameState {
         isGameOver: true,
         leadPlayerIndex: nextLeadPlayerIndex,
         currentPlayerId: firstPlayerId,
-        claimRoutesReadyPlayerIds: [],
+        addCityReadyPlayerIds: [],
         operationsReadyPlayerIds: [],
         bureaucracyReadyPlayerIds: [],
         hasPurchasedVehicleThisTurn: false,
@@ -1766,7 +1766,7 @@ export function advancePhase(game: GameState): GameState {
       chanceDiscardCardIds: nextDiscard,
       leadPlayerIndex: nextLeadPlayerIndex,
       currentPlayerId: firstPlayerId,
-      claimRoutesReadyPlayerIds: [],
+      addCityReadyPlayerIds: [],
       operationsReadyPlayerIds: [],
       bureaucracyReadyPlayerIds: [],
       hasPurchasedVehicleThisTurn: false,
@@ -1793,7 +1793,7 @@ export function advancePhase(game: GameState): GameState {
     currentPhase: WEEKLY_PHASES[nextPhaseIndex],
     leadPlayerIndex: nextLeadPlayerIndex,
     currentPlayerId: firstPlayerId,
-    claimRoutesReadyPlayerIds: [],
+    addCityReadyPlayerIds: [],
     operationsReadyPlayerIds: [],
     bureaucracyReadyPlayerIds: [],
     hasPurchasedVehicleThisTurn: false,
@@ -2000,8 +2000,8 @@ export function advanceTurn(game: GameState): GameState {
     return game
   }
 
-  if (game.currentPhase === "claim-routes") {
-    const result = confirmClaimPicks(game)
+  if (game.currentPhase === "add-city") {
+    const result = confirmAddCityPicks(game)
     return result.ok ? result.game : game
   }
 

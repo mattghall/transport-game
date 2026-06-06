@@ -22,6 +22,8 @@ export type ScriptedBotWeightSample = {
   candidatePlayerId: string
   rank: number
   passengers: number
+  opponentPassengers: number
+  passengerMargin: number
   connectedCities: number
   money: number
   timedOut: boolean
@@ -33,6 +35,7 @@ export type ScriptedBotWeightEvaluation = {
   winRate: number
   averageRank: number
   averagePassengers: number
+  averagePassengerMargin: number
   averageConnectedCities: number
   averageMoney: number
   timeoutRate: number
@@ -44,6 +47,7 @@ export type ScriptedBotWeightEvaluationSummary = {
   winRate: number
   averageRank: number
   averagePassengers: number
+  averagePassengerMargin: number
   averageConnectedCities: number
   averageMoney: number
   timeoutRate: number
@@ -88,7 +92,15 @@ export type ScriptedBotTrainingRunOptions = {
   outputPath: string
   initialWeights?: Partial<ScriptedBotWeights>
   opponentWeights?: Partial<ScriptedBotWeights>
+  opponentPoolWeights?: Partial<ScriptedBotWeights>[]
   frozenWeights?: Partial<ScriptedBotWeights>
+  onIterationComplete?: (progress: {
+    iteration: number
+    totalIterations: number
+    temperature: number
+    best: ScriptedBotWeightEvaluationSummary
+    candidate: ScriptedBotWeightEvaluationSummary | null
+  }) => void
 }
 
 export type ScriptedBotLeverImportanceEntry = {
@@ -136,22 +148,27 @@ export function evaluateScriptedBotWeights(options: {
   seeds: number[]
   candidateWeights: Partial<ScriptedBotWeights>
   opponentWeights?: Partial<ScriptedBotWeights>
+  opponentPoolWeights?: Partial<ScriptedBotWeights>[]
   playerCount?: number
   maxSteps?: number
 }): ScriptedBotWeightEvaluation {
   const players = createTrainingPlayers(options.playerCount)
   const resolvedCandidateWeights = mergeScriptedBotWeights(options.candidateWeights)
-  const resolvedOpponentWeights = mergeScriptedBotWeights(
-    options.opponentWeights ?? DEFAULT_SCRIPTED_BOT_WEIGHTS,
-  )
+  const resolvedOpponentPool =
+    options.opponentPoolWeights && options.opponentPoolWeights.length > 0
+      ? options.opponentPoolWeights.map(weights => mergeScriptedBotWeights(weights))
+      : [mergeScriptedBotWeights(options.opponentWeights ?? DEFAULT_SCRIPTED_BOT_WEIGHTS)]
   const samples = options.seeds.map((seed, index) => {
     const candidatePlayerId = players[index % players.length]?.id ?? players[0].id
+    let opponentSeatIndex = 0
     const botsByPlayerId = Object.fromEntries(
       players.map(player => [
         player.id,
         createScriptedBot(
           player.id,
-          player.id === candidatePlayerId ? resolvedCandidateWeights : resolvedOpponentWeights,
+          player.id === candidatePlayerId
+            ? resolvedCandidateWeights
+            : resolvedOpponentPool[(index + opponentSeatIndex++) % resolvedOpponentPool.length],
         ),
       ]),
     )
@@ -164,6 +181,10 @@ export function evaluateScriptedBotWeights(options: {
     })
     const standings = buildVictoryStandings(result.game)
     const candidateStanding = standings.find(standing => standing.player.id === candidatePlayerId)
+    const strongestOpponentStanding = standings.find(standing => standing.player.id !== candidatePlayerId)
+    const passengers = candidateStanding?.player.totalPassengersServed ?? 0
+    // In 1-player training there is no opponent, so the lead target is measured against zero.
+    const opponentPassengers = strongestOpponentStanding?.player.totalPassengersServed ?? 0
 
     return {
       seed,
@@ -172,7 +193,9 @@ export function evaluateScriptedBotWeights(options: {
         candidateStanding === undefined
           ? standings.length + 1
           : standings.findIndex(standing => standing.player.id === candidatePlayerId) + 1,
-      passengers: candidateStanding?.player.totalPassengersServed ?? 0,
+      passengers,
+      opponentPassengers,
+      passengerMargin: passengers - opponentPassengers,
       connectedCities: candidateStanding?.connectedCities ?? 0,
       money: candidateStanding?.player.money ?? 0,
       timedOut: result.timedOut,
@@ -184,6 +207,8 @@ export function evaluateScriptedBotWeights(options: {
   const averageRank = samples.reduce((total, sample) => total + sample.rank, 0) / sampleCount
   const averagePassengers =
     samples.reduce((total, sample) => total + sample.passengers, 0) / sampleCount
+  const averagePassengerMargin =
+    samples.reduce((total, sample) => total + sample.passengerMargin, 0) / sampleCount
   const averageConnectedCities =
     samples.reduce((total, sample) => total + sample.connectedCities, 0) / sampleCount
   const averageMoney = samples.reduce((total, sample) => total + sample.money, 0) / sampleCount
@@ -195,14 +220,16 @@ export function evaluateScriptedBotWeights(options: {
     winRate,
     averageRank,
     averagePassengers,
+    averagePassengerMargin,
     averageConnectedCities,
     averageMoney,
     timeoutRate,
     score:
       averagePassengers +
-      winRate * 15_000 -
-      averageRank * 2_500 +
-      averageConnectedCities * 125 +
+      averagePassengerMargin +
+      winRate * 5_000 -
+      averageRank * 1_000 +
+      averageConnectedCities * 50 +
       averageMoney / 1_000_000 -
       timeoutRate * 250_000,
     samples,
@@ -217,6 +244,7 @@ export function summarizeScriptedBotWeightEvaluation(
     winRate: evaluation.winRate,
     averageRank: evaluation.averageRank,
     averagePassengers: evaluation.averagePassengers,
+    averagePassengerMargin: evaluation.averagePassengerMargin,
     averageConnectedCities: evaluation.averageConnectedCities,
     averageMoney: evaluation.averageMoney,
     timeoutRate: evaluation.timeoutRate,
@@ -264,6 +292,7 @@ export function analyzeScriptedBotLeverImportance(options: {
   finalWeights: Partial<ScriptedBotWeights>
   baselineWeights?: Partial<ScriptedBotWeights>
   opponentWeights?: Partial<ScriptedBotWeights>
+  opponentPoolWeights?: Partial<ScriptedBotWeights>[]
   playerCount?: number
   maxSteps?: number
 }): {
@@ -279,6 +308,7 @@ export function analyzeScriptedBotLeverImportance(options: {
       seeds: options.seeds,
       candidateWeights: resolvedFinalWeights,
       opponentWeights: options.opponentWeights ?? resolvedBaselineWeights,
+      opponentPoolWeights: options.opponentPoolWeights,
       playerCount: options.playerCount,
       maxSteps: options.maxSteps,
     }),
@@ -295,6 +325,7 @@ export function analyzeScriptedBotLeverImportance(options: {
           seeds: options.seeds,
           candidateWeights: ablatedWeights,
           opponentWeights: options.opponentWeights ?? resolvedBaselineWeights,
+          opponentPoolWeights: options.opponentPoolWeights,
           playerCount: options.playerCount,
           maxSteps: options.maxSteps,
         }),
@@ -341,6 +372,7 @@ export function runScriptedBotTraining(options: ScriptedBotTrainingRunOptions): 
     seeds: createTrainingSeeds(options.baseSeed, options.gamesPerCandidate),
     candidateWeights: initialWeights,
     opponentWeights: options.opponentWeights,
+    opponentPoolWeights: options.opponentPoolWeights,
     playerCount: options.playerCount,
     maxSteps: options.maxSteps,
   })
@@ -369,6 +401,7 @@ export function runScriptedBotTraining(options: ScriptedBotTrainingRunOptions): 
           ),
           candidateWeights: mutated.weights,
           opponentWeights: options.opponentWeights,
+          opponentPoolWeights: options.opponentPoolWeights,
           playerCount: options.playerCount,
           maxSteps: options.maxSteps,
         })
@@ -384,6 +417,13 @@ export function runScriptedBotTraining(options: ScriptedBotTrainingRunOptions): 
 
     history.push({
       iteration: iteration + 1,
+      temperature,
+      best: summarizeScriptedBotWeightEvaluation(best),
+      candidate: candidateSummary,
+    })
+    options.onIterationComplete?.({
+      iteration: iteration + 1,
+      totalIterations: options.iterations,
       temperature,
       best: summarizeScriptedBotWeightEvaluation(best),
       candidate: candidateSummary,

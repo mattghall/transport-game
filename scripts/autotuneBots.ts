@@ -24,7 +24,8 @@ const TRAINING_RESULTS_DIR = resolve(process.cwd(), "public/training-results")
 const LATEST_RESULTS_PATH = resolve(TRAINING_RESULTS_DIR, "latest.json")
 const LATEST_IMPORTANCE_RESULTS_PATH = resolve(TRAINING_RESULTS_DIR, "latest-importance.json")
 const AUTOTUNE_STATUS_PATH = resolve(TRAINING_RESULTS_DIR, "autotune-status.json")
-const PLAYER_COUNTS = [4, 3, 2] as const
+const AUTOTUNE_HISTORY_PATH = resolve(TRAINING_RESULTS_DIR, "autotune-history.json")
+const PLAYER_COUNTS = [4, 3, 2, 1] as const
 const MAX_CYCLES = Number.parseInt(process.argv[2] ?? "", 10)
 const SHOULD_STOP_AFTER_MAX_CYCLES = Number.isFinite(MAX_CYCLES) && MAX_CYCLES > 0
 
@@ -44,14 +45,25 @@ type AutotuneRunRecord = {
   modeCycle: number
   profile: RunProfile
   startedFromScratch: boolean
-  opponent: "default" | "champion"
+  opponent: string
   promoted: boolean
   benchmarkScore: number
   generatedAt: string
   final: Pick<
     ScriptedBotTrainingResults["final"],
-    "score" | "winRate" | "averagePassengers" | "averageRank" | "sampleCount"
+    "score" | "winRate" | "averagePassengers" | "averagePassengerMargin" | "averageRank" | "sampleCount" | "weights"
   >
+}
+type ChampionPromotionRecord = {
+  cycle: number
+  playerCount: PlayerCount
+  benchmarkScore: number
+  generatedAt: string
+  score: number
+  winRate: number
+  averagePassengers: number
+  averagePassengerMargin: number
+  sampleCount: number
 }
 type AutotuneStatus = {
   version: 1
@@ -65,11 +77,17 @@ type AutotuneStatus = {
     modeCycle: number
     profile: RunProfile
     startedFromScratch: boolean
-    opponent: "default" | "champion"
+    opponent: string
     startedAt: string
   }
   recentRuns: AutotuneRunRecord[]
   champions: Record<`${PlayerCount}p`, ChampionRecord | null>
+}
+type AutotuneHistory = {
+  version: 1
+  updatedAt: string
+  runs: AutotuneRunRecord[]
+  championPromotions: ChampionPromotionRecord[]
 }
 
 function modeKey(playerCount: PlayerCount) {
@@ -166,6 +184,7 @@ function loadStatus(champions: AutotuneStatus["champions"]): AutotuneStatus {
       updatedAt: new Date().toISOString(),
       cycle: 0,
       modeCycles: {
+        "1p": 0,
         "2p": 0,
         "3p": 0,
         "4p": 0,
@@ -182,6 +201,7 @@ function loadStatus(champions: AutotuneStatus["champions"]): AutotuneStatus {
     updatedAt: new Date().toISOString(),
     cycle: isFiniteNumber(existing.cycle) ? existing.cycle : 0,
     modeCycles: {
+      "1p": isRecord(existing.modeCycles) && isFiniteNumber(existing.modeCycles["1p"]) ? existing.modeCycles["1p"] : 0,
       "2p": isRecord(existing.modeCycles) && isFiniteNumber(existing.modeCycles["2p"]) ? existing.modeCycles["2p"] : 0,
       "3p": isRecord(existing.modeCycles) && isFiniteNumber(existing.modeCycles["3p"]) ? existing.modeCycles["3p"] : 0,
       "4p": isRecord(existing.modeCycles) && isFiniteNumber(existing.modeCycles["4p"]) ? existing.modeCycles["4p"] : 0,
@@ -221,6 +241,8 @@ function writeImportanceResults(
 
 function getBenchmarkGameCount(playerCount: PlayerCount) {
   switch (playerCount) {
+    case 1:
+      return 20
     case 2:
       return 16
     case 3:
@@ -236,6 +258,8 @@ function getTrainingProfile(playerCount: PlayerCount, modeCycle: number, started
   const gamesPerCandidate =
     profile === "deep"
       ? getBenchmarkGameCount(playerCount)
+      : playerCount === 1
+        ? 14
       : playerCount === 2
         ? 12
         : playerCount === 3
@@ -257,7 +281,7 @@ function summarizeRunRecord(
   modeCycle: number,
   profile: RunProfile,
   startedFromScratch: boolean,
-  opponent: "default" | "champion",
+  opponent: string,
   promoted: boolean,
   benchmarkScore: number,
   results: ScriptedBotTrainingResults,
@@ -276,10 +300,76 @@ function summarizeRunRecord(
       score: results.final.score,
       winRate: results.final.winRate,
       averagePassengers: results.final.averagePassengers,
+      averagePassengerMargin: results.final.averagePassengerMargin,
       averageRank: results.final.averageRank,
       sampleCount: results.final.sampleCount,
+      weights: results.final.weights,
     },
   }
+}
+
+function summarizeChampionPromotion(champion: ChampionRecord): ChampionPromotionRecord {
+  return {
+    cycle: champion.cycle,
+    playerCount: champion.playerCount,
+    benchmarkScore: champion.benchmark.score,
+    generatedAt: champion.training.generatedAt,
+    score: champion.training.final.score,
+    winRate: champion.training.final.winRate,
+    averagePassengers: champion.training.final.averagePassengers,
+    averagePassengerMargin: champion.training.final.averagePassengerMargin,
+    sampleCount: champion.training.final.sampleCount,
+  }
+}
+
+function seedHistoryFromStatus(status: AutotuneStatus): AutotuneHistory {
+  return {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    runs: [...status.recentRuns].sort((runA, runB) => runA.cycle - runB.cycle),
+    championPromotions: Object.values(status.champions)
+      .filter((champion): champion is ChampionRecord => champion !== null)
+      .map(summarizeChampionPromotion)
+      .sort((runA, runB) => runA.cycle - runB.cycle),
+  }
+}
+
+function dedupeRuns(runs: AutotuneRunRecord[]) {
+  return Array.from(new Map(runs.map(run => [run.cycle, run] as const)).values()).sort(
+    (runA, runB) => runA.cycle - runB.cycle,
+  )
+}
+
+function dedupePromotions(promotions: ChampionPromotionRecord[]) {
+  return Array.from(
+    new Map(promotions.map(promotion => [`${promotion.playerCount}-${promotion.cycle}`, promotion] as const)).values(),
+  ).sort((runA, runB) => runA.cycle - runB.cycle)
+}
+
+function loadHistory(status: AutotuneStatus): AutotuneHistory {
+  const existing = readJsonFile<AutotuneHistory>(AUTOTUNE_HISTORY_PATH)
+
+  if (!existing || !isRecord(existing) || existing.version !== 1) {
+    return seedHistoryFromStatus(status)
+  }
+
+  return {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    runs: dedupeRuns(
+      Array.isArray(existing.runs) ? (existing.runs as AutotuneRunRecord[]) : seedHistoryFromStatus(status).runs,
+    ),
+    championPromotions: dedupePromotions([
+      ...(Array.isArray(existing.championPromotions)
+        ? (existing.championPromotions as ChampionPromotionRecord[])
+        : []),
+      ...seedHistoryFromStatus(status).championPromotions,
+    ]),
+  }
+}
+
+function writeHistory(history: AutotuneHistory) {
+  writeJsonFile(AUTOTUNE_HISTORY_PATH, history)
 }
 
 function createChampionRecord(
@@ -310,12 +400,16 @@ function evaluateChampionBenchmark(playerCount: PlayerCount, weights: Partial<Sc
   )
 }
 
-function buildImportanceResults(results: ScriptedBotTrainingResults): ScriptedBotLeverImportanceResults {
+function buildImportanceResults(
+  results: ScriptedBotTrainingResults,
+  opponentPoolWeights?: Partial<ScriptedBotWeights>[],
+): ScriptedBotLeverImportanceResults {
   const { reference, rows } = analyzeScriptedBotLeverImportance({
     seeds: createTrainingSeeds(results.config.baseSeed, results.config.gamesPerCandidate),
     finalWeights: results.final.weights,
     baselineWeights: results.baseline.weights,
     opponentWeights: results.baseline.weights,
+    opponentPoolWeights,
     playerCount: results.config.playerCount,
     maxSteps: results.config.maxSteps,
   })
@@ -337,13 +431,57 @@ function buildImportanceResults(results: ScriptedBotTrainingResults): ScriptedBo
   }
 }
 
+function buildOpponentPlan(
+  playerCount: PlayerCount,
+  champions: AutotuneStatus["champions"],
+): {
+  label: string
+  pool: ScriptedBotWeights[]
+} {
+  if (playerCount === 1) {
+    return {
+      label: "default",
+      pool: [DEFAULT_SCRIPTED_BOT_WEIGHTS],
+    }
+  }
+
+  const labels = ["default"]
+  const pool: ScriptedBotWeights[] = [DEFAULT_SCRIPTED_BOT_WEIGHTS]
+  const seenLabels = new Set(labels)
+  const preferredCounts = [playerCount, ...PLAYER_COUNTS.filter(count => count !== playerCount && count !== 1)]
+
+  for (const count of preferredCounts) {
+    const champion = champions[modeKey(count)]
+
+    if (!champion) {
+      continue
+    }
+
+    const label = `${count}p champion`
+
+    if (seenLabels.has(label)) {
+      continue
+    }
+
+    seenLabels.add(label)
+    labels.push(label)
+    pool.push(champion.training.final.weights)
+  }
+
+  return {
+    label: labels.join(" + "),
+    pool,
+  }
+}
+
 function logRunStart(
   cycle: number,
   playerCount: PlayerCount,
   modeCycle: number,
   profile: RunProfile,
   startedFromScratch: boolean,
-  opponent: "default" | "champion",
+  opponent: string,
+  iterations: number,
 ) {
   console.log(
     JSON.stringify({
@@ -354,6 +492,7 @@ function logRunStart(
       profile,
       startedFromScratch,
       opponent,
+      iterations,
     }),
   )
 }
@@ -375,6 +514,7 @@ function logRunFinish(
       score: Number(results.final.score.toFixed(3)),
       winRate: Number(results.final.winRate.toFixed(3)),
       averagePassengers: Number(results.final.averagePassengers.toFixed(3)),
+      averagePassengerMargin: Number(results.final.averagePassengerMargin.toFixed(3)),
       averageRank: Number(results.final.averageRank.toFixed(3)),
       sampleCount: results.final.sampleCount,
     }),
@@ -393,7 +533,9 @@ process.on("SIGTERM", () => {
 
 const champions = loadChampions()
 const status = loadStatus(champions)
+const history = loadHistory(status)
 writeStatus(status)
+writeHistory(history)
 
 while (!shouldStop) {
   const cycle = status.cycle + 1
@@ -403,7 +545,8 @@ while (!shouldStop) {
   const champion = status.champions[playerModeKey]
   const startedFromScratch = !champion || modeCycle % 5 === 0
   const profileConfig = getTrainingProfile(playerCount, modeCycle, startedFromScratch)
-  const opponent = champion && modeCycle % 4 === 2 ? "champion" : "default"
+  const opponentPlan = buildOpponentPlan(playerCount, status.champions)
+  const opponent = opponentPlan.label
   const baseSeed = 10_000 + cycle * 500
   const mutationSeed = 100_000 + cycle * 977
   const outputPath = createModeResultsPath(playerCount)
@@ -421,7 +564,7 @@ while (!shouldStop) {
   status.updatedAt = new Date().toISOString()
   writeStatus(status)
 
-  logRunStart(cycle, playerCount, modeCycle, profileConfig.profile, startedFromScratch, opponent)
+  logRunStart(cycle, playerCount, modeCycle, profileConfig.profile, startedFromScratch, opponent, profileConfig.iterations)
 
   const results = runScriptedBotTraining({
     iterations: profileConfig.iterations,
@@ -435,40 +578,60 @@ while (!shouldStop) {
     initialWeights: startedFromScratch
       ? applyFrozenScriptedBotWeights(DEFAULT_SCRIPTED_BOT_WEIGHTS, frozenWeights)
       : champion?.training.final.weights,
-    opponentWeights: opponent === "champion" ? champion?.training.final.weights : DEFAULT_SCRIPTED_BOT_WEIGHTS,
+    opponentPoolWeights: opponentPlan.pool,
     frozenWeights,
+    onIterationComplete: progress => {
+      console.log(
+        JSON.stringify({
+          stage: "iteration-progress",
+          cycle,
+          playerCount,
+          modeCycle,
+          iteration: progress.iteration,
+          totalIterations: progress.totalIterations,
+          temperature: Number(progress.temperature.toFixed(3)),
+          bestScore: Number(progress.best.score.toFixed(3)),
+          candidateScore: Number((progress.candidate?.score ?? Number.NEGATIVE_INFINITY).toFixed(3)),
+        }),
+      )
+    },
   })
   writeTrainingResults(results)
 
   const benchmark = evaluateChampionBenchmark(playerCount, results.final.weights)
   const promoted = !champion || benchmark.score > champion.benchmark.score
+  const runRecord = summarizeRunRecord(
+    cycle,
+    playerCount,
+    modeCycle,
+    profileConfig.profile,
+    startedFromScratch,
+    opponent,
+    promoted,
+    benchmark.score,
+    results,
+  )
 
   if (promoted) {
     const nextChampion = createChampionRecord(playerCount, cycle, results, benchmark)
     status.champions[playerModeKey] = nextChampion
     writeJsonFile(createChampionPath(playerCount), nextChampion)
-    writeImportanceResults(playerCount, results, buildImportanceResults(results))
+    writeImportanceResults(playerCount, results, buildImportanceResults(results, opponentPlan.pool))
+    history.championPromotions = dedupePromotions([
+      ...history.championPromotions,
+      summarizeChampionPromotion(nextChampion),
+    ])
   }
 
   status.cycle = cycle
   status.modeCycles[playerModeKey] = modeCycle
   status.currentRun = null
   status.updatedAt = new Date().toISOString()
-  status.recentRuns = [
-    summarizeRunRecord(
-      cycle,
-      playerCount,
-      modeCycle,
-      profileConfig.profile,
-      startedFromScratch,
-      opponent,
-      promoted,
-      benchmark.score,
-      results,
-    ),
-    ...status.recentRuns,
-  ].slice(0, 18)
+  status.recentRuns = [runRecord, ...status.recentRuns].slice(0, 18)
+  history.updatedAt = new Date().toISOString()
+  history.runs = dedupeRuns([...history.runs, runRecord])
   writeStatus(status)
+  writeHistory(history)
 
   logRunFinish(cycle, playerCount, promoted, benchmark.score, results)
 
@@ -480,3 +643,5 @@ while (!shouldStop) {
 status.currentRun = null
 status.updatedAt = new Date().toISOString()
 writeStatus(status)
+history.updatedAt = new Date().toISOString()
+writeHistory(history)

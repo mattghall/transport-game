@@ -69,6 +69,23 @@ const trainingResults = runScriptedBotTraining({
   outputPath,
   initialWeights: readWarmStartWeights(warmStartPath),
   frozenWeights: readWarmStartWeights(warmStartPath),
+  onIterationComplete: progress => {
+    console.log(
+      JSON.stringify({
+        stage: "iteration-progress",
+        iteration: progress.iteration,
+        totalIterations: progress.totalIterations,
+        temperature: Number(progress.temperature.toFixed(3)),
+        bestScore: Number(progress.best.score.toFixed(3)),
+        candidateScore: Number((progress.candidate?.score ?? Number.NEGATIVE_INFINITY).toFixed(3)),
+        bestWinRate: Number(progress.best.winRate.toFixed(3)),
+        bestAveragePassengers: Number(progress.best.averagePassengers.toFixed(3)),
+        bestAveragePassengerMargin: Number(progress.best.averagePassengerMargin.toFixed(3)),
+        bestAverageRank: Number(progress.best.averageRank.toFixed(3)),
+        maxSteps,
+      }),
+    )
+  },
 })
 
 function writeTrainingResults() {
@@ -90,6 +107,7 @@ console.log(
       winRate: Number(trainingResults.baseline.winRate.toFixed(3)),
       averageRank: Number(trainingResults.baseline.averageRank.toFixed(3)),
       averagePassengers: Number(trainingResults.baseline.averagePassengers.toFixed(3)),
+      averagePassengerMargin: Number(trainingResults.baseline.averagePassengerMargin.toFixed(3)),
       averageConnectedCities: Number(trainingResults.baseline.averageConnectedCities.toFixed(3)),
       timeoutRate: Number(trainingResults.baseline.timeoutRate.toFixed(3)),
       maxSteps,
@@ -100,26 +118,6 @@ console.log(
   ),
 )
 
-for (const entry of trainingResults.history) {
-  console.log(
-    JSON.stringify(
-      {
-        stage: "iteration",
-        iteration: entry.iteration,
-        temperature: Number(entry.temperature.toFixed(3)),
-        bestScore: Number(entry.best.score.toFixed(3)),
-        candidateScore: Number((entry.candidate?.score ?? Number.NEGATIVE_INFINITY).toFixed(3)),
-        bestWinRate: Number(entry.best.winRate.toFixed(3)),
-        bestAveragePassengers: Number(entry.best.averagePassengers.toFixed(3)),
-        bestAverageRank: Number(entry.best.averageRank.toFixed(3)),
-        maxSteps,
-      },
-      null,
-      2,
-    ),
-  )
-}
-
 console.log(
   JSON.stringify(
     {
@@ -128,6 +126,7 @@ console.log(
       winRate: Number(trainingResults.final.winRate.toFixed(3)),
       averageRank: Number(trainingResults.final.averageRank.toFixed(3)),
       averagePassengers: Number(trainingResults.final.averagePassengers.toFixed(3)),
+      averagePassengerMargin: Number(trainingResults.final.averagePassengerMargin.toFixed(3)),
       averageConnectedCities: Number(trainingResults.final.averageConnectedCities.toFixed(3)),
       averageMoney: Number(trainingResults.final.averageMoney.toFixed(3)),
       timeoutRate: Number(trainingResults.final.timeoutRate.toFixed(3)),

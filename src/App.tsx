@@ -30,12 +30,12 @@ import {
   buyVehicleCard,
   canPlayerEditOperations,
   claimRoute,
-  confirmClaimPicks,
+  confirmAddCityPicks,
   deleteBureaucracyServicePod,
   drawCityOffer,
   hasPlayerCompletedBureaucracy,
   hasPlayerCompletedOperations,
-  hasPlayerConfirmedClaimRoutes,
+  hasPlayerCompletedAddCity,
   markBureaucracyReady,
   markOperationsReady,
   moveBureaucracyServiceCity,
@@ -90,8 +90,8 @@ function formatPhaseLabel(phase: WeeklyPhase) {
   switch (phase) {
     case "purchase-equipment":
       return "purchase equipment"
-    case "claim-routes":
-      return "claim routes"
+    case "add-city":
+      return "add city"
     case "operations":
       return "operations"
     case "purchase-fuel":
@@ -137,7 +137,7 @@ function getAdvanceTurnLogMessage(previousGame: GameState, nextGame: GameState) 
 function getPhaseDiscardLogMessage(previousGame: GameState, nextGame: GameState) {
   const burnedVehicleCards =
     previousGame.currentPhase === "purchase-equipment" &&
-    nextGame.currentPhase === "claim-routes" &&
+    nextGame.currentPhase === "add-city" &&
     previousGame.vehicleMarketCardIds.length !== nextGame.vehicleMarketCardIds.length
       ? previousGame.vehicleMarketCardIds
           .filter(cardId => !nextGame.vehicleMarketCardIds.includes(cardId))
@@ -297,10 +297,10 @@ function getDefaultLocalViewingPlayerId(game: GameState) {
     )
   }
 
-  if (game.currentPhase === "claim-routes") {
+  if (game.currentPhase === "add-city") {
     const currentHumanPlayer = humanPlayers.find(player => player.id === game.currentPlayerId)
 
-    if (currentHumanPlayer && !hasPlayerConfirmedClaimRoutes(game, currentHumanPlayer.id)) {
+    if (currentHumanPlayer && !hasPlayerCompletedAddCity(game, currentHumanPlayer.id)) {
       return currentHumanPlayer.id
     }
 
@@ -336,7 +336,7 @@ function getNextLocalViewingPlayerId(game: GameState, currentSelectedPlayerId: s
     }
 
     if (
-      game.currentPhase === "claim-routes" &&
+      game.currentPhase === "add-city" &&
       (currentSelectedPlayerId === game.currentPlayerId || canPlayerEditOperations(game, currentSelectedPlayerId))
     ) {
       return currentSelectedPlayerId
@@ -362,7 +362,7 @@ function getBotActionLogMessage(previousGame: GameState, nextGame: GameState, ac
       ? `drew 4 city cards from the ${action.region} deck`
       : action.type === "keep-city-offer"
         ? "picked 2 city cards from the draw"
-        : action.type === "confirm-claim-picks"
+        : action.type === "confirm-add-city-picks"
           ? nextGame.currentPhase === "operations"
             ? "confirmed city picks and opened Operations for every player"
             : `confirmed city picks; ${nextGame.players.find(player => player.id === nextGame.currentPlayerId)?.name ?? nextGame.currentPlayerId} is selecting cities`
@@ -863,7 +863,7 @@ export default function App() {
       return `It is ${sourceGame.players.find(player => player.id === sourceGame.currentPlayerId)?.name ?? sourceGame.currentPlayerId}'s turn.`
     }
 
-    if (sourceGame.currentPhase === "claim-routes") {
+    if (sourceGame.currentPhase === "add-city") {
       if (playerId === sourceGame.currentPlayerId) {
         return "Confirm picks before moving on."
       }
@@ -872,7 +872,7 @@ export default function App() {
         return "You already clicked Next player for Operations."
       }
 
-      if (hasPlayerConfirmedClaimRoutes(sourceGame, playerId)) {
+      if (hasPlayerCompletedAddCity(sourceGame, playerId)) {
         return "Finish your operations planning before moving on."
       }
 
@@ -904,7 +904,7 @@ export default function App() {
     switch (sourceGame.currentPhase) {
       case "purchase-equipment":
         return playerId === sourceGame.currentPlayerId
-      case "claim-routes":
+      case "add-city":
         return playerId === sourceGame.currentPlayerId || canPlayerEditOperations(sourceGame, playerId)
       case "operations":
         return canPlayerEditOperations(sourceGame, playerId)
@@ -1255,8 +1255,8 @@ export default function App() {
       commitGameMutation(baseGame => {
         const actingPlayerId = resolveActingPlayerId(baseGame)
 
-        if (baseGame.currentPhase === "claim-routes" && actingPlayerId === baseGame.currentPlayerId) {
-          const result = confirmClaimPicks(baseGame)
+        if (baseGame.currentPhase === "add-city" && actingPlayerId === baseGame.currentPlayerId) {
+          const result = confirmAddCityPicks(baseGame)
 
           if (!result.ok) {
             return result
@@ -1277,7 +1277,7 @@ export default function App() {
           }
         }
 
-        if (baseGame.currentPhase === "claim-routes" || baseGame.currentPhase === "operations") {
+        if (baseGame.currentPhase === "add-city" || baseGame.currentPhase === "operations") {
           const result = markOperationsReady(baseGame, actingPlayerId)
 
           if (!result.ok) {
@@ -1607,7 +1607,7 @@ export default function App() {
   const isLocalPlayerInteractive = Boolean(activeViewingPlayerId) && (
     game.currentPhase === "purchase-equipment"
       ? activeViewingPlayerId === game.currentPlayerId
-      : game.currentPhase === "claim-routes"
+      : game.currentPhase === "add-city"
         ? activeViewingPlayerId === game.currentPlayerId || canPlayerEditOperations(game, activeViewingPlayerId)
         : game.currentPhase === "operations"
           ? canPlayerEditOperations(game, activeViewingPlayerId)
@@ -1646,7 +1646,7 @@ export default function App() {
       week: game.currentWeek,
       phase: game.currentPhase,
       currentPlayerId: game.currentPlayerId,
-      claimRoutesReadyPlayerIds: game.claimRoutesReadyPlayerIds,
+      addCityReadyPlayerIds: game.addCityReadyPlayerIds,
       operationsReadyPlayerIds: game.operationsReadyPlayerIds,
       bureaucracyReadyPlayerIds: game.bureaucracyReadyPlayerIds,
       pendingBotPlayerId,
@@ -1698,7 +1698,7 @@ export default function App() {
       week: game.currentWeek,
       phase: game.currentPhase,
       currentPlayerId: game.currentPlayerId,
-      claimRoutesReadyPlayerIds: game.claimRoutesReadyPlayerIds,
+      addCityReadyPlayerIds: game.addCityReadyPlayerIds,
       operationsReadyPlayerIds: game.operationsReadyPlayerIds,
       bureaucracyReadyPlayerIds: game.bureaucracyReadyPlayerIds,
       pendingBotPlayerId,
@@ -2701,14 +2701,14 @@ export default function App() {
               >
                 <div style={{ fontSize: 22, fontWeight: 800, color: "#223024" }}>
                   {selectedPlayer
-                    ? game.currentPhase === "claim-routes" && hasPlayerConfirmedClaimRoutes(game, selectedPlayerId)
+                    ? game.currentPhase === "add-city" && hasPlayerCompletedAddCity(game, selectedPlayerId)
                       ? "Operations locked in"
                       : `Waiting for ${currentTurnPlayer?.name ?? game.currentPlayerId}`
                     : "Viewing live game"}
                 </div>
                 <div style={{ color: "#56635a", fontSize: 14 }}>
                   {selectedPlayer
-                    ? game.currentPhase === "claim-routes" && hasPlayerConfirmedClaimRoutes(game, selectedPlayerId)
+                    ? game.currentPhase === "add-city" && hasPlayerCompletedAddCity(game, selectedPlayerId)
                       ? hasPlayerCompletedOperations(game, selectedPlayerId)
                         ? "You already clicked Next player for Operations."
                         : "Your operations panel stays open while the next player picks cities."

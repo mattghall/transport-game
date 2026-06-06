@@ -1,3 +1,4 @@
+import { normalizeGameState } from "../engine/normalizeGameState"
 import type { GameState } from "../engine/types"
 
 export const SAVED_GAME_STORAGE_KEY = "transport-game-saved-game-v2"
@@ -30,7 +31,7 @@ export function loadSavedGame() {
   }
 
   try {
-    return JSON.parse(rawValue) as GameState
+    return normalizeGameState(JSON.parse(rawValue) as GameState)
   } catch {
     return null
   }

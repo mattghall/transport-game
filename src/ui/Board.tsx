@@ -873,7 +873,7 @@ const MODE_ACCENT_COLORS: Record<RouteMode, { border: string; face: string; badg
 
 const TOP_BAR_PHASE_ORDER: WeeklyPhase[] = [
   "purchase-equipment",
-  "claim-routes",
+  "add-city",
   "operations",
   "bureaucracy",
 ]
@@ -1149,8 +1149,8 @@ function formatPhaseLabel(phase: WeeklyPhase) {
   switch (phase) {
     case "purchase-equipment":
       return "Purchase equipment"
-    case "claim-routes":
-      return "Claim routes"
+    case "add-city":
+      return "Add city"
     case "operations":
       return "Operations"
     case "purchase-fuel":
@@ -1163,8 +1163,8 @@ function formatPhaseLabel(phase: WeeklyPhase) {
 function getNextPhase(phase: WeeklyPhase): WeeklyPhase {
   switch (phase) {
     case "purchase-equipment":
-      return "claim-routes"
-    case "claim-routes":
+      return "add-city"
+    case "add-city":
       return "operations"
     case "operations":
       return "bureaucracy"
@@ -1185,7 +1185,7 @@ function getPhaseStatusMessage(phase: WeeklyPhase) {
   switch (phase) {
     case "purchase-equipment":
       return "Make 1 vehicle purchase this turn. Buses can buy up to 6, trains up to 3, planes 1."
-    case "claim-routes":
+    case "add-city":
       return "Draw 4 city cards and keep exactly 2, then go straight into Operations for this turn."
     case "operations":
       return "Build tracks, assign vehicles, and split service routes before running the month."
@@ -1618,7 +1618,7 @@ export default function Board({
         : new Set<string>(),
     [currentPlayer],
   )
-  const isSelectingCityCards = game.currentPhase === "claim-routes"
+  const isSelectingCityCards = game.currentPhase === "add-city"
   const expandedCityIds = useMemo(() => {
     const cardVisibleCityIds = new Set<string>([
       ...selectedCityIds,
@@ -2211,7 +2211,7 @@ export default function Board({
       : selectedClaimPreview.claimCost <= (currentPlayer?.money ?? 0)
   const isViewingActivePlayer = activeViewingPlayerId === game.currentPlayerId
   const canManageCurrentCityOffer =
-    game.currentPhase === "claim-routes" && isViewingActivePlayer
+    game.currentPhase === "add-city" && isViewingActivePlayer
   const canConfirmSelectedClaim =
     Boolean(selectedClaimPreview?.valid) &&
     canAffordSelectedClaim
@@ -2457,7 +2457,7 @@ export default function Board({
         }
       }
 
-      if (game.currentPhase === "claim-routes") {
+      if (game.currentPhase === "add-city") {
         for (const summary of bureaucracySummaries) {
           for (const plan of summary.routePlans) {
             if (plan.isDisconnected || plan.selectedCityIds.length < 2 || plan.routes.length === 0) {
@@ -2835,7 +2835,7 @@ export default function Board({
     ? pendingVehiclePurchaseCard.purchasePrice * pendingVehiclePurchaseQuantity
     : 0
   const canConfirmPicks =
-    game.currentPhase === "claim-routes" &&
+    game.currentPhase === "add-city" &&
     (game.activeCityOffer?.keptCityIds.length ?? 0) === 2
   const currentPlayerVehicleTotals = currentPlayer
     ? [
@@ -2855,7 +2855,7 @@ export default function Board({
   const areResizeHandlesVisible =
     !isResourceMarketOpen && !isBureaucracyOpen && !isEconomicsOpen && !isWikiOpen
   const shouldAdvancePhase =
-    game.currentPhase === "claim-routes" || isLastPlayerTurn(game)
+    game.currentPhase === "add-city" || isLastPlayerTurn(game)
   const canEditOperations = game.currentPhase === "operations"
   const hasInvalidOperationsPods =
     canEditOperations && invalidCurrentPlayerPodRouteIds.size > 0
@@ -2863,7 +2863,7 @@ export default function Board({
     canEditOperations &&
     ((selectedRouteMode !== null && selectedCityIds.length >= 2) || selectedRailSegmentKeys.length > 0)
   const isAdvanceBlocked =
-    (game.currentPhase === "claim-routes" && (game.activeCityOffer?.keptCityIds.length ?? 0) !== 2) ||
+    (game.currentPhase === "add-city" && (game.activeCityOffer?.keptCityIds.length ?? 0) !== 2) ||
     hasPendingOperationsRouteSelection ||
     hasInvalidOperationsPods
   const advanceTurnLabel = game.isGameOver
@@ -3345,7 +3345,7 @@ export default function Board({
   }
 
   function handleCityClick() {
-    if (game.currentPhase === "claim-routes") {
+    if (game.currentPhase === "add-city") {
       setStatusMessage("Use the table lane to draw 4 city cards and keep exactly 2.")
       return
     }
@@ -3363,7 +3363,7 @@ export default function Board({
     source: "draw" | "owned",
     mode: RouteMode,
   ) {
-    if (game.currentPhase === "claim-routes") {
+    if (game.currentPhase === "add-city") {
       if (source !== "draw") {
         return
       }
@@ -3532,7 +3532,7 @@ export default function Board({
 
   async function handleAdvanceTurnClick() {
     if (
-      game.currentPhase === "claim-routes" &&
+      game.currentPhase === "add-city" &&
       (game.activeCityOffer?.keptCityIds.length ?? 0) !== 2
     ) {
       setStatusMessage("Draw 4 city cards and keep exactly 2 before ending the turn.")
@@ -4285,7 +4285,7 @@ export default function Board({
           </div>
           <div>{statusMessage}</div>
           {(game.currentPhase === "purchase-equipment" ||
-            game.currentPhase === "claim-routes" ||
+            game.currentPhase === "add-city" ||
             game.currentPhase === "operations" ||
             game.currentPhase === "bureaucracy") && (
             <div
@@ -4302,7 +4302,7 @@ export default function Board({
                 <strong>
                   {game.currentPhase === "purchase-equipment"
                     ? "Vehicle deck on the table"
-                    : game.currentPhase === "claim-routes"
+                    : game.currentPhase === "add-city"
                       ? "City decks on the table"
                       : game.currentPhase === "operations"
                         ? "Operations planning"
@@ -4311,7 +4311,7 @@ export default function Board({
               <div style={{ color: "#56635a", fontSize: 13 }}>
                 {game.currentPhase === "purchase-equipment"
                   ? "Choose from the cards laid out across the table below instead of opening a market menu."
-                  : game.currentPhase === "claim-routes"
+                  : game.currentPhase === "add-city"
                     ? "Draw 4 city cards and keep exactly 2. This step only adds cities to your hand."
                     : game.currentPhase === "operations"
                       ? "Build tracks, split routes, assign service, and set up routes."
@@ -4331,7 +4331,7 @@ export default function Board({
                 )}
               {game.currentPhase === "operations" && currentPlayerOwnedModes.size === 0 && (
                 <div style={{ color: "#848484", fontSize: 13 }}>
-                  You do not own any vehicles that can claim routes yet.
+                  You do not own any vehicles that can build city links yet.
                 </div>
               )}
             </div>
@@ -4370,7 +4370,7 @@ export default function Board({
               label="City cards"
               count={totalCityDeckCount}
               accent={{ border: "#b3966a", face: "#fbf6ed", badge: "#9a7440" }}
-              dimmed={game.currentPhase !== "claim-routes"}
+              dimmed={game.currentPhase !== "add-city"}
             />
             <CardStackPreview
               icon="?"
@@ -4640,7 +4640,7 @@ export default function Board({
                 <g
                   key={city.id}
                   onClick={handleCityClick}
-                  style={{ cursor: game.currentPhase === "claim-routes" ? "default" : "pointer" }}
+                  style={{ cursor: game.currentPhase === "add-city" ? "default" : "pointer" }}
                 >
                   {renderCityDemandTokens(
                     city.name,
@@ -7204,7 +7204,7 @@ export default function Board({
                 <strong>
                   {game.currentPhase === "purchase-equipment"
                     ? "Vehicle market"
-                    : game.currentPhase === "claim-routes"
+                    : game.currentPhase === "add-city"
                       ? "City Decks"
                       : game.currentPhase === "operations"
                         ? "Operations"
@@ -7229,7 +7229,7 @@ export default function Board({
                 ? "Final month pod results ranked by passengers moved."
                 : game.currentPhase === "purchase-equipment"
                 ? "Your current vehicle models appear first in one row, followed by market purchase options."
-                : game.currentPhase === "claim-routes"
+                : game.currentPhase === "add-city"
                   ? "Draw regional city cards and keep exactly 2 to add them to your hand."
                   : game.currentPhase === "operations"
                   ? "Build tracks/routes and configure service routes by mode before running operations."
@@ -7364,7 +7364,7 @@ export default function Board({
                   </div>
                 </div>
               </>
-          ) : game.currentPhase === "claim-routes" || game.currentPhase === "operations" ? (
+          ) : game.currentPhase === "add-city" || game.currentPhase === "operations" ? (
             <div
               style={{
                 flex: 1,
@@ -7375,7 +7375,7 @@ export default function Board({
                 paddingRight: 2,
               }}
             >
-              {game.currentPhase === "claim-routes" && (
+              {game.currentPhase === "add-city" && (
                 <>
                   <div style={{ display: "grid", gap: 8 }}>
                     <div
@@ -7734,7 +7734,7 @@ export default function Board({
           )}
         </div>
         <div style={TABLE_LANE_STYLE}>
-          {game.currentPhase === "claim-routes" ? (
+          {game.currentPhase === "add-city" ? (
             <>
               <div>
                 <div style={{ color: "#56635a", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em" }}>

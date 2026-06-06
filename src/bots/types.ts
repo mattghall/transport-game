@@ -16,8 +16,8 @@ export type KeepCityOfferBotAction = {
   cityIds: string[]
 }
 
-export type ConfirmClaimPicksBotAction = {
-  type: "confirm-claim-picks"
+export type ConfirmAddCityPicksBotAction = {
+  type: "confirm-add-city-picks"
 }
 
 export type ClaimRouteBotAction = {
@@ -42,7 +42,7 @@ export type BotAction =
   | BuyVehicleBotAction
   | DrawCityOfferBotAction
   | KeepCityOfferBotAction
-  | ConfirmClaimPicksBotAction
+  | ConfirmAddCityPicksBotAction
   | ClaimRouteBotAction
   | ReadyOperationsBotAction
   | ReadyBureaucracyBotAction

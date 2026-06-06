@@ -9,7 +9,7 @@ import type { ScriptedBotTrainingResults } from "./training"
 
 export const BOT_PRESET_IDS = ["bot-avg", "bot-best", "bot-chaos"] as const
 export type BotPresetId = (typeof BOT_PRESET_IDS)[number]
-type SupportedTrainingPlayerCount = 2 | 3 | 4
+type StickbugVariantPlayerCount = 2 | 3 | 4
 
 export const DEFAULT_BOT_PRESET_ID: BotPresetId = "bot-avg"
 export const MANAGED_BOT_PRESETS_PATH = "/training-results/bot-presets.json"
@@ -70,7 +70,7 @@ export const BOT_PRESETS: ReadonlyArray<{
   {
     id: "bot-best",
     label: "Stickbug",
-    description: "Uses the saved autotuned champion for this player count when available.",
+    description: "Uses the managed Stickbug weights for this lobby size when available.",
   },
   {
     id: "bot-chaos",
@@ -81,9 +81,11 @@ export const BOT_PRESETS: ReadonlyArray<{
 
 export const MANAGED_BOT_PRESET_IDS = ["bot-avg", "bot-best"] as const
 export type ManagedBotPresetId = (typeof MANAGED_BOT_PRESET_IDS)[number]
+export const MANAGED_BOT_PRESET_STORAGE_IDS = ["bot-avg", "bot-best-2p", "bot-best-3p", "bot-best-4p"] as const
+export type ManagedBotPresetStorageId = (typeof MANAGED_BOT_PRESET_STORAGE_IDS)[number]
 
 export type ManagedBotPresetEntry = {
-  presetId: ManagedBotPresetId
+  presetId: ManagedBotPresetStorageId
   weights: ScriptedBotWeights
   promotedAt: string
   sourceTrainingGeneratedAt: string
@@ -104,16 +106,41 @@ export type ManagedBotPresetEntry = {
 export type ManagedBotPresetStore = {
   version: 1
   updatedAt: string
-  presets: Partial<Record<ManagedBotPresetId, ManagedBotPresetEntry>>
+  presets: Partial<Record<ManagedBotPresetStorageId, ManagedBotPresetEntry>>
 }
 
-type AutotunedChampionEntry = {
-  version: 1
-  updatedAt: string
-  cycle: number
-  playerCount: SupportedTrainingPlayerCount
-  benchmark: ScriptedBotTrainingResults["final"]
-  training: ScriptedBotTrainingResults
+function getStickbugVariantStorageId(playerCount: StickbugVariantPlayerCount): ManagedBotPresetStorageId {
+  return `bot-best-${playerCount}p`
+}
+
+export function getManagedPresetStorageId(
+  presetId: ManagedBotPresetId,
+  playerCount?: number,
+): ManagedBotPresetStorageId | null {
+  if (presetId === "bot-avg") {
+    return "bot-avg"
+  }
+
+  if (playerCount === 2 || playerCount === 3 || playerCount === 4) {
+    return getStickbugVariantStorageId(playerCount)
+  }
+
+  return null
+}
+
+function normalizeManagedPresetStorageId(
+  presetId: string,
+  sourcePlayerCount?: number,
+): ManagedBotPresetStorageId | null {
+  if (presetId === "bot-avg") {
+    return "bot-avg"
+  }
+
+  if (presetId === "bot-best" && (sourcePlayerCount === 2 || sourcePlayerCount === 3 || sourcePlayerCount === 4)) {
+    return getStickbugVariantStorageId(sourcePlayerCount)
+  }
+
+  return MANAGED_BOT_PRESET_STORAGE_IDS.find(storageId => storageId === presetId) ?? null
 }
 
 export function normalizeBotPresetId(value: string | null | undefined): BotPresetId {
@@ -149,8 +176,13 @@ function parseManagedBotPresetEntry(value: unknown): ManagedBotPresetEntry | nul
     return null
   }
 
+  const normalizedPresetId = normalizeManagedPresetStorageId(
+    String(value.presetId ?? ""),
+    isRecord(value.sourceConfig) && isFiniteNumber(value.sourceConfig.playerCount) ? value.sourceConfig.playerCount : undefined,
+  )
+
   if (
-    !MANAGED_BOT_PRESET_IDS.includes(value.presetId as ManagedBotPresetId) ||
+    !normalizedPresetId ||
     typeof value.promotedAt !== "string" ||
     typeof value.sourceTrainingGeneratedAt !== "string" ||
     !isScriptedBotWeights(value.weights) ||
@@ -185,7 +217,7 @@ function parseManagedBotPresetEntry(value: unknown): ManagedBotPresetEntry | nul
   }
 
   return {
-    presetId: value.presetId as ManagedBotPresetId,
+    presetId: normalizedPresetId,
     promotedAt: value.promotedAt,
     sourceTrainingGeneratedAt: value.sourceTrainingGeneratedAt,
     weights: mergeScriptedBotWeights(value.weights as Partial<ScriptedBotWeights>),
@@ -226,11 +258,11 @@ export function parseManagedBotPresetStore(value: unknown): ManagedBotPresetStor
   const presetRecord = value.presets
 
   const presets = Object.fromEntries(
-    MANAGED_BOT_PRESET_IDS.flatMap(presetId => {
+    Object.keys(presetRecord).flatMap(presetId => {
       const parsedPreset = parseManagedBotPresetEntry(presetRecord[presetId])
-      return parsedPreset ? [[presetId, parsedPreset]] : []
+      return parsedPreset ? [[parsedPreset.presetId, parsedPreset]] : []
     }),
-  ) as Partial<Record<ManagedBotPresetId, ManagedBotPresetEntry>>
+  ) as Partial<Record<ManagedBotPresetStorageId, ManagedBotPresetEntry>>
 
   return {
     version: 1,
@@ -261,77 +293,22 @@ export async function fetchManagedBotPresetStore() {
   }
 }
 
-function parseAutotunedChampionEntry(
-  value: unknown,
-  playerCount: SupportedTrainingPlayerCount,
-): AutotunedChampionEntry | null {
-  if (
-    !isRecord(value) ||
-    value.version !== 1 ||
-    typeof value.updatedAt !== "string" ||
-    !isFiniteNumber(value.cycle) ||
-    value.playerCount !== playerCount ||
-    !isRecord(value.training) ||
-    !isRecord(value.training.final) ||
-    !isScriptedBotWeights(value.training.final.weights)
-  ) {
-    return null
-  }
-
-  return {
-    version: 1,
-    updatedAt: value.updatedAt,
-    cycle: value.cycle,
-    playerCount,
-    benchmark: value.training.final as ScriptedBotTrainingResults["final"],
-    training: value.training as ScriptedBotTrainingResults,
-  }
-}
-
-async function fetchAutotunedChampionEntry(playerCount: SupportedTrainingPlayerCount) {
-  let response: Response
-
-  try {
-    response = await fetch(`/training-results/champion-${playerCount}p.json?tick=${Date.now()}`, {
-      cache: "no-store",
-    })
-  } catch {
-    return null
-  }
-
-  if (!response.ok) {
-    return null
-  }
-
-  try {
-    return parseAutotunedChampionEntry(await response.json(), playerCount)
-  } catch {
-    return null
-  }
-}
-
 export async function fetchManagedBotPresetWeightOverrides(playerCount?: number) {
   const store = await fetchManagedBotPresetStore()
-  const baseWeights = Object.fromEntries(
-    MANAGED_BOT_PRESET_IDS.flatMap(presetId => {
-      const preset = store?.presets[presetId]
-      return preset ? [[presetId, preset.weights]] : []
-    }),
-  ) satisfies Partial<Record<BotPresetId, ScriptedBotWeights>>
+  const baseWeights = {
+    ...(store?.presets["bot-avg"] ? { "bot-avg": store.presets["bot-avg"].weights } : {}),
+  } satisfies Partial<Record<BotPresetId, ScriptedBotWeights>>
 
-  if (playerCount !== 2 && playerCount !== 3 && playerCount !== 4) {
-    return baseWeights
-  }
+  const managedStickbugStorageId = getManagedPresetStorageId("bot-best", playerCount)
+  const managedStickbug = managedStickbugStorageId ? store?.presets[managedStickbugStorageId] : null
 
-  const champion = await fetchAutotunedChampionEntry(playerCount)
-
-  if (!champion) {
+  if (!managedStickbug) {
     return baseWeights
   }
 
   return {
     ...baseWeights,
-    "bot-best": champion.training.final.weights,
+    "bot-best": managedStickbug.weights,
   } satisfies Partial<Record<BotPresetId, ScriptedBotWeights>>
 }
 

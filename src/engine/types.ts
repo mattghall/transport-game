@@ -146,7 +146,7 @@ export type Player = {
 export type RouteMode = "rail" | "air" | "bus"
 export type WeeklyPhase =
   | "purchase-fuel"
-  | "claim-routes"
+  | "add-city"
   | "operations"
   | "purchase-equipment"
   | "bureaucracy"
@@ -209,7 +209,7 @@ export type GameState = {
   routeMarketCardIdsByMode: RouteMarketByMode
   cityDeckCardIdsByRegion: CityDecksByRegion
   activeCityOffer: ActiveCityOffer | null
-  claimRoutesReadyPlayerIds: string[]
+  addCityReadyPlayerIds: string[]
   operationsReadyPlayerIds: string[]
   bureaucracyReadyPlayerIds: string[]
   hasPurchasedVehicleThisTurn: boolean

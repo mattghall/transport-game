@@ -1,7 +1,7 @@
 import { createServer } from "node:http"
 import { randomBytes } from "node:crypto"
 import { networkInterfaces } from "node:os"
-import { spawn } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { dirname, resolve } from "node:path"
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
@@ -21,7 +21,9 @@ const TRAINING_RESULTS_PATH = resolve(PROJECT_ROOT, "public/training-results/lat
 const TRAINING_IMPORTANCE_RESULTS_PATH = resolve(PROJECT_ROOT, "public/training-results/latest-importance.json")
 const MANAGED_BOT_PRESETS_PATH = resolve(PROJECT_ROOT, "public/training-results/bot-presets.json")
 const AUTOTUNE_STATUS_PATH = resolve(PROJECT_ROOT, "public/training-results/autotune-status.json")
+const AUTOTUNE_HISTORY_PATH = resolve(PROJECT_ROOT, "public/training-results/autotune-history.json")
 const TRAINING_LOG_LIMIT = 400
+const MANAGED_BOT_PRESET_STORAGE_IDS = ["bot-avg", "bot-best-2p", "bot-best-3p", "bot-best-4p"]
 const TRAINED_WEIGHT_KEYS = [
   "vehiclePriorityBus",
   "vehiclePriorityTrain",
@@ -69,6 +71,7 @@ let trainingStatus = {
   signal: null,
   outputPath: TRAINING_RESULTS_PATH,
   logs: [],
+  progress: null,
 }
 let trainingImportanceStatus = {
   status: "idle",
@@ -90,6 +93,7 @@ let autotuneControlStatus = {
   signal: null,
   outputPath: AUTOTUNE_STATUS_PATH,
   logs: [],
+  progress: null,
 }
 
 function isLoopbackRemoteAddress(address) {
@@ -179,6 +183,72 @@ function appendAutotuneLog(line) {
   )
 }
 
+function updateIterationProgress(targetStatus, payload) {
+  targetStatus.progress = {
+    currentIteration: Math.max(0, Math.trunc(payload.iteration)),
+    totalIterations: Math.max(1, Math.trunc(payload.totalIterations)),
+    temperature: isFiniteNumber(payload.temperature) ? payload.temperature : null,
+    bestScore: isFiniteNumber(payload.bestScore) ? payload.bestScore : null,
+    candidateScore: isFiniteNumber(payload.candidateScore) ? payload.candidateScore : null,
+  }
+}
+
+function handleTrainingOutputLine(line) {
+  appendTrainingLog(line)
+
+  try {
+    const parsedValue = JSON.parse(line)
+
+    if (
+      isRecord(parsedValue) &&
+      parsedValue.stage === "iteration-progress" &&
+      isFiniteNumber(parsedValue.iteration) &&
+      isFiniteNumber(parsedValue.totalIterations)
+    ) {
+      updateIterationProgress(trainingStatus, parsedValue)
+    }
+  } catch {}
+}
+
+function handleAutotuneOutputLine(line) {
+  appendAutotuneLog(line)
+
+  try {
+    const parsedValue = JSON.parse(line)
+
+    if (!isRecord(parsedValue) || typeof parsedValue.stage !== "string") {
+      return
+    }
+
+    if (parsedValue.stage === "cycle-start" && isFiniteNumber(parsedValue.iterations)) {
+      autotuneControlStatus.progress = {
+        currentIteration: 0,
+        totalIterations: Math.max(1, Math.trunc(parsedValue.iterations)),
+        temperature: null,
+        bestScore: null,
+        candidateScore: null,
+      }
+      return
+    }
+
+    if (
+      parsedValue.stage === "iteration-progress" &&
+      isFiniteNumber(parsedValue.iteration) &&
+      isFiniteNumber(parsedValue.totalIterations)
+    ) {
+      updateIterationProgress(autotuneControlStatus, parsedValue)
+      return
+    }
+
+    if (parsedValue.stage === "cycle-finish" && autotuneControlStatus.progress) {
+      autotuneControlStatus.progress = {
+        ...autotuneControlStatus.progress,
+        currentIteration: autotuneControlStatus.progress.totalIterations,
+      }
+    }
+  } catch {}
+}
+
 function readAutotuneStatusFile() {
   if (!existsSync(AUTOTUNE_STATUS_PATH)) {
     return null
@@ -192,13 +262,152 @@ function readAutotuneStatusFile() {
   }
 }
 
-function hasStaleAutotuneRun() {
+function writeAutotuneStatusFile(status) {
+  mkdirSync(dirname(AUTOTUNE_STATUS_PATH), { recursive: true })
+  const temporaryPath = `${AUTOTUNE_STATUS_PATH}.tmp`
+  writeFileSync(temporaryPath, JSON.stringify(status, null, 2))
+  renameSync(temporaryPath, AUTOTUNE_STATUS_PATH)
+}
+
+function clearAutotuneCurrentRun(logMessage) {
   const existingAutotuneStatus = readAutotuneStatusFile()
-  return isRecord(existingAutotuneStatus) && isRecord(existingAutotuneStatus.currentRun)
+
+  if (!isRecord(existingAutotuneStatus) || !isRecord(existingAutotuneStatus.currentRun)) {
+    return false
+  }
+
+  writeAutotuneStatusFile({
+    ...existingAutotuneStatus,
+    currentRun: null,
+    updatedAt: new Date().toISOString(),
+  })
+
+  if (logMessage) {
+    appendAutotuneLog(logMessage)
+  }
+
+  return true
+}
+
+function findDetachedAutotuneProcess() {
+  const result = spawnSync("ps", ["-Ao", "pid=,command="], {
+    encoding: "utf8",
+  })
+
+  if (result.status !== 0) {
+    return null
+  }
+
+  const processLine = result.stdout
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .find(line => line.includes(AUTOTUNE_SCRIPT_PATH) || line.includes("scripts/autotuneBots.ts"))
+
+  if (!processLine) {
+    return null
+  }
+
+  const [rawPid] = processLine.split(/\s+/, 1)
+  const pid = Number.parseInt(rawPid ?? "", 10)
+  return Number.isFinite(pid) ? pid : null
+}
+
+function reconcileAutotuneRunState() {
+  const existingAutotuneStatus = readAutotuneStatusFile()
+
+  if (!isRecord(existingAutotuneStatus) || !isRecord(existingAutotuneStatus.currentRun)) {
+    return { hasExternalRun: false, recoveredStaleRun: false }
+  }
+
+  if (activeAutotuneProcess !== null) {
+    return { hasExternalRun: false, recoveredStaleRun: false }
+  }
+
+  const detachedPid = findDetachedAutotuneProcess()
+
+  if (detachedPid !== null) {
+    return { hasExternalRun: true, recoveredStaleRun: false }
+  }
+
+  clearAutotuneCurrentRun("Recovered from a stale autotune status file by clearing a run with no live process.")
+  if (autotuneControlStatus.status === "unknown") {
+    autotuneControlStatus = {
+      ...autotuneControlStatus,
+      status: "idle",
+      pid: null,
+      progress: null,
+    }
+  }
+  return { hasExternalRun: false, recoveredStaleRun: true }
+}
+
+function forceStopAutotuneProcess() {
+  const detachedPid = activeAutotuneProcess === null ? findDetachedAutotuneProcess() : null
+
+  if (activeAutotuneProcess) {
+    autotuneControlStatus = {
+      ...autotuneControlStatus,
+      status: "stopping",
+    }
+    appendAutotuneLog("Force stop requested. Sending SIGKILL to the live autotune process and clearing the status file lock.")
+    activeAutotuneProcess.kill("SIGKILL")
+    clearAutotuneCurrentRun("Cleared autotune currentRun after force stop was requested.")
+    return
+  }
+
+  if (detachedPid !== null) {
+    try {
+      process.kill(detachedPid, "SIGKILL")
+    } catch {
+      clearAutotuneCurrentRun("Cleared an autotune status lock after the detached process was already gone.")
+      autotuneControlStatus = {
+        ...autotuneControlStatus,
+        status: "idle",
+        pid: null,
+        finishedAt: new Date().toISOString(),
+        exitCode: null,
+        signal: null,
+        progress: null,
+      }
+      return
+    }
+    clearAutotuneCurrentRun(`Force-stopped detached autotune process ${detachedPid} and cleared the status file lock.`)
+    autotuneControlStatus = {
+      ...autotuneControlStatus,
+      status: "idle",
+      pid: null,
+      finishedAt: new Date().toISOString(),
+      exitCode: null,
+      signal: "SIGKILL",
+      progress: null,
+    }
+    return
+  }
+
+  const clearedStaleRun = clearAutotuneCurrentRun("Force-cleared a stale autotune status file lock.")
+
+  if (clearedStaleRun || autotuneControlStatus.status === "unknown") {
+    autotuneControlStatus = {
+      ...autotuneControlStatus,
+      status: "idle",
+      pid: null,
+      finishedAt: new Date().toISOString(),
+      exitCode: null,
+      signal: null,
+      progress: null,
+    }
+    return
+  }
+
+  const error = new Error("No autotune process or stale lock is present to force stop.")
+  error.statusCode = 409
+  throw error
 }
 
 function getAutotuneControlStatusPayload() {
-  if (activeAutotuneProcess === null && hasStaleAutotuneRun()) {
+  const autotuneRunState = reconcileAutotuneRunState()
+
+  if (activeAutotuneProcess === null && autotuneRunState.hasExternalRun) {
     return {
       ...autotuneControlStatus,
       status: "unknown",
@@ -231,6 +440,30 @@ function getTrainingPresetPayload() {
   }
 }
 
+function normalizeManagedPresetStorageId(presetId, sourcePlayerCount) {
+  if (presetId === "bot-avg") {
+    return "bot-avg"
+  }
+
+  if (presetId === "bot-best" && (sourcePlayerCount === 2 || sourcePlayerCount === 3 || sourcePlayerCount === 4)) {
+    return `bot-best-${sourcePlayerCount}p`
+  }
+
+  return MANAGED_BOT_PRESET_STORAGE_IDS.includes(presetId) ? presetId : null
+}
+
+function resolveManagedPresetStorageId(presetId, playerCount) {
+  if (presetId === "bot-avg") {
+    return "bot-avg"
+  }
+
+  if (presetId === "bot-best" && (playerCount === 2 || playerCount === 3 || playerCount === 4)) {
+    return `bot-best-${playerCount}p`
+  }
+
+  return null
+}
+
 function readManagedBotPresetStore() {
   if (!existsSync(MANAGED_BOT_PRESETS_PATH)) {
     return null
@@ -252,16 +485,23 @@ function readManagedBotPresetStore() {
       version: 1,
       updatedAt: parsedValue.updatedAt,
       presets: Object.fromEntries(
-        ["bot-avg", "bot-best"].flatMap(presetId => {
+        Object.keys(parsedValue.presets).flatMap(presetId => {
           const preset = parsedValue.presets[presetId]
 
           if (!preset) {
             return []
           }
 
+          const normalizedPresetId = normalizeManagedPresetStorageId(
+            presetId,
+            isRecord(preset.sourceConfig) && isFiniteNumber(preset.sourceConfig.playerCount)
+              ? preset.sourceConfig.playerCount
+              : undefined,
+          )
+
           if (
             !isRecord(preset) ||
-            preset.presetId !== presetId ||
+            !normalizedPresetId ||
             typeof preset.promotedAt !== "string" ||
             typeof preset.sourceTrainingGeneratedAt !== "string" ||
             !isValidWeights(preset.weights) ||
@@ -271,8 +511,8 @@ function readManagedBotPresetStore() {
             return []
           }
 
-          return [[presetId, {
-            presetId,
+          return [[normalizedPresetId, {
+            presetId: normalizedPresetId,
             promotedAt: preset.promotedAt,
             sourceTrainingGeneratedAt: preset.sourceTrainingGeneratedAt,
             weights: preset.weights,
@@ -292,6 +532,49 @@ function writeManagedBotPresetStore(store) {
   const temporaryPath = `${MANAGED_BOT_PRESETS_PATH}.tmp`
   writeFileSync(temporaryPath, JSON.stringify(store, null, 2))
   renameSync(temporaryPath, MANAGED_BOT_PRESETS_PATH)
+}
+
+function buildManagedPresetEntry(storagePresetId, trainingResults, promotedAt = new Date().toISOString()) {
+  return {
+    presetId: storagePresetId,
+    weights: trainingResults.final.weights,
+    promotedAt,
+    sourceTrainingGeneratedAt: trainingResults.generatedAt,
+    sourceSummary: {
+      score: trainingResults.final.score,
+      winRate: trainingResults.final.winRate,
+      averageRank: trainingResults.final.averageRank,
+      averagePassengers: trainingResults.final.averagePassengers,
+      averagePassengerMargin: trainingResults.final.averagePassengerMargin,
+      averageConnectedCities: trainingResults.final.averageConnectedCities,
+      averageMoney: trainingResults.final.averageMoney,
+      timeoutRate: trainingResults.final.timeoutRate,
+      sampleCount: trainingResults.final.sampleCount,
+    },
+    sourceConfig: {
+      iterations: trainingResults.config.iterations,
+      gamesPerCandidate: trainingResults.config.gamesPerCandidate,
+      playerCount: trainingResults.config.playerCount ?? 4,
+      baseSeed: trainingResults.config.baseSeed,
+      candidatesPerIteration: trainingResults.config.candidatesPerIteration,
+      mutationSeed: trainingResults.config.mutationSeed,
+      maxSteps: trainingResults.config.maxSteps,
+      outputPath: trainingResults.config.outputPath,
+    },
+  }
+}
+
+function readAutotuneHistoryFile() {
+  if (!existsSync(AUTOTUNE_HISTORY_PATH)) {
+    return null
+  }
+
+  try {
+    const parsedValue = JSON.parse(readFileSync(AUTOTUNE_HISTORY_PATH, "utf8"))
+    return isRecord(parsedValue) ? parsedValue : null
+  } catch {
+    return null
+  }
 }
 
 function promoteLatestTrainingResultsToPreset(presetId) {
@@ -336,42 +619,116 @@ function promoteLatestTrainingResultsToPreset(presetId) {
   }
 
   const promotedAt = new Date().toISOString()
+  const storagePresetId = resolveManagedPresetStorageId(presetId, trainingResults.config.playerCount)
+
+  if (!storagePresetId) {
+    const error = new Error(`Stickbug only supports managed variants for 2-player, 3-player, or 4-player runs right now.`)
+    error.statusCode = 422
+    throw error
+  }
+
   const nextStore = {
     version: 1,
     updatedAt: promotedAt,
     presets: {
       ...(readManagedBotPresetStore()?.presets ?? {}),
-      [presetId]: {
-        presetId,
-        weights: trainingResults.final.weights,
-        promotedAt,
-        sourceTrainingGeneratedAt: trainingResults.generatedAt,
-        sourceSummary: {
-          score: trainingResults.final.score,
-          winRate: trainingResults.final.winRate,
-          averageRank: trainingResults.final.averageRank,
-          averagePassengers: trainingResults.final.averagePassengers,
-          averageConnectedCities: trainingResults.final.averageConnectedCities,
-          averageMoney: trainingResults.final.averageMoney,
-          timeoutRate: trainingResults.final.timeoutRate,
-          sampleCount: trainingResults.final.sampleCount,
-        },
-        sourceConfig: {
-          iterations: trainingResults.config.iterations,
-          gamesPerCandidate: trainingResults.config.gamesPerCandidate,
-          playerCount: trainingResults.config.playerCount ?? 4,
-          baseSeed: trainingResults.config.baseSeed,
-          candidatesPerIteration: trainingResults.config.candidatesPerIteration,
-          mutationSeed: trainingResults.config.mutationSeed,
-          maxSteps: trainingResults.config.maxSteps,
-          outputPath: trainingResults.config.outputPath,
-        },
-      },
+      [storagePresetId]: buildManagedPresetEntry(storagePresetId, trainingResults, promotedAt),
     },
   }
 
   writeManagedBotPresetStore(nextStore)
-  appendTrainingLog(`Promoted the latest training results into preset "${presetId}".`)
+  appendTrainingLog(`Promoted the latest training results into preset "${storagePresetId}".`)
+  return nextStore
+}
+
+function findAutotuneRunForPromotion(playerCount, generatedAt) {
+  const sources = [
+    ...(Array.isArray(readAutotuneStatusFile()?.recentRuns) ? readAutotuneStatusFile().recentRuns : []),
+    ...(Array.isArray(readAutotuneHistoryFile()?.runs) ? readAutotuneHistoryFile().runs : []),
+  ]
+  const matchingRun = sources.find(run =>
+    isRecord(run) &&
+    run.playerCount === playerCount &&
+    run.generatedAt === generatedAt &&
+    isRecord(run.final) &&
+    isValidWeights(run.final.weights),
+  )
+
+  if (matchingRun) {
+    return {
+      generatedAt,
+      config: {
+        iterations: 0,
+        gamesPerCandidate: 0,
+        playerCount,
+        baseSeed: 0,
+        candidatesPerIteration: 0,
+        mutationSeed: 0,
+        maxSteps: 0,
+        outputPath: AUTOTUNE_HISTORY_PATH,
+      },
+      final: {
+        ...matchingRun.final,
+        weights: matchingRun.final.weights,
+        averageConnectedCities: 0,
+        averageMoney: 0,
+        timeoutRate: 0,
+      },
+    }
+  }
+
+  const latestModeResultsPath = resolve(PROJECT_ROOT, `public/training-results/latest-${playerCount}p.json`)
+
+  if (!existsSync(latestModeResultsPath)) {
+    return null
+  }
+
+  try {
+    const latestModeResults = JSON.parse(readFileSync(latestModeResultsPath, "utf8"))
+
+    if (
+      isRecord(latestModeResults) &&
+      latestModeResults.generatedAt === generatedAt &&
+      isRecord(latestModeResults.config) &&
+      isRecord(latestModeResults.final) &&
+      isValidWeights(latestModeResults.final.weights)
+    ) {
+      return latestModeResults
+    }
+  } catch {}
+
+  return null
+}
+
+function promoteAutotuneRunToStickbug(playerCount, generatedAt) {
+  const storagePresetId = resolveManagedPresetStorageId("bot-best", playerCount)
+
+  if (!storagePresetId) {
+    const error = new Error("Stickbug autotune promotions only support 2-player, 3-player, or 4-player runs.")
+    error.statusCode = 422
+    throw error
+  }
+
+  const trainingResults = findAutotuneRunForPromotion(playerCount, generatedAt)
+
+  if (!trainingResults || !isRecord(trainingResults.final) || !isValidWeights(trainingResults.final.weights)) {
+    const error = new Error("That autotune run no longer has promotable weights available.")
+    error.statusCode = 404
+    throw error
+  }
+
+  const promotedAt = new Date().toISOString()
+  const nextStore = {
+    version: 1,
+    updatedAt: promotedAt,
+    presets: {
+      ...(readManagedBotPresetStore()?.presets ?? {}),
+      [storagePresetId]: buildManagedPresetEntry(storagePresetId, trainingResults, promotedAt),
+    },
+  }
+
+  writeManagedBotPresetStore(nextStore)
+  appendAutotuneLog(`Promoted autotune run ${generatedAt} into preset "${storagePresetId}".`)
   return nextStore
 }
 
@@ -400,6 +757,14 @@ function isValidTrainingPresetPromotionPayload(value) {
   return isRecord(value) && (value.presetId === "bot-best" || value.presetId === "bot-avg")
 }
 
+function isValidAutotuneRunPresetPromotionPayload(value) {
+  return (
+    isRecord(value) &&
+    isFiniteNumber(value.playerCount) &&
+    typeof value.generatedAt === "string"
+  )
+}
+
 function normalizeTrainingArgs(body) {
   const args = {
     iterations: Math.trunc(body.iterations),
@@ -414,12 +779,12 @@ function normalizeTrainingArgs(body) {
   if (
     args.iterations < 1 ||
     args.gamesPerCandidate < 1 ||
-    args.playerCount < 2 ||
+    args.playerCount < 1 ||
     args.playerCount > 4 ||
     args.candidatesPerIteration < 1 ||
     args.maxSteps < 1
   ) {
-    const error = new Error("Training parameters must be positive integers, and player count must be between 2 and 4.")
+    const error = new Error("Training parameters must be positive integers, and player count must be between 1 and 4.")
     error.statusCode = 400
     throw error
   }
@@ -451,7 +816,9 @@ function startTrainingProcess(args) {
     throw error
   }
 
-  if (hasStaleAutotuneRun()) {
+  const autotuneRunState = reconcileAutotuneRunState()
+
+  if (autotuneRunState.hasExternalRun) {
     const error = new Error("Autotune may still be running from a previous server session. Verify it is stopped before starting a manual training run.")
     error.statusCode = 409
     throw error
@@ -469,6 +836,13 @@ function startTrainingProcess(args) {
     logs: [
       `[${new Date().toISOString()}] Starting training run with args ${JSON.stringify(args)}`,
     ],
+    progress: {
+      currentIteration: 0,
+      totalIterations: args.iterations,
+      temperature: null,
+      bestScore: null,
+      candidateScore: null,
+    },
   }
   trainingImportanceStatus = {
     status: "idle",
@@ -511,7 +885,7 @@ function startTrainingProcess(args) {
     const combinedOutput = stdoutRemainder + chunk.toString("utf8")
     const lines = combinedOutput.split(/\r?\n/)
     stdoutRemainder = lines.pop() ?? ""
-    lines.forEach(appendTrainingLog)
+    lines.forEach(handleTrainingOutputLine)
   })
 
   child.stderr.on("data", chunk => {
@@ -552,6 +926,13 @@ function startTrainingProcess(args) {
       exitCode: exitCode ?? null,
       signal: signal ?? null,
       pid: null,
+      progress:
+        exitCode === 0 && trainingStatus.progress
+          ? {
+              ...trainingStatus.progress,
+              currentIteration: trainingStatus.progress.totalIterations,
+            }
+          : trainingStatus.progress,
     }
     appendTrainingLog(
       trainingStatus.status === "completed"
@@ -681,7 +1062,9 @@ function startAutotuneProcess() {
     throw error
   }
 
-  if (hasStaleAutotuneRun()) {
+  const autotuneRunState = reconcileAutotuneRunState()
+
+  if (autotuneRunState.hasExternalRun) {
     autotuneControlStatus = {
       ...autotuneControlStatus,
       status: "unknown",
@@ -704,6 +1087,7 @@ function startAutotuneProcess() {
     signal: null,
     outputPath: AUTOTUNE_STATUS_PATH,
     logs: [`[${new Date().toISOString()}] Starting autotune loop.`],
+    progress: null,
   }
 
   const child = spawn(process.execPath, [TSX_CLI_PATH, AUTOTUNE_SCRIPT_PATH], {
@@ -721,7 +1105,7 @@ function startAutotuneProcess() {
     const combinedOutput = stdoutRemainder + chunk.toString("utf8")
     const lines = combinedOutput.split(/\r?\n/)
     stdoutRemainder = lines.pop() ?? ""
-    lines.forEach(appendAutotuneLog)
+    lines.forEach(handleAutotuneOutputLine)
   })
 
   child.stderr.on("data", chunk => {
@@ -757,6 +1141,7 @@ function startAutotuneProcess() {
       exitCode: exitCode ?? null,
       signal: signal ?? null,
       pid: null,
+      progress: null,
     }
     appendAutotuneLog(
       autotuneControlStatus.status === "completed"
@@ -780,6 +1165,7 @@ function stopAutotuneProcess() {
   autotuneControlStatus = {
     ...autotuneControlStatus,
     status: "stopping",
+    progress: autotuneControlStatus.progress,
   }
   appendAutotuneLog("Stop requested. The autotune loop will exit after the current cycle finishes.")
   activeAutotuneProcess.kill("SIGINT")
@@ -1216,6 +1602,19 @@ const server = createServer(async (request, response) => {
       }
     }
 
+    if (request.method === "POST" && url.pathname === "/training/autotune/force-stop") {
+      try {
+        forceStopAutotuneProcess()
+        sendJson(response, 202, getAutotuneControlStatusPayload())
+        return
+      } catch (error) {
+        sendJson(response, error?.statusCode ?? 400, {
+          error: error instanceof Error ? error.message : "Could not force stop autotune.",
+        })
+        return
+      }
+    }
+
     if (request.method === "POST" && url.pathname === "/training/importance/start") {
       try {
         startTrainingImportanceProcess()
@@ -1249,6 +1648,31 @@ const server = createServer(async (request, response) => {
       } catch (error) {
         sendJson(response, error?.statusCode ?? 400, {
           error: error instanceof Error ? error.message : "Could not promote training results.",
+        })
+        return
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/training/presets/promote-autotune-run") {
+      try {
+        const body = await readJsonBody(request)
+
+        if (!isValidAutotuneRunPresetPromotionPayload(body)) {
+          sendJson(response, 400, {
+            error: "Autotune preset promotion requests must include playerCount and generatedAt.",
+          })
+          return
+        }
+
+        const nextStore = promoteAutotuneRunToStickbug(Math.trunc(body.playerCount), body.generatedAt)
+        sendJson(response, 200, {
+          outputPath: MANAGED_BOT_PRESETS_PATH,
+          presets: nextStore.presets,
+        })
+        return
+      } catch (error) {
+        sendJson(response, error?.statusCode ?? 400, {
+          error: error instanceof Error ? error.message : "Could not promote autotune run.",
         })
         return
       }

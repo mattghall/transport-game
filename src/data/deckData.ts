@@ -134,7 +134,25 @@ function toVehicleCard(card: RawVehicleCard): VehicleCard {
   }
 }
 
-export const defaultVehicleCards: VehicleCard[] = rawVehicleCards.map(toVehicleCard)
+export function normalizeVehicleCardsByPrice(vehicleCards: VehicleCard[]) {
+  return (["bus", "train", "air"] as const).flatMap(type =>
+    vehicleCards
+      .filter(card => card.type === type)
+      .sort(
+        (cardA, cardB) =>
+          cardA.purchasePrice - cardB.purchasePrice ||
+          cardA.number - cardB.number ||
+          cardA.name.localeCompare(cardB.name) ||
+          cardA.id.localeCompare(cardB.id),
+      )
+      .map((card, index) => ({
+        ...card,
+        number: index + 1,
+      })),
+  )
+}
+
+export const defaultVehicleCards: VehicleCard[] = normalizeVehicleCardsByPrice(rawVehicleCards.map(toVehicleCard))
 export const defaultDecks = {
   vehicleCards: defaultVehicleCards,
   chanceCards: defaultChanceCards,
@@ -236,12 +254,14 @@ export function coerceUserDecks(value: unknown): UserDeckData {
 
   return {
     vehicleCards: Array.isArray(decks.vehicleCards)
-      ? decks.vehicleCards.filter(isVehicleCard).map(card => ({
-          ...card,
-          id: LEGACY_BUILT_IN_VEHICLE_CARD_IDS[card.id] ?? card.id,
-          vehicleCount: 1,
-          totalPassengerCapacity: card.capacityPerVehicle,
-        }))
+      ? normalizeVehicleCardsByPrice(
+          decks.vehicleCards.filter(isVehicleCard).map(card => ({
+            ...card,
+            id: LEGACY_BUILT_IN_VEHICLE_CARD_IDS[card.id] ?? card.id,
+            vehicleCount: 1,
+            totalPassengerCapacity: card.capacityPerVehicle,
+          })),
+        )
       : [],
     chanceCards: Array.isArray(decks.chanceCards)
       ? decks.chanceCards.filter(isChanceCard)
@@ -260,12 +280,12 @@ function mergeWithStarterDecks(userDecks: UserDeckData): UserDeckData {
   const starterDecks = createInitialUserDecks()
 
   return {
-    vehicleCards: [
+    vehicleCards: normalizeVehicleCardsByPrice([
       ...userDecks.vehicleCards,
       ...starterDecks.vehicleCards.filter(
         starterCard => !userDecks.vehicleCards.some(card => card.id === starterCard.id),
       ),
-    ],
+    ]),
     chanceCards: [
       ...userDecks.chanceCards,
       ...starterDecks.chanceCards.filter(
@@ -305,7 +325,17 @@ export function saveUserDecks(userDecks: UserDeckData) {
     return
   }
 
-  window.localStorage.setItem(USER_DECKS_STORAGE_KEY, JSON.stringify(userDecks, null, 2))
+  window.localStorage.setItem(
+    USER_DECKS_STORAGE_KEY,
+    JSON.stringify(
+      {
+        ...userDecks,
+        vehicleCards: normalizeVehicleCardsByPrice(userDecks.vehicleCards),
+      },
+      null,
+      2,
+    ),
+  )
 }
 
 export function createEmptyVehicleCard(number: number): VehicleCard {

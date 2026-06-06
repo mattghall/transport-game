@@ -5,12 +5,12 @@ import {
   claimRoute,
   getConnectionOptions,
   getPlayerById,
-  confirmClaimPicks,
+  confirmAddCityPicks,
   drawCityOffer,
   getVisibleVehicleMarketCardIds,
   hasPlayerCompletedBureaucracy,
   hasPlayerCompletedOperations,
-  hasPlayerConfirmedClaimRoutes,
+  hasPlayerCompletedAddCity,
   markBureaucracyReady,
   markOperationsReady,
   setActiveCityOfferKeptCityIds,
@@ -72,7 +72,7 @@ function getPreferredDrawRegion(game: GameState, playerId: string): CityDeckRegi
 }
 
 function getAvailableClaimActions(game: GameState, playerId: string): BotAction[] {
-  if (playerId !== game.currentPlayerId || hasPlayerConfirmedClaimRoutes(game, playerId)) {
+  if (playerId !== game.currentPlayerId || hasPlayerCompletedAddCity(game, playerId)) {
     return []
   }
 
@@ -83,7 +83,7 @@ function getAvailableClaimActions(game: GameState, playerId: string): BotAction[
   const keptCityIds = game.activeCityOffer.keptCityIds
 
   if (keptCityIds.length === 2) {
-    return [{ type: "confirm-claim-picks" }]
+    return [{ type: "confirm-add-city-picks" }]
   }
 
   if (game.activeCityOffer.cityIds.length < 2) {
@@ -145,7 +145,7 @@ export function getBotLegalActions(game: GameState, playerId: string): BotAction
   switch (game.currentPhase) {
     case "purchase-equipment":
       return [...getAvailableBotVehicleActions(game, playerId), { type: "end-turn" }]
-    case "claim-routes":
+    case "add-city":
       return getAvailableClaimActions(game, playerId)
     case "operations":
       return getAvailableOperationsActions(game, playerId)
@@ -182,8 +182,8 @@ export function applyBotAction(game: GameState, playerId: string, action: BotAct
 
       return result.game
     }
-    case "confirm-claim-picks": {
-      const result = confirmClaimPicks(game)
+    case "confirm-add-city-picks": {
+      const result = confirmAddCityPicks(game)
       if (!result.ok) {
         throw new Error(result.error)
       }
@@ -234,13 +234,13 @@ export function getPendingBotPlayerId(game: GameState, botPlayerIds: ReadonlySet
   switch (game.currentPhase) {
     case "purchase-equipment":
       return botPlayerIds.has(game.currentPlayerId) ? game.currentPlayerId : null
-    case "claim-routes":
+    case "add-city":
       return (
-        (botPlayerIds.has(game.currentPlayerId) && !hasPlayerConfirmedClaimRoutes(game, game.currentPlayerId)
+        (botPlayerIds.has(game.currentPlayerId) && !hasPlayerCompletedAddCity(game, game.currentPlayerId)
           ? game.currentPlayerId
           : null) ??
         game.players.find(
-          player => botPlayerIds.has(player.id) && !hasPlayerConfirmedClaimRoutes(game, player.id),
+          player => botPlayerIds.has(player.id) && !hasPlayerCompletedAddCity(game, player.id),
         )?.id ??
         null
       )

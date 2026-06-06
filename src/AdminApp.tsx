@@ -9,7 +9,14 @@ import {
   saveJoinAppUrl,
   saveSavedGame,
 } from "./data/gameStorage"
-import type { GameState } from "./engine/types"
+import {
+  createEmptyVehicleCard,
+  createInitialUserDecks,
+  loadUserDecks,
+  normalizeVehicleCardsByPrice,
+  saveUserDecks,
+} from "./data/deckData"
+import type { GameState, VehicleCard } from "./engine/types"
 import {
   buildLanSessionJoinUrl,
   deleteLanSession,
@@ -55,6 +62,9 @@ function shouldReplaceJoinAppUrl(rawUrl: string) {
 export default function AdminApp() {
   const initialActiveAdminLaunch = loadActiveAdminLaunch()
   const [game, setGame] = useState<GameState | null>(() => loadSavedGame())
+  const [vehicleCards, setVehicleCards] = useState<VehicleCard[]>(() =>
+    normalizeVehicleCardsByPrice(loadUserDecks().vehicleCards),
+  )
   const [lanLobby, setLanLobby] = useState<LanSessionLobby | null>(null)
   const [moneyAmount, setMoneyAmount] = useState(100000)
   const [statusMessage, setStatusMessage] = useState("")
@@ -272,10 +282,48 @@ export default function AdminApp() {
     () => (lanSession ? buildLanSessionJoinUrl(lanSession.sessionId, lanSession.serverUrl, normalizedJoinAppUrl) : ""),
     [lanSession, normalizedJoinAppUrl],
   )
+  const duplicateVehicleNumbers = useMemo(() => {
+    const counts = new Map<string, number>()
+
+    for (const card of vehicleCards) {
+      const key = `${card.type}:${card.number}`
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+
+    return [...counts.entries()]
+      .filter(([, count]) => count > 1)
+      .map(([key]) => key)
+      .sort((a, b) => a.localeCompare(b))
+  }, [vehicleCards])
+  const nextVehicleNumber = useMemo(
+    () => vehicleCards.reduce((highest, card) => Math.max(highest, card.number), 0) + 1,
+    [vehicleCards],
+  )
+
+  useEffect(() => {
+    const nextUserDecks = loadUserDecks()
+    nextUserDecks.vehicleCards = vehicleCards
+    saveUserDecks(nextUserDecks)
+  }, [vehicleCards])
 
   function setStatus(message: string, tone: "neutral" | "error" = "neutral") {
     setStatusTone(tone)
     setStatusMessage(message)
+  }
+
+  function parseNumber(value: string, fallback = 0) {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : fallback
+  }
+
+  function setNormalizedVehicleCards(
+    updater: VehicleCard[] | ((currentCards: VehicleCard[]) => VehicleCard[]),
+  ) {
+    setVehicleCards(currentCards =>
+      normalizeVehicleCardsByPrice(
+        typeof updater === "function" ? updater(currentCards) : updater,
+      ),
+    )
   }
 
   function handleJoinAppUrlChange(rawUrl: string) {
@@ -410,11 +458,203 @@ export default function AdminApp() {
     }
   }
 
+  function updateVehicleCard(cardId: string, updater: (card: VehicleCard) => VehicleCard) {
+    setNormalizedVehicleCards(currentCards =>
+      currentCards.map(card => (card.id === cardId ? updater(card) : card)),
+    )
+  }
+
+  function renderVehicleCard(card: VehicleCard) {
+    return (
+      <div
+        key={card.id}
+        style={{
+          border: "1px solid #d8dfd5",
+          borderRadius: 12,
+          padding: 12,
+          background: "#ffffff",
+          display: "grid",
+          gap: 12,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            gap: 12,
+            alignItems: "start",
+            flexWrap: "wrap",
+          }}
+        >
+          <div>
+            <strong>
+              {card.type.toUpperCase()} #{card.number}
+            </strong>
+            <div style={{ color: "#56635a", fontSize: 13 }}>{card.name}</div>
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              setNormalizedVehicleCards(currentCards =>
+                currentCards.filter(currentCard => currentCard.id !== card.id),
+              )
+            }
+            style={{
+              padding: "8px 10px",
+              borderRadius: 999,
+              border: "1px solid #d2a4a4",
+              background: "#fff7f7",
+              color: "#9b1c1c",
+              cursor: "pointer",
+              fontWeight: 700,
+            }}
+          >
+            Delete
+          </button>
+        </div>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+            gap: 10,
+          }}
+        >
+          <label style={{ display: "grid", gap: 4 }}>
+            <span style={{ fontSize: 12, color: "#56635a", fontWeight: 700 }}>Type</span>
+            <select
+              value={card.type}
+              onChange={event =>
+                updateVehicleCard(card.id, currentCard => ({
+                  ...currentCard,
+                  type: event.target.value as VehicleCard["type"],
+                }))
+              }
+              style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 14 }}
+            >
+              <option value="bus">Bus</option>
+              <option value="train">Train</option>
+              <option value="air">Air</option>
+            </select>
+          </label>
+          <label style={{ display: "grid", gap: 4 }}>
+            <span style={{ fontSize: 12, color: "#56635a", fontWeight: 700 }}>Number</span>
+            <input
+              type="number"
+              min={1}
+              value={card.number}
+              onChange={event =>
+                updateVehicleCard(card.id, currentCard => ({
+                  ...currentCard,
+                  number: Math.max(1, Math.round(parseNumber(event.target.value, currentCard.number))),
+                }))
+              }
+              style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 14 }}
+            />
+          </label>
+          <label style={{ display: "grid", gap: 4, gridColumn: "span 2" }}>
+            <span style={{ fontSize: 12, color: "#56635a", fontWeight: 700 }}>Name</span>
+            <input
+              type="text"
+              value={card.name}
+              onChange={event =>
+                updateVehicleCard(card.id, currentCard => ({
+                  ...currentCard,
+                  name: event.target.value,
+                }))
+              }
+              style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 14 }}
+            />
+          </label>
+          <label style={{ display: "grid", gap: 4 }}>
+            <span style={{ fontSize: 12, color: "#56635a", fontWeight: 700 }}>Purchase price</span>
+            <input
+              type="number"
+              min={0}
+              step={100000}
+              value={card.purchasePrice}
+              onChange={event =>
+                updateVehicleCard(card.id, currentCard => ({
+                  ...currentCard,
+                  purchasePrice: Math.max(0, parseNumber(event.target.value, currentCard.purchasePrice)),
+                }))
+              }
+              style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 14 }}
+            />
+          </label>
+          <label style={{ display: "grid", gap: 4 }}>
+            <span style={{ fontSize: 12, color: "#56635a", fontWeight: 700 }}>Capacity</span>
+            <input
+              type="number"
+              min={1}
+              value={card.capacityPerVehicle}
+              onChange={event =>
+                updateVehicleCard(card.id, currentCard => {
+                  const nextCapacity = Math.max(1, Math.round(parseNumber(event.target.value, currentCard.capacityPerVehicle)))
+                  return {
+                    ...currentCard,
+                    capacityPerVehicle: nextCapacity,
+                    totalPassengerCapacity: nextCapacity,
+                  }
+                })
+              }
+              style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 14 }}
+            />
+          </label>
+          <label style={{ display: "grid", gap: 4 }}>
+            <span style={{ fontSize: 12, color: "#56635a", fontWeight: 700 }}>Speed</span>
+            <input
+              type="number"
+              min={1}
+              value={card.speed}
+              onChange={event =>
+                updateVehicleCard(card.id, currentCard => ({
+                  ...currentCard,
+                  speed: Math.max(1, parseNumber(event.target.value, currentCard.speed)),
+                }))
+              }
+              style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 14 }}
+            />
+          </label>
+          <label style={{ display: "grid", gap: 4 }}>
+            <span style={{ fontSize: 12, color: "#56635a", fontWeight: 700 }}>Operating multiplier</span>
+            <input
+              type="number"
+              min={0}
+              step={0.01}
+              value={card.operatingCostMultiplier}
+              onChange={event =>
+                updateVehicleCard(card.id, currentCard => ({
+                  ...currentCard,
+                  operatingCostMultiplier: Math.max(0, parseNumber(event.target.value, currentCard.operatingCostMultiplier)),
+                }))
+              }
+              style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 14 }}
+            />
+          </label>
+          <label style={{ display: "grid", gap: 4, gridColumn: "1 / -1" }}>
+            <span style={{ fontSize: 12, color: "#56635a", fontWeight: 700 }}>Fun fact</span>
+            <textarea
+              value={card.funFact}
+              onChange={event =>
+                updateVehicleCard(card.id, currentCard => ({
+                  ...currentCard,
+                  funFact: event.target.value,
+                }))
+              }
+              rows={2}
+              style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 14, resize: "vertical" }}
+            />
+          </label>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div style={PAGE_STYLE}>
       <div
         style={{
-          maxWidth: 1080,
+          maxWidth: 1320,
           margin: "0 auto",
           padding: 24,
           display: "grid",
@@ -436,6 +676,7 @@ export default function AdminApp() {
             Use the home page to create local or LAN games. Keep this page for live admin controls
             like adding cash, reconnecting to the active game, and cancelling the current LAN session.
           </div>
+
           <div
             style={{
               display: "grid",
@@ -725,6 +966,102 @@ export default function AdminApp() {
             </div>
           </>
         )}
+
+        <div
+          style={{
+            border: "1px solid #d8dfd5",
+            borderRadius: 14,
+            background: "#ffffff",
+            padding: 16,
+            display: "grid",
+            gap: 12,
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "start" }}>
+            <div style={{ display: "grid", gap: 4 }}>
+              <div style={{ fontSize: 20, fontWeight: 800 }}>Vehicle deck</div>
+              <div style={{ color: "#56635a", fontSize: 14 }}>
+                This restores the old card editor in a better home. These are the exact vehicle cards the next game will use.
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={() =>
+                  setNormalizedVehicleCards(currentCards => [
+                    ...currentCards,
+                    createEmptyVehicleCard(nextVehicleNumber),
+                  ])
+                }
+                style={{
+                  padding: "8px 12px",
+                  borderRadius: 999,
+                  border: "1px solid #c7d0c4",
+                  background: "#ffffff",
+                  cursor: "pointer",
+                  fontWeight: 700,
+                }}
+              >
+                Add vehicle card
+              </button>
+              <button
+                type="button"
+                onClick={() => setNormalizedVehicleCards(createInitialUserDecks().vehicleCards)}
+                style={{
+                  padding: "8px 12px",
+                  borderRadius: 999,
+                  border: "1px solid #c7d0c4",
+                  background: "#ffffff",
+                  cursor: "pointer",
+                }}
+              >
+                Reset to defaults
+              </button>
+            </div>
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+              gap: 12,
+            }}
+          >
+            <div style={{ border: "1px solid #d8dfd5", borderRadius: 12, padding: 12, background: "#f9fbf8" }}>
+              <strong>Total cards</strong>
+              <div style={{ marginTop: 4 }}>{vehicleCards.length}</div>
+            </div>
+            {(["bus", "train", "air"] as const).map(type => (
+              <div key={type} style={{ border: "1px solid #d8dfd5", borderRadius: 12, padding: 12, background: "#f9fbf8" }}>
+                <strong>{type[0].toUpperCase() + type.slice(1)} cards</strong>
+                <div style={{ marginTop: 4 }}>{vehicleCards.filter(card => card.type === type).length}</div>
+              </div>
+            ))}
+          </div>
+          {duplicateVehicleNumbers.length > 0 ? (
+            <div style={{ color: "#9b1c1c", fontSize: 13 }}>
+              Duplicate vehicle numbers: {duplicateVehicleNumbers.join(", ")}
+            </div>
+          ) : (
+            <div style={{ color: "#56635a", fontSize: 13 }}>
+              Vehicle numbers are unique within each type.
+            </div>
+          )}
+          <div style={{ display: "grid", gap: 12 }}>
+            {(["bus", "train", "air"] as const).map(type => (
+              <div key={type} style={{ display: "grid", gap: 10 }}>
+                <div style={{ fontSize: 16, fontWeight: 700 }}>
+                  {type[0].toUpperCase() + type.slice(1)} cards
+                </div>
+                <div style={{ display: "grid", gap: 10 }}>
+                  {vehicleCards
+                    .filter(card => card.type === type)
+                    .sort((cardA, cardB) => cardA.purchasePrice - cardB.purchasePrice || cardA.number - cardB.number)
+                    .map(card => renderVehicleCard(card))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   )
