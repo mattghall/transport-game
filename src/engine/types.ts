@@ -145,7 +145,6 @@ export type Player = {
 
 export type RouteMode = "rail" | "air" | "bus"
 export type WeeklyPhase =
-  | "purchase-fuel"
   | "add-city"
   | "operations"
   | "purchase-equipment"

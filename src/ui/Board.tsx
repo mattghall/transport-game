@@ -7,7 +7,6 @@ import {
   type BureaucracyVehicleCardResult,
   getVisibleVehicleMarketCardIds,
   getVehiclePurchaseLimit,
-  getFuelPurchaseCost,
   getFuelUnitPrice,
   getClaimSegmentPairs,
   getEffectiveClaimCityIds,
@@ -17,7 +16,6 @@ import {
   resolveSegmentSelection,
   resolveRouteSelection,
   type DrawCityOfferResult,
-  type ResourcePurchaseResult,
 } from "../engine/actions"
 import {
   buildBureaucracySummaries,
@@ -117,10 +115,6 @@ type Props = {
         error: string
       }
   >
-  onBuyResource: (
-    resource: PurchasableResource,
-    quantity: number,
-  ) => MaybePromise<ResourcePurchaseResult>
   onBuyVehicleCard: (
     cardId: string,
     quantity: number,
@@ -1153,8 +1147,6 @@ function formatPhaseLabel(phase: WeeklyPhase) {
       return "Add city"
     case "operations":
       return "Operations"
-    case "purchase-fuel":
-      return "Purchase fuel"
     case "bureaucracy":
       return "Bureaucracy"
   }
@@ -1167,8 +1159,6 @@ function getNextPhase(phase: WeeklyPhase): WeeklyPhase {
     case "add-city":
       return "operations"
     case "operations":
-      return "bureaucracy"
-    case "purchase-fuel":
       return "bureaucracy"
     case "bureaucracy":
       return "purchase-equipment"
@@ -1189,18 +1179,12 @@ function getPhaseStatusMessage(phase: WeeklyPhase) {
       return "Draw 4 city cards and keep exactly 2, then go straight into Operations for this turn."
     case "operations":
       return "Build tracks, assign vehicles, and split service routes before running the month."
-    case "purchase-fuel":
-      return "Fuel purchasing is disabled."
     case "bureaucracy":
       return "Review passenger flow and operating ledgers, then advance."
   }
 }
 
 function getTopBarPhaseIndex(phase: WeeklyPhase) {
-  if (phase === "purchase-fuel") {
-    return 1
-  }
-
   return Math.max(0, TOP_BAR_PHASE_ORDER.indexOf(phase))
 }
 
@@ -1273,7 +1257,6 @@ export default function Board({
   onClaimRoute,
   onDrawCityOffer,
   onSetActiveCityOfferKeptCityIds,
-  onBuyResource,
   onBuyVehicleCard,
   onUpgradeRailRoute,
   onSetBureaucracyRouteVehicleCard,
@@ -2221,13 +2204,6 @@ export default function Board({
         ? selectedClaimPreview.reason ?? "That route is not available."
         : `That selection costs ${formatCurrency(selectedClaimPreview.claimCost)}, but you only have ${formatCurrency(currentPlayer?.money ?? 0)}.`
       : ""
-  const canBuyFuelByResource = useMemo(
-    () => ({
-      diesel: currentPlayerOwnedVehicleCards.some(card => card.type !== "air"),
-      jetFuel: currentPlayerOwnedVehicleCards.some(card => card.type === "air"),
-    }),
-    [currentPlayerOwnedVehicleCards],
-  )
   const maxFuelHoldingsByResource = useMemo(
     () => ({
       diesel: currentPlayer
@@ -2457,15 +2433,49 @@ export default function Board({
         }
       }
 
+      // Helper: for a player, get the set of air route IDs that have a plane assigned.
+      // Uses game.bureaucracyVehicleCardIdsByRouteId (explicit) first, then fills
+      // remaining slots with auto-assignment up to the number of owned planes.
+      function getAirRouteIdsWithPlane(player: GameState["players"][number]) {
+        const ownedPlaneCount = player.ownedVehicleCardIds.filter(
+          cardId => game.vehicleCatalog.find(c => c.id === cardId)?.type === "air",
+        ).length
+        if (ownedPlaneCount === 0) return new Set<string>()
+
+        const playerAirRoutes = game.routes
+          .filter(r => r.ownerId === player.id && r.mode === "air")
+          .sort((a, b) => a.id.localeCompare(b.id))
+
+        const result = new Set<string>()
+        // First pass: explicit assignments
+        for (const route of playerAirRoutes) {
+          const slotId = `service:${route.id}:slot:0`
+          if (game.bureaucracyVehicleCardIdsByRouteId[slotId] != null) {
+            result.add(route.id)
+          }
+        }
+        // Second pass: fill remaining slots up to plane count (auto-assignment order)
+        if (result.size < ownedPlaneCount) {
+          for (const route of playerAirRoutes) {
+            if (result.size >= ownedPlaneCount) break
+            result.add(route.id)
+          }
+        }
+        return result
+      }
+
       if (game.currentPhase === "add-city") {
-        for (const summary of bureaucracySummaries) {
+        for (const player of game.players) {
+          const airRouteIdsWithPlane = getAirRouteIdsWithPlane(player)
+          const summary = bureaucracySummaries.find(s => s.player.id === player.id)
+          if (!summary) continue
           for (const plan of summary.routePlans) {
             if (plan.isDisconnected || plan.selectedCityIds.length < 2 || plan.routes.length === 0) {
               continue
             }
-
             for (const route of plan.routes) {
-              addRoute(`${summary.player.id}:${route.id}`, route, summary.player.color, 0.95)
+              if (route.mode === "air" && !airRouteIdsWithPlane.has(route.id)) continue
+              addRoute(`${player.id}:${route.id}`, route, player.color, 0.95)
             }
           }
         }
@@ -2478,13 +2488,14 @@ export default function Board({
           if (summary.player.id === currentPlayer.id) {
             continue
           }
+          const airRouteIdsWithPlane = getAirRouteIdsWithPlane(summary.player)
 
           for (const plan of summary.routePlans) {
             if (plan.isDisconnected || plan.selectedCityIds.length < 2 || plan.routes.length === 0) {
               continue
             }
-
             for (const route of plan.routes) {
+              if (route.mode === "air" && !airRouteIdsWithPlane.has(route.id)) continue
               addRoute(`${summary.player.id}:${route.id}`, route, summary.player.color, 0.35)
             }
           }
@@ -2495,7 +2506,11 @@ export default function Board({
 
       if (!game.isGameOver) {
         for (const player of game.players) {
+          const airRouteIdsWithPlane = getAirRouteIdsWithPlane(player)
           for (const route of getPlayerOwnedNetworkRoutes(game, player.id)) {
+            if (route.mode === "air" && !airRouteIdsWithPlane.has(route.id)) {
+              continue
+            }
             addRoute(
               `${player.id}:${route.id}`,
               route,
@@ -2544,10 +2559,6 @@ export default function Board({
           availableUnits,
           cheapestPrice:
             cheapestIndex === -1 ? null : getFuelUnitPrice(game, resource, cheapestIndex),
-          purchaseCosts: {
-            1: getFuelPurchaseCost(game, resource, 1),
-            10: resource === "diesel" ? getFuelPurchaseCost(game, resource, 10) : null,
-          },
         }
       })
     }, [game, game.resourceMarket])
@@ -3147,67 +3158,74 @@ export default function Board({
                             : "Drop city here"}
                         </div>
                       ) : (
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                          {plan.selectedCityIds.map(cityId => (
-                            <div
-                              key={`pod-editor-city-${plan.id}-${cityId}`}
-                              draggable
-                              onDragStart={() =>
-                                setDraggedPodCity({
-                                  corridorId: group.corridorId,
-                                  routeId: plan.id,
-                                  cityId,
-                                })
-                              }
-                              onDragEnd={() => setDraggedPodCity(null)}
-                              style={{
-                                border: "1px solid #d8dfd5",
-                                borderRadius: 999,
-                                padding: "4px 6px 4px 8px",
-                                background: "#ffffff",
-                                color: "#324236",
-                                fontSize: 12,
-                                cursor: "grab",
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: 6,
-                              }}
-                            >
-                              <span>
-                                {(cityMap[cityId]?.name ?? cityId) +
-                                  ` (${cityMap[cityId]?.size ?? "?"})`}
-                              </span>
-                              {!plan.isDisconnected && disconnectedPlan && (
-                                <button
-                                  type="button"
-                                  onClick={event => {
-                                    event.preventDefault()
-                                    event.stopPropagation()
-                                    handleMoveServiceCity(
-                                      group.corridorId,
-                                      cityId,
-                                      disconnectedPlan.id,
-                                      plan.id,
-                                    )
-                                  }}
-                                  title="Remove this city from this route only"
-                                  style={{
-                                    border: "none",
-                                    background: "transparent",
-                                    color: "#9b1c1c",
-                                    cursor: "pointer",
-                                    fontSize: 12,
-                                    fontWeight: 700,
-                                    lineHeight: 1,
-                                    padding: 0,
-                                  }}
-                                >
-                                  ×
-                                </button>
-                              )}
+                        <>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                            {plan.selectedCityIds.map(cityId => (
+                              <div
+                                key={`pod-editor-city-${plan.id}-${cityId}`}
+                                draggable
+                                onDragStart={() =>
+                                  setDraggedPodCity({
+                                    corridorId: group.corridorId,
+                                    routeId: plan.id,
+                                    cityId,
+                                  })
+                                }
+                                onDragEnd={() => setDraggedPodCity(null)}
+                                style={{
+                                  border: "1px solid #d8dfd5",
+                                  borderRadius: 999,
+                                  padding: "4px 6px 4px 8px",
+                                  background: "#ffffff",
+                                  color: "#324236",
+                                  fontSize: 12,
+                                  cursor: "grab",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 6,
+                                }}
+                              >
+                                <span>
+                                  {(cityMap[cityId]?.name ?? cityId) +
+                                    ` (${cityMap[cityId]?.size ?? "?"})`}
+                                </span>
+                                {!plan.isDisconnected && disconnectedPlan && (
+                                  <button
+                                    type="button"
+                                    onClick={event => {
+                                      event.preventDefault()
+                                      event.stopPropagation()
+                                      handleMoveServiceCity(
+                                        group.corridorId,
+                                        cityId,
+                                        disconnectedPlan.id,
+                                        plan.id,
+                                      )
+                                    }}
+                                    title="Remove this city from this route only"
+                                    style={{
+                                      border: "none",
+                                      background: "transparent",
+                                      color: "#9b1c1c",
+                                      cursor: "pointer",
+                                      fontSize: 12,
+                                      fontWeight: 700,
+                                      lineHeight: 1,
+                                      padding: 0,
+                                    }}
+                                  >
+                                    ×
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                          {plan.selectedCityIds.length >= 2 && plan.populationPerMile !== null && (
+                            <div style={{ color: "#56635a", fontSize: 11, marginTop: 2 }}>
+                              {Math.round(plan.populationPerMile).toLocaleString()} pax/mi
                             </div>
-                          ))}
-                        </div>
+                          )}
+                        </>
                       )}
                     </div>
                   )
@@ -3871,19 +3889,6 @@ export default function Board({
           {buyLabel}
         </button>
       </div>
-    )
-  }
-
-  async function handleBuyResourceClick(resource: PurchasableResource, quantity: number) {
-    const result = await onBuyResource(resource, quantity)
-
-    if (!result.ok) {
-      setStatusMessage(result.error)
-      return
-    }
-
-    setStatusMessage(
-      `${currentPlayer?.name ?? "Current player"} bought ${result.quantity} ${getResourceLabel(resource).toLowerCase()} unit${result.quantity === 1 ? "" : "s"} for ${formatCurrency(result.cost)}.`,
     )
   }
 
@@ -5187,20 +5192,37 @@ export default function Board({
                   with {formatDecimal(leadingStanding.player.totalPassengersServed, 0)} passengers served.
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setIsGameSummaryMinimized(true)}
-                style={{
-                  padding: "8px 12px",
-                  borderRadius: 999,
-                  border: "1px solid #c7d0c4",
-                  background: "#ffffff",
-                  cursor: "pointer",
-                  fontWeight: 600,
-                }}
-              >
-                Minimize
-              </button>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <button
+                  type="button"
+                  onClick={() => { window.location.href = "/" }}
+                  style={{
+                    padding: "8px 14px",
+                    borderRadius: 999,
+                    border: "1px solid #223024",
+                    background: "#223024",
+                    color: "#ffffff",
+                    cursor: "pointer",
+                    fontWeight: 700,
+                  }}
+                >
+                  ← Home
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsGameSummaryMinimized(true)}
+                  style={{
+                    padding: "8px 12px",
+                    borderRadius: 999,
+                    border: "1px solid #c7d0c4",
+                    background: "#ffffff",
+                    cursor: "pointer",
+                    fontWeight: 600,
+                  }}
+                >
+                  Minimize
+                </button>
+              </div>
             </div>
 
             <div
@@ -6085,6 +6107,9 @@ export default function Board({
                               <span>{plan.cubeCapacityPerTrip} cubes/trip</span>
                               <span>max {plan.maxTripsByTime} trips</span>
                               <span>👥 {plan.passengersPerTrip.toLocaleString()}</span>
+                              {plan.populationPerMile !== null && (
+                                <span>{Math.round(plan.populationPerMile).toLocaleString()} pax/mi</span>
+                              )}
                               <span>x{formatDecimal(plan.simplifiedPayoutMultiplier, 0)} payout weight</span>
                             </div>
                             <div
@@ -7007,7 +7032,7 @@ export default function Board({
         <div style={resourceMarketPanelStyle}>
           <strong>Resource market</strong>
           <div style={{ color: "#56635a" }}>
-            Buy only fuel your fleet can use. Diesel can be bought 1 or 10 units at a time; jet fuel stays at 1.
+            Fuel prices and current holdings are shown here for planning and bureaucracy context.
           </div>
           <div
             style={{
@@ -7066,7 +7091,6 @@ export default function Board({
                         Slot {index + 1}
                       </th>
                     ))}
-                    <th style={{ textAlign: "center", padding: "6px 8px" }}>Buy</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -7096,49 +7120,6 @@ export default function Board({
                           </div>
                         </td>
                       ))}
-                      <td style={{ textAlign: "center", padding: "8px" }}>
-                        <div
-                          style={{
-                            display: "flex",
-                            flexDirection: "column",
-                            gap: 8,
-                            alignItems: "center",
-                          }}
-                        >
-                          {(summary.resource === "diesel" ? [1, 10] : [1]).map(quantity => {
-                            const canBuy =
-                              game.currentPhase === "purchase-fuel" &&
-                              canBuyFuelByResource[summary.resource] &&
-                              (
-                                currentPlayer === undefined ||
-                                currentPlayer.inventory.fuel[summary.resource] + quantity <=
-                                  maxFuelHoldingsByResource[summary.resource]
-                              ) &&
-                              (summary.purchaseCosts[quantity as 1 | 10] ?? null) !== null
-                            const purchaseCost = summary.purchaseCosts[quantity as 1 | 10]
-
-                            return (
-                              <button
-                                key={`${summary.resource}-buy-${quantity}`}
-                                type="button"
-                                disabled={!canBuy}
-                                onClick={() => handleBuyResourceClick(summary.resource, quantity)}
-                                style={{
-                                  padding: "8px 12px",
-                                  borderRadius: 999,
-                                  border: "1px solid #c7d0c4",
-                                  cursor: canBuy ? "pointer" : "not-allowed",
-                                  background: canBuy ? "#ffffff" : "#f2f2f2",
-                                  minWidth: 96,
-                                }}
-                              >
-                                Buy {quantity}
-                                {purchaseCost !== null ? ` • ${formatCurrency(purchaseCost)}` : ""}
-                              </button>
-                            )
-                          })}
-                        </div>
-                      </td>
                     </tr>
                   ))}
                 </tbody>

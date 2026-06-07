@@ -12,6 +12,7 @@ export default defineConfig({
         compare: fileURLToPath(new URL("./compare.html", import.meta.url)),
         admin: fileURLToPath(new URL("./admin.html", import.meta.url)),
         training: fileURLToPath(new URL("./training.html", import.meta.url)),
+        "manual-training": fileURLToPath(new URL("./manual-training.html", import.meta.url)),
       },
     },
   },

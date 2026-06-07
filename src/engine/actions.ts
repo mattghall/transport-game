@@ -16,7 +16,6 @@ import {
   buildServiceSlotId,
   buildPlayerBureaucracySummary,
   findPlayerBureaucracyPlan,
-  getMaxFuelUnitsCapacityForPlayer,
   getMaxFuelUnitsForRoute,
   isValidServicePodSelection,
   migrateBureaucracyServiceState,
@@ -155,19 +154,6 @@ const LATE_VEHICLE_MARKET_SLOTS: Record<VehicleType, number> = {
   train: 2,
   air: 2,
 }
-
-export type ResourcePurchaseResult =
-  | {
-      ok: true
-      game: GameState
-      resource: PurchasableResource
-      quantity: number
-      cost: number
-    }
-  | {
-      ok: false
-      error: string
-    }
 
 export type VehiclePurchaseResult =
   | {
@@ -330,10 +316,6 @@ function getVehicleTypeForMode(mode: RouteMode): VehicleType {
     case "bus":
       return "bus"
   }
-}
-
-function getFuelResourceForVehicleType(type: VehicleType): PurchasableResource {
-  return type === "air" ? "jetFuel" : "diesel"
 }
 
 function isGameLocked(game: GameState) {
@@ -1803,154 +1785,6 @@ export function advancePhase(game: GameState): GameState {
     claimedRouteCountsByPlayerIdThisTurn: {},
     claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
     activeCityOffer: null,
-  }
-}
-
-export function buyResource(
-  game: GameState,
-  resource: PurchasableResource,
-  quantity = 1,
-): ResourcePurchaseResult {
-  if (isGameLocked(game)) {
-    return {
-      ok: false,
-      error: "The game is over.",
-    }
-  }
-
-  if (game.currentPhase !== "purchase-fuel") {
-    return {
-      ok: false,
-      error: "Resources can only be bought during the purchase fuel phase.",
-    }
-  }
-
-  const currentPlayer = getCurrentPlayer(game)
-  const requestedQuantity = Math.max(0, Math.floor(quantity))
-
-  if (!currentPlayer) {
-    return {
-      ok: false,
-      error: "Current player could not be found.",
-    }
-  }
-
-  if (!getOwnedVehicleCards(game).some(
-    card => getFuelResourceForVehicleType(card.type) === resource,
-  )) {
-    return {
-      ok: false,
-      error: `You do not own any vehicles that use ${resource === "diesel" ? "diesel" : "jet fuel"}.`,
-    }
-  }
-
-  if (requestedQuantity < 1) {
-    return {
-      ok: false,
-      error: "Choose at least 1 fuel unit to buy.",
-    }
-  }
-
-  if (resource === "diesel" && requestedQuantity !== 1 && requestedQuantity !== 10) {
-    return {
-      ok: false,
-      error: "Diesel can only be bought in packs of 1 or 10.",
-    }
-  }
-
-  if (resource === "jetFuel" && requestedQuantity !== 1) {
-    return {
-      ok: false,
-      error: "Jet fuel can only be bought 1 unit at a time.",
-    }
-  }
-
-  const market = game.resourceMarket[resource]
-  const cheapestIndex = market.findIndex(units => units > 0)
-
-  if (cheapestIndex === -1) {
-    return {
-      ok: false,
-      error: `No ${resource === "diesel" ? "diesel" : "jet fuel"} is available to buy.`,
-    }
-  }
-
-  const cost = getFuelPurchaseCost(game, resource, requestedQuantity)
-
-  if (cost === null) {
-    return {
-      ok: false,
-      error: `There is not enough ${resource === "diesel" ? "diesel" : "jet fuel"} available for that purchase.`,
-    }
-  }
-
-  if (currentPlayer.money < cost) {
-    return {
-      ok: false,
-      error: "You do not have enough money to buy that resource.",
-    }
-  }
-
-  const maxFuelUnitsCapacity =
-    getMaxFuelUnitsCapacityForPlayer(game, currentPlayer.id, resource) * 2
-
-  if (currentPlayer.inventory.fuel[resource] + requestedQuantity > maxFuelUnitsCapacity) {
-    return {
-      ok: false,
-      error: `You can only hold up to ${Math.floor(maxFuelUnitsCapacity)} ${resource === "diesel" ? "diesel" : "jet fuel"} units right now.`,
-    }
-  }
-
-  const nextMarket = [...market]
-  let remainingQuantity = requestedQuantity
-
-  for (const [marketIndex, availableUnits] of nextMarket.entries()) {
-    if (remainingQuantity === 0) {
-      break
-    }
-
-    if (availableUnits <= 0) {
-      continue
-    }
-
-    const purchasedUnits = Math.min(availableUnits, remainingQuantity)
-    nextMarket[marketIndex] -= purchasedUnits
-    remainingQuantity -= purchasedUnits
-  }
-
-  return {
-    ok: true,
-    resource,
-    quantity: requestedQuantity,
-    cost,
-    game: {
-      ...game,
-      resourceMarket: {
-        ...game.resourceMarket,
-        [resource]: nextMarket,
-      },
-      resourceSupply: {
-        ...game.resourceSupply,
-        [resource]: game.resourceSupply[resource] + requestedQuantity,
-      },
-      players: game.players.map(player => {
-        if (player.id !== currentPlayer.id) {
-          return player
-        }
-
-        return {
-          ...player,
-          money: player.money - cost,
-          inventory: {
-            ...player.inventory,
-            fuel: {
-              ...player.inventory.fuel,
-              [resource]: player.inventory.fuel[resource] + requestedQuantity,
-            },
-          },
-        }
-      }),
-    },
   }
 }
 

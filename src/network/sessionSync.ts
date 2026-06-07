@@ -426,6 +426,10 @@ export async function cancelTraining(serverUrl: string) {
   })
 }
 
+export async function stopTraining(serverUrl: string) {
+  return cancelTraining(serverUrl)
+}
+
 export async function fetchTrainingPresets(serverUrl: string) {
   const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
   return requestSessionJson<TrainingPresetStatus>(`${normalizedServerUrl}/training/presets`)
@@ -487,6 +491,13 @@ export async function stopAutotune(serverUrl: string) {
 export async function forceStopAutotune(serverUrl: string) {
   const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
   return requestSessionJson<AutotuneControlStatus>(`${normalizedServerUrl}/training/autotune/force-stop`, {
+    method: "POST",
+  })
+}
+
+export async function resetAutotuneData(serverUrl: string) {
+  const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
+  return requestSessionJson<{ deleted: string[] }>(`${normalizedServerUrl}/training/autotune/reset`, {
     method: "POST",
   })
 }

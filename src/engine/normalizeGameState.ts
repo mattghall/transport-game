@@ -1,6 +1,6 @@
 import type { GameState, WeeklyPhase } from "./types"
 
-type LegacyWeeklyPhase = WeeklyPhase | "claim-routes"
+type LegacyWeeklyPhase = WeeklyPhase | "claim-routes" | "purchase-fuel"
 
 type LegacyGameState = Omit<GameState, "currentPhase" | "addCityReadyPlayerIds" | "actionLog"> & {
   currentPhase: LegacyWeeklyPhase
@@ -10,7 +10,15 @@ type LegacyGameState = Omit<GameState, "currentPhase" | "addCityReadyPlayerIds" 
 }
 
 export function normalizeWeeklyPhase(phase: LegacyWeeklyPhase): WeeklyPhase {
-  return phase === "claim-routes" ? "add-city" : phase
+  if (phase === "claim-routes") {
+    return "add-city"
+  }
+
+  if (phase === "purchase-fuel") {
+    return "bureaucracy"
+  }
+
+  return phase
 }
 
 export function normalizeGameState(game: LegacyGameState): GameState {

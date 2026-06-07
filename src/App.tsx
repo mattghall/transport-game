@@ -26,7 +26,6 @@ import {
 import {
   addBureaucracyServiceSplit,
   advanceTurn,
-  buyResource,
   buyVehicleCard,
   canPlayerEditOperations,
   claimRoute,
@@ -59,7 +58,7 @@ import {
   DEFAULT_STARTING_MONEY,
   type GameSetupPlayer,
 } from "./engine/createGameState"
-import type { GameActionLogEntry, GameState, PurchasableResource, WeeklyPhase } from "./engine/types"
+import type { GameActionLogEntry, GameState, WeeklyPhase } from "./engine/types"
 import {
   buildLanSessionJoinUrl,
   createLanSession,
@@ -94,8 +93,6 @@ function formatPhaseLabel(phase: WeeklyPhase) {
       return "add city"
     case "operations":
       return "operations"
-    case "purchase-fuel":
-      return "purchase fuel"
     case "bureaucracy":
       return "bureaucracy"
   }
@@ -366,6 +363,14 @@ function getBotActionLogMessage(previousGame: GameState, nextGame: GameState, ac
           ? nextGame.currentPhase === "operations"
             ? "confirmed city picks and opened Operations for every player"
             : `confirmed city picks; ${nextGame.players.find(player => player.id === nextGame.currentPlayerId)?.name ?? nextGame.currentPlayerId} is selecting cities`
+          : action.type === "create-service-pod"
+            ? (() => {
+                const cityMap = new Map(previousGame.cities.map(city => [city.id, city]))
+                const cityLabel = action.cityIds
+                  .map(cityId => cityMap.get(cityId)?.name ?? cityId)
+                  .join(" - ")
+                return `created a service pod for ${cityLabel}`
+              })()
           : action.type === "ready-operations"
             ? nextGame.currentPhase === "bureaucracy"
               ? "finished operations planning and advanced to bureaucracy"
@@ -1097,6 +1102,34 @@ export default function App() {
     [applyLobbyUpdate],
   )
 
+  const handleClaimSeat = useCallback(
+    async (playerId: string) => {
+      const activeLanSession = lanSessionRef.current
+
+      if (!activeLanSession) {
+        return
+      }
+
+      setIsUpdatingLobby(true)
+
+      try {
+        const snapshot = await updateLanLobby(activeLanSession.serverUrl, activeLanSession.sessionId, {
+          clientId: lobbyClientId,
+          playerId,
+        })
+        applyLanSnapshot(snapshot, activeLanSession.serverUrl)
+      } catch (error) {
+        setLanStatusTone("error")
+        setLanStatusMessage(
+          error instanceof Error ? error.message : "Could not claim that seat.",
+        )
+      } finally {
+        setIsUpdatingLobby(false)
+      }
+    },
+    [applyLanSnapshot, lobbyClientId],
+  )
+
   const handleLaunchLanSession = useCallback(async () => {
     const launchPlayers = normalizeSetupPlayers(lanSetupPlayers)
     const validationError = getSetupValidationError(launchPlayers)
@@ -1351,29 +1384,6 @@ export default function App() {
     [commitGameMutation],
   )
 
-  const handleBuyResource = useCallback(
-    async (resource: PurchasableResource, quantity: number) =>
-      commitGameMutation(baseGame => {
-        const actingPlayerId = resolveActingPlayerId(baseGame)
-        const result = buyResource(baseGame, resource, quantity)
-
-        if (!result.ok) {
-          return result
-        }
-
-        return {
-          ...result,
-          game: appendActionLog(
-            baseGame,
-            result.game,
-            `bought ${result.quantity} ${resource === "diesel" ? "diesel" : "jet fuel"} for ${Math.round(result.cost).toLocaleString()}`,
-            actingPlayerId,
-          ),
-        }
-      }),
-    [commitGameMutation, resolveActingPlayerId],
-  )
-
   const handleBuyVehicleCardAndAdvance = useCallback(
     async (cardId: string, quantity: number) =>
       commitGameMutation(baseGame => {
@@ -1587,12 +1597,16 @@ export default function App() {
   const selectedPlayer = selectedPlayerId
     ? game.players.find(player => player.id === selectedPlayerId) ?? null
     : null
+  const isSpectator = lanSession !== null && appMode === "ready" && selectedPlayerId === null
   // Local hotseat can auto-follow whichever seat should currently be editing.
   // LAN keeps the board pinned to the explicitly claimed seat because each client owns one seat.
+  // Spectators follow the current player's perspective.
   const activeViewingPlayerId =
-    lanSession || appMode !== "ready"
-      ? selectedPlayerId
-      : selectedPlayerId ?? getDefaultLocalViewingPlayerId(game)
+    isSpectator
+      ? game.currentPlayerId
+      : lanSession || appMode !== "ready"
+        ? selectedPlayerId
+        : selectedPlayerId ?? getDefaultLocalViewingPlayerId(game)
   const selectedLobbyPlayer = selectedPlayerId
     ? lanLobby?.players.find(player => player.playerId === selectedPlayerId) ?? null
     : null
@@ -1600,11 +1614,22 @@ export default function App() {
   const readyLobbyPlayers = claimedLobbyPlayers.filter(player => player.isReady)
   const canStartLobby = claimedLobbyPlayers.length > 0 && claimedLobbyPlayers.every(player => player.isReady)
   const currentTurnPlayer = game.players.find(player => player.id === game.currentPlayerId) ?? null
+  // In phases where players independently ready up, currentPlayerId may not reflect who's actually
+  // blocking — find the first player who hasn't completed the current phase.
+  const waitingForPlayer = useMemo(() => {
+    if (game.currentPhase === "operations") {
+      return game.players.find(p => canPlayerEditOperations(game, p.id)) ?? currentTurnPlayer
+    }
+    if (game.currentPhase === "bureaucracy") {
+      return game.players.find(p => !hasPlayerCompletedBureaucracy(game, p.id)) ?? currentTurnPlayer
+    }
+    return currentTurnPlayer
+  }, [game, currentTurnPlayer])
   const localBotPlayerIds = useMemo(
     () => new Set(game.players.filter(player => player.isBot).map(player => player.id)),
     [game.players],
   )
-  const isLocalPlayerInteractive = Boolean(activeViewingPlayerId) && (
+  const isLocalPlayerInteractive = !isSpectator && Boolean(activeViewingPlayerId) && (
     game.currentPhase === "purchase-equipment"
       ? activeViewingPlayerId === game.currentPlayerId
       : game.currentPhase === "add-city"
@@ -2574,7 +2599,7 @@ export default function App() {
           <div
             style={{
               pointerEvents: lanSession
-                ? isLocalPlayerInteractive || isPeriodSummaryVisible ? "auto" : "none"
+                ? isLocalPlayerInteractive || isPeriodSummaryVisible || isSpectator ? "auto" : "none"
                 : !isLocalBotTurn || isPeriodSummaryVisible ? "auto" : "none",
             }}
           >
@@ -2597,7 +2622,6 @@ export default function App() {
               onClaimRoute={handleClaimRouteAndAdvance}
               onDrawCityOffer={handleDrawCityOffer}
               onSetActiveCityOfferKeptCityIds={handleSetActiveCityOfferKeptCityIds}
-              onBuyResource={handleBuyResource}
               onBuyVehicleCard={handleBuyVehicleCardAndAdvance}
               onUpgradeRailRoute={handleUpgradeRailRoute}
               onSetBureaucracyRouteVehicleCard={handleSetBureaucracyRouteVehicleCard}
@@ -2675,7 +2699,7 @@ export default function App() {
               </div>
             </div>
           )}
-          {lanSession && !pendingBotPlayerId && !isLocalPlayerInteractive && !isPeriodSummaryVisible && (
+          {lanSession && !pendingBotPlayerId && !isLocalPlayerInteractive && !isPeriodSummaryVisible && !isSpectator && (
             <div
               style={{
                 position: "absolute",
@@ -2683,7 +2707,7 @@ export default function App() {
                 display: "grid",
                 placeItems: "center",
                 background: "rgba(243, 246, 242, 0.2)",
-                pointerEvents: "none",
+                pointerEvents: selectedPlayer ? "none" : "auto",
                 zIndex: 1,
               }}
             >
@@ -2703,7 +2727,7 @@ export default function App() {
                   {selectedPlayer
                     ? game.currentPhase === "add-city" && hasPlayerCompletedAddCity(game, selectedPlayerId)
                       ? "Operations locked in"
-                      : `Waiting for ${currentTurnPlayer?.name ?? game.currentPlayerId}`
+                      : `Waiting for ${waitingForPlayer?.name ?? game.currentPlayerId}`
                     : "Viewing live game"}
                 </div>
                 <div style={{ color: "#56635a", fontSize: 14 }}>
@@ -2715,9 +2739,57 @@ export default function App() {
                       : game.currentPhase === "bureaucracy" && hasPlayerCompletedBureaucracy(game, selectedPlayerId)
                         ? "You already clicked Next player for Bureaucracy."
                         : `You joined as ${selectedPlayer.name}.`
-                    : "Reload from the lobby browser if you want an assigned seat."}
+                    : "Pick a seat to join the game."}
                 </div>
+                {!selectedPlayer && (
+                  <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap", justifyContent: "center" }}>
+                    {game.players.filter(p => !p.isBot).map(player => {
+                      const lobbyPlayer = lanLobby?.players.find(lp => lp.playerId === player.id)
+                      const isClaimed = Boolean(lobbyPlayer?.claimedBy)
+                      return (
+                        <button
+                          key={player.id}
+                          disabled={isUpdatingLobby}
+                          onClick={() => { void handleClaimSeat(player.id) }}
+                          style={{
+                            padding: "7px 16px",
+                            borderRadius: 8,
+                            border: `1px solid ${isClaimed ? "#d8dfd5" : "#223024"}`,
+                            background: isClaimed ? "#f3f6f2" : "#223024",
+                            color: isClaimed ? "#56635a" : "#fff",
+                            fontWeight: 700,
+                            fontSize: 13,
+                            cursor: isUpdatingLobby ? "wait" : "pointer",
+                          }}
+                        >
+                          {player.name}{isClaimed ? " (taken)" : ""}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
+            </div>
+          )}
+          {isSpectator && (
+            <div
+              style={{
+                position: "absolute",
+                top: 12,
+                left: "50%",
+                transform: "translateX(-50%)",
+                background: "rgba(34, 48, 36, 0.82)",
+                color: "#ffffff",
+                borderRadius: 999,
+                padding: "5px 14px",
+                fontSize: 13,
+                fontWeight: 700,
+                pointerEvents: "none",
+                zIndex: 2,
+                whiteSpace: "nowrap",
+              }}
+            >
+              👁 Spectating · Viewing {game.players.find(p => p.id === game.currentPlayerId)?.name ?? "current player"}
             </div>
           )}
         </>

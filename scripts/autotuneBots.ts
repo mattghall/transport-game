@@ -49,6 +49,7 @@ type AutotuneRunRecord = {
   promoted: boolean
   benchmarkScore: number
   generatedAt: string
+  durationMs: number
   final: Pick<
     ScriptedBotTrainingResults["final"],
     "score" | "winRate" | "averagePassengers" | "averagePassengerMargin" | "averageRank" | "sampleCount" | "weights"
@@ -104,6 +105,10 @@ function createModeResultsPath(playerCount: PlayerCount) {
 
 function createModeImportancePath(playerCount: PlayerCount) {
   return resolve(TRAINING_RESULTS_DIR, `latest-${playerCount}p-importance.json`)
+}
+
+function createChampionImportancePath(playerCount: PlayerCount) {
+  return resolve(TRAINING_RESULTS_DIR, `champion-${playerCount}p-importance.json`)
 }
 
 function ensureOutputDirectory() {
@@ -229,6 +234,7 @@ function writeImportanceResults(
 ) {
   writeJsonFile(LATEST_IMPORTANCE_RESULTS_PATH, payload)
   writeJsonFile(createModeImportancePath(playerCount), payload)
+  writeJsonFile(createChampionImportancePath(playerCount), payload)
   console.log(
     JSON.stringify({
       stage: "importance",
@@ -284,6 +290,7 @@ function summarizeRunRecord(
   opponent: string,
   promoted: boolean,
   benchmarkScore: number,
+  durationMs: number,
   results: ScriptedBotTrainingResults,
 ): AutotuneRunRecord {
   return {
@@ -296,6 +303,7 @@ function summarizeRunRecord(
     promoted,
     benchmarkScore,
     generatedAt: results.generatedAt,
+    durationMs,
     final: {
       score: results.final.score,
       winRate: results.final.winRate,
@@ -314,10 +322,10 @@ function summarizeChampionPromotion(champion: ChampionRecord): ChampionPromotion
     playerCount: champion.playerCount,
     benchmarkScore: champion.benchmark.score,
     generatedAt: champion.training.generatedAt,
-    score: champion.training.final.score,
-    winRate: champion.training.final.winRate,
-    averagePassengers: champion.training.final.averagePassengers,
-    averagePassengerMargin: champion.training.final.averagePassengerMargin,
+    score: champion.benchmark.score,
+    winRate: champion.benchmark.winRate,
+    averagePassengers: champion.benchmark.averagePassengers,
+    averagePassengerMargin: champion.benchmark.averagePassengerMargin,
     sampleCount: champion.training.final.sampleCount,
   }
 }
@@ -566,6 +574,7 @@ while (!shouldStop) {
 
   logRunStart(cycle, playerCount, modeCycle, profileConfig.profile, startedFromScratch, opponent, profileConfig.iterations)
 
+  const cycleStartMs = Date.now()
   const results = runScriptedBotTraining({
     iterations: profileConfig.iterations,
     gamesPerCandidate: profileConfig.gamesPerCandidate,
@@ -609,6 +618,7 @@ while (!shouldStop) {
     opponent,
     promoted,
     benchmark.score,
+    Date.now() - cycleStartMs,
     results,
   )
 

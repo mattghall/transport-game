@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Ephemeral training cycle files — only champion/* and bot-presets.json are committed
+public/training-results/latest.json
+public/training-results/latest-*.json
+public/training-results/autotune-history.json
+public/training-results/autotune-status.json

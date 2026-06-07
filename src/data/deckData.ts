@@ -126,11 +126,16 @@ function toVehicleCard(card: RawVehicleCard): VehicleCard {
     throw new Error(`Invalid vehicle type: ${card.type}`)
   }
 
+  const rawFuel = "fuelResource" in card ? card.fuelResource : undefined
+  const fuelResource =
+    rawFuel === "diesel" || rawFuel === "jetFuel" ? rawFuel : rawFuel === null ? null : undefined
+
   return {
     ...card,
     type: card.type,
     vehicleCount: 1,
     totalPassengerCapacity: card.capacityPerVehicle,
+    fuelResource,
   }
 }
 

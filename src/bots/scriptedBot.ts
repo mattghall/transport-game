@@ -6,6 +6,7 @@ import { CITY_DECK_REGIONS, type City, type CityDeckRegion, type VehicleType } f
 import { calculateDistanceMiles } from "../engine/trips"
 import { getBotLegalActions } from "./actions"
 import { getBotGameStage, getOwnedCityPairs, type BotGameStage } from "./strategy"
+import { getCachedBureaucracySummary } from "./summaryCache"
 import type { BotAction, BotController } from "./types"
 
 export type ScriptedBotWeights = {
@@ -49,6 +50,17 @@ export type ScriptedBotWeights = {
   earlyClaimBudget: number
   midClaimBudget: number
   lateClaimBudget: number
+  podSplitBaseScore: number
+  podCityCountScore: number
+  podPopulationPerMillionScore: number
+  podPopulationPerDistanceScore: number
+  podDemandScore: number
+  podDemandPerMileScore: number
+  podNetRevenueScore: number
+  podAdditionalRoutePenalty: number
+  podRemoveCityBaseScore: number
+  podRemovePassengersPerDistanceGainScore: number
+  podRemoveNetRevenueGainScore: number
 }
 
 export const DEFAULT_SCRIPTED_BOT_WEIGHTS: ScriptedBotWeights = {
@@ -92,6 +104,17 @@ export const DEFAULT_SCRIPTED_BOT_WEIGHTS: ScriptedBotWeights = {
   earlyClaimBudget: 3,
   midClaimBudget: 2,
   lateClaimBudget: 1,
+  podSplitBaseScore: 28,
+  podCityCountScore: 11,
+  podPopulationPerMillionScore: 8,
+  podPopulationPerDistanceScore: 18,
+  podDemandScore: 4,
+  podDemandPerMileScore: 0,
+  podNetRevenueScore: 30,
+  podAdditionalRoutePenalty: 16,
+  podRemoveCityBaseScore: 0,
+  podRemovePassengersPerDistanceGainScore: 20,
+  podRemoveNetRevenueGainScore: 15,
 }
 
 export function mergeScriptedBotWeights(
@@ -267,10 +290,83 @@ function scoreBotAction(
   game: Parameters<BotController["pickAction"]>[0]["game"],
   playerId: string,
   weights: ScriptedBotWeights,
+  currentSummary?: ReturnType<typeof getCachedBureaucracySummary>,
 ) {
   const stage = getBotGameStage(game)
   if (action.type === "claim-route") {
     return scoreClaimRouteAction(action, game, playerId, weights)
+  }
+
+  if (action.type === "create-service-pod") {
+    // Score based on population and demand from the already-cached summary — no simulation needed.
+    // Using applyBotAction + nextSummary would be ~10x more expensive per candidate.
+    const summary = currentSummary ?? getCachedBureaucracySummary(game, playerId)
+    const cityMap = new Map(game.cities.map(city => [city.id, city]))
+
+    const totalPopulation = action.cityIds.reduce(
+      (total, cityId) => total + (cityMap.get(cityId)?.population ?? cityMap.get(cityId)?.size ?? 0),
+      0,
+    )
+    const distanceMiles = action.cityIds.reduce((total, cityId, i) => {
+      const nextCityId = action.cityIds[i + 1]
+      if (!nextCityId) return total
+      const cityA = cityMap.get(cityId)
+      const cityB = cityMap.get(nextCityId)
+      return cityA && cityB ? total + calculateDistanceMiles(cityA, cityB) : total
+    }, 0)
+    const populationPerDistance =
+      distanceMiles > 0 ? (totalPopulation / 1_000_000) / Math.max(distanceMiles / 100, 1) : 0
+
+    // Estimate combined demand from current cube state via the cached summary.
+    let podCombinedDemand = 0
+    let activePodCount = 0
+    if (summary) {
+      const corridorPlans = summary.routePlans.filter(p => p.corridorId === action.corridorId)
+      const demandByCityId = new Map<string, number>()
+      for (const plan of corridorPlans) {
+        for (const d of plan.cityCubeDemands) {
+          demandByCityId.set(d.cityId, d.outboundCubes + d.inboundCubes)
+        }
+      }
+      podCombinedDemand = action.cityIds.reduce(
+        (total, cityId) => total + (demandByCityId.get(cityId) ?? 0),
+        0,
+      )
+      activePodCount = corridorPlans.filter(p => !p.isDisconnected && p.selectedCityIds.length >= 2).length
+    }
+
+    const demandPerMile = distanceMiles > 0 ? podCombinedDemand / distanceMiles : 0
+
+    return (
+      weights.podSplitBaseScore +
+      action.cityIds.length * weights.podCityCountScore +
+      (totalPopulation / 1_000_000) * weights.podPopulationPerMillionScore +
+      populationPerDistance * weights.podPopulationPerDistanceScore +
+      podCombinedDemand * weights.podDemandScore +
+      demandPerMile * weights.podDemandPerMileScore -
+      Math.max(0, activePodCount - 1) * weights.podAdditionalRoutePenalty
+    )
+  }
+
+  if (action.type === "remove-pod-city") {
+    // Score based on city's current demand contribution — no simulation needed.
+    // Only remove cities with zero demand cubes (safe: they can't form a profitable pod candidate
+    // via create-service-pod, so removal won't cause cycling).
+    const summary = currentSummary ?? getCachedBureaucracySummary(game, playerId)
+    if (!summary) return Number.NEGATIVE_INFINITY
+
+    const sourcePlan = summary.routePlans.find(plan => plan.id === action.sourceRouteId) ?? null
+    if (!sourcePlan || sourcePlan.isDisconnected || sourcePlan.selectedCityIds.length < 3) {
+      return Number.NEGATIVE_INFINITY
+    }
+
+    const cityDemand = sourcePlan.cityCubeDemands.find(d => d.cityId === action.cityId)
+    const activeCubes = (cityDemand?.outboundCubes ?? 0) + (cityDemand?.inboundCubes ?? 0)
+    if (activeCubes > 0) return Number.NEGATIVE_INFINITY
+
+    // Zero-demand city: removing it reduces route distance/cost with no passenger loss.
+    const netRevenuePenalty = sourcePlan.netRevenue < 0 ? -sourcePlan.netRevenue / 1_000_000 : 0
+    return weights.podRemoveCityBaseScore + netRevenuePenalty * weights.podRemoveNetRevenueGainScore
   }
 
   if (action.type !== "buy-vehicle") {
@@ -346,16 +442,27 @@ export function createScriptedBot(id: string, weights: Partial<ScriptedBotWeight
 
       if (
         claimedRouteCountThisTurn >= stageClaimBudget &&
+        !availableActions.some(action => action.type === "create-service-pod") &&
         availableActions.some(action => action.type === "ready-operations")
       ) {
         return { type: "ready-operations" }
       }
 
-      return [...availableActions].sort(
-        (actionA, actionB) =>
-          scoreBotAction(actionB, game, playerId, resolvedWeights) -
-          scoreBotAction(actionA, game, playerId, resolvedWeights),
-      )[0]
+      // Only compute the bureaucracy summary when there are pod/removal actions to score —
+      // those are the only action types that need it. This avoids expensive calls on every
+      // claim-route, buy-vehicle, add-city, and bureaucracy step.
+      const hasPodActions = availableActions.some(
+        a => a.type === "create-service-pod" || a.type === "remove-pod-city",
+      )
+      const precomputedSummary = hasPodActions ? getCachedBureaucracySummary(game, playerId) : undefined
+      const bestAction = availableActions.reduce<{ action: BotAction; score: number } | null>(
+        (best, action) => {
+          const score = scoreBotAction(action, game, playerId, resolvedWeights, precomputedSummary)
+          return best === null || score > best.score ? { action, score } : best
+        },
+        null,
+      )
+      return bestAction?.action ?? { type: "end-turn" }
     },
   }
 }

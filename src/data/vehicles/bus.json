@@ -1,5 +1,19 @@
 [
   {
+    "id": "bus-toyota-sienna",
+    "number": 0,
+    "type": "bus",
+    "name": "Toyota Sienna",
+    "purchasePrice": 35000,
+    "vehicleCount": 1,
+    "capacityPerVehicle": 8,
+    "totalPassengerCapacity": 8,
+    "operatingCostMultiplier": 1.1,
+    "speed": 65,
+    "fuelResource": "diesel",
+    "funFact": "The Toyota Sienna is the only minivan in its class offered with standard all-wheel drive, making it a popular choice for small transit operators in snowy regions."
+  },
+  {
     "id": "bus-byd-k-m-electric",
     "number": 1,
     "type": "bus",

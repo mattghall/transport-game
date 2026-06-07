@@ -49,6 +49,7 @@ export type BureaucracyRoutePlan = {
   segmentCount: number
   canAddSplitService: boolean
   combinedDemand: number
+  populationPerMile: number | null
   totalOutboundCubes: number
   totalInboundCubes: number
   cubeCapacityPerTrip: number
@@ -1334,6 +1335,15 @@ export function buildPlayerBureaucracySummary(
         segmentCount: activeRoutes.length,
         canAddSplitService: serviceSlot.canAddSplitService,
         combinedDemand: routeDemandCubes,
+        populationPerMile: (() => {
+          const dist = statsRouteTripSummary?.distanceMiles ?? null
+          if (!dist || dist <= 0 || selectedCityIds.length < 2) return null
+          const totalPop = selectedCityIds.reduce((sum, cityId) => {
+            const city = game.cities.find(c => c.id === cityId)
+            return sum + (city?.population ?? 0)
+          }, 0)
+          return totalPop / dist
+        })(),
         totalOutboundCubes: cubeTransferDemand.totalOutboundCubes,
         totalInboundCubes: cubeTransferDemand.totalInboundCubes,
         cubeCapacityPerTrip: statsCubeCapacityPerTrip,

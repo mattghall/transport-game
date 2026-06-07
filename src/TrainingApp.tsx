@@ -1,65 +1,80 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { BOT_PRESETS } from "./bots/presets"
-import {
-  createTrainingSeeds,
-  evaluateScriptedBotWeights,
-  summarizeScriptedBotWeightEvaluation,
-  type ScriptedBotWeightEvaluationSummary,
-} from "./bots/training"
 import type {
   ScriptedBotLeverImportanceResults,
-  ScriptedBotTrainingHistoryEntry,
   ScriptedBotTrainingResults,
 } from "./bots/training"
 import {
   fetchAutotuneStatus,
   forceStopAutotune,
-  cancelTraining,
   fetchTrainingImportance,
   fetchTrainingPresets,
-  fetchTrainingStatus,
   getDefaultSessionServerUrl,
   promoteAutotuneRunToStickbug,
-  startTrainingImportance,
+  resetAutotuneData,
   startAutotune,
   stopAutotune,
   type AutotuneControlStatus,
   type TrainingImportanceStatus,
-  startTraining,
   type TrainingPresetStatus,
-  type TrainingStartRequest,
-  type TrainingStatus,
 } from "./network/sessionSync"
 import { buildEstimatedCityLinkProfitabilityRows } from "./engine/cityLinkProfitability"
 import type { ScriptedBotWeights } from "./bots/scriptedBot"
-
-type MetricPoint = {
-  label: string
-  value: number
-}
+import {
+  buildLeverImpactRows,
+  fetchOptionalJson,
+  formatDuration,
+  formatMetric,
+  formatPercent,
+  formatPercentDelta,
+  formatWholeDelta,
+  formatWholeNumber,
+  getDeltaColor,
+  AllChampionsLeverChart,
+  LeverImpactComparisonChart,
+  WEIGHT_LABELS,
+} from "./trainingHelpers"
 
 const TRAINING_PLAYER_COUNT_OPTIONS = [1, 2, 3, 4] as const
 type TrainingPlayerCount = (typeof TRAINING_PLAYER_COUNT_OPTIONS)[number]
 
-type LeverImpactMetricKey = "passengerDrop" | "scoreDrop" | "winRateDrop"
+type BotDecisionBranch = {
+  title: string
+  when: string
+  actions: string[]
+  leverKeys: Array<keyof ScriptedBotWeights>
+  notes?: string[]
+}
 
-type LeverImpactChartRow = {
-  key: string
-  label: string
-  description: string
-  group: string
-  delta: number
-  lowExplanation: string
-  highExplanation: string
-  passengerDrop: number | null
-  scoreDrop: number | null
-  winRateDrop: number | null
+type BotDecisionPhase = {
+  phase: string
+  summary: string
+  branches: BotDecisionBranch[]
 }
 
 type ModeComparisonEntry = {
   playerCount: TrainingPlayerCount
   results: ScriptedBotTrainingResults | null
   importance: ScriptedBotLeverImportanceResults | null
+}
+
+type ChampionFileEntry = {
+  playerCount: TrainingPlayerCount
+  data: {
+    updatedAt: string
+    cycle: number
+    playerCount: TrainingPlayerCount
+    benchmark: {
+      score: number
+      winRate: number
+      averageRank: number
+      averagePassengers: number
+      averagePassengerMargin: number
+      averageConnectedCities: number
+      sampleCount: number
+    }
+    training: ScriptedBotTrainingResults
+  } | null
 }
 
 type AutotuneRunRecord = {
@@ -72,6 +87,7 @@ type AutotuneRunRecord = {
   promoted: boolean
   benchmarkScore: number
   generatedAt: string
+  durationMs?: number
   final: {
     score: number
     winRate: number
@@ -139,6 +155,7 @@ type AutotuneStatus = {
               averagePassengers: number
               averagePassengerMargin: number
               sampleCount: number
+              weights?: Partial<ScriptedBotWeights>
             }
           }
         }
@@ -146,332 +163,6 @@ type AutotuneStatus = {
   >
 }
 const REFRESH_MS = 3000
-
-const LEVER_IMPACT_METRICS: Record<
-  LeverImpactMetricKey,
-  { label: string; description: string; digits: number }
-> = {
-  passengerDrop: {
-    label: "Passengers drop",
-    description: "Positive means keeping the trained value moves more passengers than reverting it.",
-    digits: 2,
-  },
-  scoreDrop: {
-    label: "Score drop",
-    description: "Positive means the trained value improves the overall training score.",
-    digits: 2,
-  },
-  winRateDrop: {
-    label: "Win-rate drop",
-    description: "Positive means the trained value improves win rate when the rest of the bot stays the same.",
-    digits: 3,
-  },
-}
-
-type WeightLabelInfo = {
-  label: string
-  description: string
-  group: string
-  lowExplanation: string
-  highExplanation: string
-}
-
-type BotDecisionBranch = {
-  title: string
-  when: string
-  actions: string[]
-  leverKeys: Array<keyof ScriptedBotWeights>
-  notes?: string[]
-}
-
-type BotDecisionPhase = {
-  phase: string
-  summary: string
-  branches: BotDecisionBranch[]
-}
-
-const WEIGHT_LABELS: Record<string, WeightLabelInfo> = {
-  vehiclePriorityBus: {
-    label: "Bus buy priority",
-    description: "How strongly the bot prefers buying buses during equipment.",
-    group: "Vehicle buying",
-    lowExplanation: "Buses are only worth it when they clearly unlock passenger gains.",
-    highExplanation: "Lean hard into buses because cheap coverage can snowball passenger reach.",
-  },
-  vehiclePriorityTrain: {
-    label: "Train buy priority",
-    description: "How strongly the bot prefers buying trains during equipment.",
-    group: "Vehicle buying",
-    lowExplanation: "Only buy trains when a rail plan is obviously worth the spend.",
-    highExplanation: "Push trains early because rail capacity may pay off in future passengers.",
-  },
-  vehiclePriorityAir: {
-    label: "Air buy priority",
-    description: "How strongly the bot prefers buying planes during equipment.",
-    group: "Vehicle buying",
-    lowExplanation: "Use planes for targeted high-value jumps when they clearly grow passengers.",
-    highExplanation: "Favor planes because long jumps can open strong passenger markets quickly.",
-  },
-  claimRailBaseScore: {
-    label: "Rail city-link base score",
-    description: "Baseline attractiveness of claiming a rail city link before city and cost modifiers.",
-    group: "Route claiming",
-    lowExplanation: "Rail needs extra proof before the bot commits to expensive track.",
-    highExplanation: "Rail starts attractive even before city size or cost tweaks kick in.",
-  },
-  claimAirBaseScore: {
-    label: "Air city-link base score",
-    description: "Baseline attractiveness of claiming an air city link before city and cost modifiers.",
-    group: "Route claiming",
-    lowExplanation: "Use air for selective city links where range creates a clear passenger payoff.",
-    highExplanation: "Air city links are broadly appealing even before detailed checks.",
-  },
-  claimPopulationPerMillionScore: {
-    label: "Population weight",
-    description: "How much the bot values high-population metro pairs when choosing city links.",
-    group: "Route claiming",
-    lowExplanation: "Small and medium cities are fine if they fit the network well.",
-    highExplanation: "Chase the biggest city pairs because passengers matter most there.",
-  },
-  claimNewCityBonus: {
-    label: "New city bonus",
-    description: "Reward for city links that connect cities the bot is not already serving.",
-    group: "Route claiming",
-    lowExplanation: "Deepen existing corridors instead of stretching for new dots on the map.",
-    highExplanation: "Reach fresh cities fast because new endpoints can unlock more passengers.",
-  },
-  claimFirstModeBonus: {
-    label: "First city-link of mode bonus",
-    description: "Reward for starting a new transport mode in the network.",
-    group: "Route claiming",
-    lowExplanation: "Build around proven modes and expand the network with the tools already working.",
-    highExplanation: "Branch into a new mode early if it could open new passenger angles.",
-  },
-  claimRailCostPenaltyPerMillion: {
-    label: "Rail cost penalty",
-    description: "How much the bot discounts expensive rail construction.",
-    group: "Route claiming",
-    lowExplanation: "Expensive rail is fine if the city link looks good for passengers.",
-    highExplanation: "Favor cheaper rail lines because cost matters a lot alongside passenger upside.",
-  },
-  claimPacificPreference: {
-    label: "Pacific preference",
-    description: "How much the bot likes city links that touch Pacific cities.",
-    group: "Regional strategy",
-    lowExplanation: "Pacific city links need stronger passenger reasons to stand out.",
-    highExplanation: "Pacific city links get extra credit when the bot compares options.",
-  },
-  claimMountainPreference: {
-    label: "Mountain preference",
-    description: "How much the bot likes city links that touch Mountain cities.",
-    group: "Regional strategy",
-    lowExplanation: "Mountain city links need stronger passenger reasons to stand out.",
-    highExplanation: "Mountain city links get extra credit when the bot compares options.",
-  },
-  claimSouthPreference: {
-    label: "South preference",
-    description: "How much the bot likes city links that touch South cities.",
-    group: "Regional strategy",
-    lowExplanation: "South city links need stronger passenger reasons to stand out.",
-    highExplanation: "South city links get extra credit when the bot compares options.",
-  },
-  claimSoutheastPreference: {
-    label: "Southeast preference",
-    description: "How much the bot likes city links that touch Southeast cities.",
-    group: "Regional strategy",
-    lowExplanation: "Southeast city links need stronger passenger reasons to stand out.",
-    highExplanation: "Southeast city links get extra credit when the bot compares options.",
-  },
-  claimMidwestPreference: {
-    label: "Midwest preference",
-    description: "How much the bot likes city links that touch Midwest cities.",
-    group: "Regional strategy",
-    lowExplanation: "Midwest city links need stronger passenger reasons to stand out.",
-    highExplanation: "Midwest city links get extra credit when the bot compares options.",
-  },
-  claimNortheastPreference: {
-    label: "Northeast preference",
-    description: "How much the bot likes city links that touch Northeast cities.",
-    group: "Regional strategy",
-    lowExplanation: "Northeast city links need stronger passenger reasons to stand out.",
-    highExplanation: "Northeast city links get extra credit when the bot compares options.",
-  },
-  claimSameRegionLinkBonus: {
-    label: "Same-region city-link bonus",
-    description: "Bonus for city links whose two endpoints stay in the same primary region.",
-    group: "Regional strategy",
-    lowExplanation: "Mixed-region city links can compete evenly when they move more passengers.",
-    highExplanation: "City links that stay inside one region get extra credit for regional focus.",
-  },
-  claimNewRegionBonus: {
-    label: "New-region expansion bonus",
-    description: "Bonus for city links that expand the network into a region the player is not already serving.",
-    group: "Regional strategy",
-    lowExplanation: "Build deeper inside the current regions before branching into a new one.",
-    highExplanation: "Expand into new regions earlier when that can open fresh passenger markets.",
-  },
-  claimLongDistancePreference: {
-    label: "Long-distance city-link preference",
-    description: "How much the bot prefers longer city links that fall into higher distance payout buckets.",
-    group: "Route claiming",
-    lowExplanation: "Prefer shorter city links when they can serve passengers efficiently.",
-    highExplanation: "Prefer longer city links when bigger distance payouts can justify the reach.",
-  },
-  buyBusOwnedCityBonus: {
-    label: "Bus city-card bonus",
-    description: "Extra appetite for buses when the bot already holds many city cards.",
-    group: "Vehicle buying",
-    lowExplanation: "Use city cards as one input and buy buses when the passenger city link is strong.",
-    highExplanation: "Loaded with city cards? Turn them into bus city links quickly.",
-  },
-  buyTrainPotentialClaimBonus: {
-    label: "Train opportunity bonus",
-    description: "Extra appetite for trains when promising rail claims are available.",
-    group: "Vehicle buying",
-    lowExplanation: "Buy trains when a rail opportunity looks clearly worth the investment.",
-    highExplanation: "If a good rail line is waiting, buy trains now to cash in on it.",
-  },
-  buyTrainFallbackOwnedCityBonus: {
-    label: "Train fallback bonus",
-    description: "Fallback train preference when the bot has enough city cards but no great rail claim yet.",
-    group: "Vehicle buying",
-    lowExplanation: "Let the next strong rail opportunity lead the train purchase timing.",
-    highExplanation: "City cards alone are enough reason to prepare with trains anyway.",
-  },
-  buyTrainNoClaimPenalty: {
-    label: "Train no-opportunity penalty",
-    description: "Penalty for buying trains when there are no worthwhile rail claims.",
-    group: "Vehicle buying",
-    lowExplanation: "The bot will still speculate on trains before the perfect city link appears.",
-    highExplanation: "Keep cash flexible and buy trains alongside a near-term city-link plan.",
-  },
-  buyAirPotentialClaimBonus: {
-    label: "Air opportunity bonus",
-    description: "Extra appetite for planes when promising air claims are available.",
-    group: "Vehicle buying",
-    lowExplanation: "Even with a possible air city link, planes must clear a high bar.",
-    highExplanation: "A promising air city link is a strong signal to buy planes immediately.",
-  },
-  buyAirFallbackOwnedCityBonus: {
-    label: "Air fallback bonus",
-    description: "Fallback plane preference when the bot has enough city cards but no great air claim yet.",
-    group: "Vehicle buying",
-    lowExplanation: "Buy planes when city cards line up with a city link that can pay off soon.",
-    highExplanation: "Enough city cards can justify prepping air city links before the best moment.",
-  },
-  buyAirNoClaimPenalty: {
-    label: "Air no-opportunity penalty",
-    description: "Penalty for buying planes when there are no worthwhile air claims.",
-    group: "Vehicle buying",
-    lowExplanation: "The bot is willing to pre-buy planes and trust future passenger demand.",
-    highExplanation: "Buy planes when an air city link can help passengers soon.",
-  },
-  buyDuplicateVehiclePenalty: {
-    label: "Duplicate vehicle penalty",
-    description: "How much the bot avoids stacking more of the same vehicle type.",
-    group: "Vehicle buying",
-    lowExplanation: "Doubling down on one vehicle type is acceptable if it serves passengers best.",
-    highExplanation: "Keep the fleet mixed instead of overcommitting to one transport mode.",
-  },
-  buyFirstTrainBonus: {
-    label: "First train bonus",
-    description: "Reward for adding the first train to the fleet.",
-    group: "Vehicle buying",
-    lowExplanation: "The first train should earn its keep; no rush to add rail capability.",
-    highExplanation: "Get one train on the board early to unlock rail passenger options.",
-  },
-  buyFirstAirBonus: {
-    label: "First air bonus",
-    description: "Reward for adding the first plane to the fleet.",
-    group: "Vehicle buying",
-    lowExplanation: "Planes can wait until the network clearly needs long-distance reach.",
-    highExplanation: "Add one plane early because range can unlock new passenger pools.",
-  },
-  earlyExpansionMultiplier: {
-    label: "Early expansion multiplier",
-    description: "How aggressively the bot values new-city expansion in the early game.",
-    group: "Stage strategy",
-    lowExplanation: "Start compact and efficient before stretching for more cities.",
-    highExplanation: "Expand fast early to build a larger passenger map before rivals do.",
-  },
-  midExpansionMultiplier: {
-    label: "Mid expansion multiplier",
-    description: "How aggressively the bot values new-city expansion in the mid game.",
-    group: "Stage strategy",
-    lowExplanation: "Midgame should focus on strengthening city links you already own.",
-    highExplanation: "Keep spreading outward in midgame to keep passenger growth alive.",
-  },
-  lateExpansionMultiplier: {
-    label: "Late expansion multiplier",
-    description: "How aggressively the bot values new-city expansion in the late game.",
-    group: "Stage strategy",
-    lowExplanation: "Late game favors strengthening existing city links and collecting their passenger value.",
-    highExplanation: "Even late, new cities may still be worth it for a passenger swing.",
-  },
-  earlyPopulationMultiplier: {
-    label: "Early passenger multiplier",
-    description: "How much the bot values large-population endpoints in the early game.",
-    group: "Stage strategy",
-    lowExplanation: "Prefer efficient city links that build the network.",
-    highExplanation: "Connect major cities early so their passenger volume can pay off across more turns.",
-  },
-  midPopulationMultiplier: {
-    label: "Mid passenger multiplier",
-    description: "How much the bot values large-population endpoints in the mid game.",
-    group: "Stage strategy",
-    lowExplanation: "Midgame can value fit and efficiency over pure city size.",
-    highExplanation: "Midgame should keep steering toward the biggest passenger hubs.",
-  },
-  latePopulationMultiplier: {
-    label: "Late passenger multiplier",
-    description: "How much the bot values large-population endpoints in the late game.",
-    group: "Stage strategy",
-    lowExplanation: "Late game values reliable city links that fit the network and score steady passengers.",
-    highExplanation: "Late game should hunt the largest remaining passenger payoffs.",
-  },
-  earlyReadyOperationsScore: {
-    label: "Early stop-building score",
-    description: "How willing the bot is to stop building city links and finish Operations early in the game.",
-    group: "Stage strategy",
-    lowExplanation: "Keep building early; more city links now can mean more passengers later.",
-    highExplanation: "After the required setup is done, finish Operations sooner instead of adding more low-value city links.",
-  },
-  midReadyOperationsScore: {
-    label: "Mid stop-building score",
-    description: "How willing the bot is to stop building city links and finish Operations in the middle game.",
-    group: "Stage strategy",
-    lowExplanation: "In midgame, keep pressing expansion before ending Operations.",
-    highExplanation: "Midgame should stop sooner and cash in existing passenger city links.",
-  },
-  lateReadyOperationsScore: {
-    label: "Late stop-building score",
-    description: "How willing the bot is to stop building city links and finish Operations late in the game.",
-    group: "Stage strategy",
-    lowExplanation: "Late turns should squeeze in every last city-link opportunity.",
-    highExplanation: "After the required setup is done, finish Operations sooner and focus on the profitable city links already in the network.",
-  },
-  earlyClaimBudget: {
-    label: "Early city-link budget",
-    description: "Maximum city links the bot tries to build in one Operations turn early in the game.",
-    group: "Stage strategy",
-    lowExplanation: "Build just a little early and stay selective with cash.",
-    highExplanation: "Spend bigger early to grab more passenger territory in one turn.",
-  },
-  midClaimBudget: {
-    label: "Mid city-link budget",
-    description: "Maximum city links the bot tries to build in one Operations turn in the middle game.",
-    group: "Stage strategy",
-    lowExplanation: "Midgame building stays tight and disciplined.",
-    highExplanation: "Midgame can still support a burst of new city-link building.",
-  },
-  lateClaimBudget: {
-    label: "Late city-link budget",
-    description: "Maximum city links the bot tries to build in one Operations turn late in the game.",
-    group: "Stage strategy",
-    lowExplanation: "Late game keeps spending tight and adds city links selectively.",
-    highExplanation: "Late game is still willing to spend big for a final passenger push.",
-  },
-}
 
 const BOT_PHASE_DECISION_TREE: BotDecisionPhase[] = [
   {
@@ -550,7 +241,7 @@ const BOT_PHASE_DECISION_TREE: BotDecisionPhase[] = [
       {
         title: "Claim the best-looking rail or air city link",
         when: "If the bot can edit operations and there are legal rail or air claims from owned city-card pairs.",
-        actions: ["claim-route (rail)", "claim-route (air)", "ready-operations"],
+        actions: ["claim-route (rail)", "claim-route (air)", "create-service-pod", "ready-operations"],
         leverKeys: [
           "claimRailBaseScore",
           "claimAirBaseScore",
@@ -583,6 +274,39 @@ const BOT_PHASE_DECISION_TREE: BotDecisionPhase[] = [
         ],
       },
       {
+        title: "Create a pod from an existing network subset",
+        when: "If a corridor has room for another pod and the bot can form a connected city subset inside it.",
+        actions: ["create-service-pod", "ready-operations"],
+        leverKeys: [
+          "podSplitBaseScore",
+          "podCityCountScore",
+          "podPopulationPerMillionScore",
+          "podPopulationPerDistanceScore",
+          "podDemandScore",
+          "podNetRevenueScore",
+          "podAdditionalRoutePenalty",
+        ],
+        notes: [
+          "Bots create pods as connected subsets inside an existing network corridor instead of manually dragging one city at a time.",
+          "The pod candidate is scored against the resulting bureaucracy summary so the bot only keeps pod shapes that improve real service output.",
+        ],
+      },
+      {
+        title: "Remove an unprofitable or low-efficiency city from a pod",
+        when: "If a pod has 3 or more cities and removing one city would leave the remaining cities connected.",
+        actions: ["remove-pod-city", "ready-operations"],
+        leverKeys: [
+          "podRemoveCityBaseScore",
+          "podRemovePassengersPerDistanceGainScore",
+          "podRemoveNetRevenueGainScore",
+        ],
+        notes: [
+          "The removed city is moved to the disconnected slot, not deleted.",
+          "The bot only removes a city if the pod stays connected (2+ cities) after removal.",
+          "Scoring compares passengers-per-mile and net revenue before and after the move.",
+        ],
+      },
+      {
         title: "Stop building once the turn budget is spent",
         when: "If claimed city links this turn already meet the current stage claim budget and ready-operations is legal.",
         actions: ["ready-operations"],
@@ -604,113 +328,7 @@ const BOT_PHASE_DECISION_TREE: BotDecisionPhase[] = [
       },
     ],
   },
-  {
-    phase: "Purchase fuel",
-    summary: "Bots currently do not make an explicit fuel-market choice and just advance the turn.",
-    branches: [
-      {
-        title: "Pass through the fuel step",
-        when: "Whenever the current phase is purchase-fuel.",
-        actions: ["end-turn"],
-        leverKeys: [],
-        notes: ["No trained levers affect this phase right now."],
-      },
-    ],
-  },
 ]
-
-function formatMetric(value: number, digits = 2) {
-  return Number.isFinite(value)
-    ? value.toLocaleString("en-US", {
-        minimumFractionDigits: digits,
-        maximumFractionDigits: digits,
-      })
-    : "—"
-}
-
-function formatWholeNumber(value: number) {
-  return Number.isFinite(value) ? Math.trunc(value).toLocaleString("en-US") : "—"
-}
-
-function formatPercent(value: number) {
-  return Number.isFinite(value) ? `${Math.round(value * 100).toLocaleString("en-US")}%` : "—"
-}
-
-function formatWeightDelta(delta: number) {
-  if (!Number.isFinite(delta)) {
-    return "—"
-  }
-
-  return `${delta > 0 ? "+" : ""}${delta.toLocaleString("en-US", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 3,
-  })}`
-}
-
-function formatWholeDelta(delta: number) {
-  if (!Number.isFinite(delta)) {
-    return "—"
-  }
-
-  const truncated = Math.trunc(delta)
-  return `${truncated > 0 ? "+" : ""}${truncated.toLocaleString("en-US")}`
-}
-
-function formatPercentDelta(delta: number) {
-  if (!Number.isFinite(delta)) {
-    return "—"
-  }
-
-  const roundedPercent = Math.round(delta * 100)
-  return `${roundedPercent > 0 ? "+" : ""}${roundedPercent.toLocaleString("en-US")}%`
-}
-
-function getDeltaColor(delta: number | null) {
-  if (delta === null || !Number.isFinite(delta) || delta === 0) {
-    return "#56635a"
-  }
-
-  return delta > 0 ? "#1f6f43" : "#9b1c1c"
-}
-
-function getBenchmarkGameCount(playerCount: TrainingPlayerCount) {
-  switch (playerCount) {
-    case 1:
-      return 20
-    case 2:
-      return 16
-    case 3:
-      return 12
-    case 4:
-      return 10
-  }
-}
-
-async function fetchOptionalJson<T>(path: string) {
-  const response = await fetch(path, {
-    cache: "no-store",
-  })
-
-  if (!response.ok) {
-    return null
-  }
-
-  return (await response.json()) as T
-}
-
-function buildMetricSeries(
-  baselineValue: number,
-  history: ScriptedBotTrainingHistoryEntry[],
-  selector: (entry: ScriptedBotTrainingHistoryEntry) => number,
-): MetricPoint[] {
-  return [
-    { label: "Baseline", value: baselineValue },
-    ...history.map(entry => ({
-      label: `Iter ${entry.iteration}`,
-      value: selector(entry),
-    })),
-  ]
-}
 
 function buildAutotuneFallbackHistory(status: AutotuneStatus | null): AutotuneHistory | null {
   if (!status) {
@@ -809,7 +427,7 @@ function IterationProgressBar({
   idPrefix,
 }: {
   label: string
-  progress: TrainingStatus["progress"] | AutotuneControlStatus["progress"]
+  progress: AutotuneControlStatus["progress"]
   color: string
   idPrefix?: string
 }) {
@@ -996,8 +614,15 @@ function CombinedAutotuneLearningChart({
         />
         {series.map(entry => {
           const color = lineColors[entry.playerCount]
+          // Merge runPoints with any promotionPoints not already covered (scratch-run promotions)
+          // so that all visible dots are connected by the polyline.
+          const runCycles = new Set(entry.runPoints.map(p => p.cycle))
+          const mergedLinePoints = [
+            ...entry.runPoints,
+            ...entry.promotionPoints.filter(p => !runCycles.has(p.cycle)),
+          ].sort((a, b) => a.cycle - b.cycle)
           const runPolylinePoints = buildPolylinePoints(
-            entry.runPoints,
+            mergedLinePoints,
             width,
             height,
             chartPadding,
@@ -1009,7 +634,7 @@ function CombinedAutotuneLearningChart({
 
           return (
             <g key={`series-${entry.playerCount}`}>
-              {entry.runPoints.length >= 2 ? (
+              {mergedLinePoints.length >= 2 ? (
             <polyline fill="none" stroke={color} strokeWidth="2" points={runPolylinePoints} />
               ) : null}
               {entry.runPoints.map(point => {
@@ -1091,517 +716,31 @@ function CombinedAutotuneLearningChart({
   )
 }
 
-function LineChart({
-  title,
-  points,
-  color,
-  formatter = formatWholeNumber,
-}: {
-  title: string
-  points: MetricPoint[]
-  color: string
-  formatter?: (value: number) => string
-}) {
-  const width = 360
-  const height = 160
-  const padding = 20
-  const values = points.map(point => point.value)
-  const minValue = Math.min(...values)
-  const maxValue = Math.max(...values)
-  const range = maxValue - minValue || 1
-  const polylinePoints = points
-    .map((point, index) => {
-      const x = padding + (index / Math.max(points.length - 1, 1)) * (width - padding * 2)
-      const y = height - padding - ((point.value - minValue) / range) * (height - padding * 2)
-      return `${x},${y}`
-    })
-    .join(" ")
-
-  return (
-    <div
-      style={{
-        border: "1px solid #d8dfd5",
-        borderRadius: 12,
-        background: "#ffffff",
-        padding: 12,
-        display: "grid",
-        gap: 8,
-      }}
-    >
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-        <strong>{title}</strong>
-        <span style={{ color: "#56635a", fontSize: 13 }}>
-          {formatter(points[points.length - 1]?.value ?? 0)}
-        </span>
-      </div>
-      <svg width="100%" viewBox={`0 0 ${width} ${height}`} style={{ overflow: "visible" }}>
-        <line x1={padding} y1={padding} x2={padding} y2={height - padding} stroke="#d8dfd5" />
-        <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} stroke="#d8dfd5" />
-        <polyline fill="none" stroke={color} strokeWidth="3" points={polylinePoints} />
-        {points.map((point, index) => {
-          const x = padding + (index / Math.max(points.length - 1, 1)) * (width - padding * 2)
-          const y = height - padding - ((point.value - minValue) / range) * (height - padding * 2)
-          return (
-            <g key={point.label}>
-              <circle cx={x} cy={y} r="4" fill={color} />
-              <text x={x} y={height - 4} fontSize="10" textAnchor="middle" fill="#56635a">
-                {index === 0 ? "B" : index}
-              </text>
-            </g>
-          )
-        })}
-      </svg>
-    </div>
-  )
-}
-
-function formatImpactMetric(metric: LeverImpactMetricKey, value: number) {
-  if (!Number.isFinite(value)) {
-    return "—"
-  }
-
-  if (metric === "winRateDrop") {
-    const roundedPercent = Math.round(value * 100)
-    return `${roundedPercent > 0 ? "+" : ""}${roundedPercent.toLocaleString("en-US")}%`
-  }
-
-  return `${value > 0 ? "+" : ""}${Math.trunc(value).toLocaleString("en-US")}`
-}
-
-function buildLeverImpactRows(
-  results: ScriptedBotTrainingResults | null,
-  importance: ScriptedBotLeverImportanceResults | null,
-) {
-  if (!results) {
-    return []
-  }
-
-  const importanceByKey = new Map(
-    importance?.sourceTrainingGeneratedAt === results.generatedAt
-      ? importance.rows.map(row => [row.key, row] as const)
-      : [],
-  )
-
-  return Object.entries(results.final.weights)
-    .map(([key, finalValue]) => {
-      const baselineValue = results.baseline.weights[key as keyof typeof results.baseline.weights]
-      const impact = importanceByKey.get(key as keyof typeof results.final.weights)
-      return {
-        key,
-        baselineValue,
-        finalValue,
-        delta: finalValue - baselineValue,
-        importanceRank: impact?.rank ?? null,
-        passengerDrop: impact?.passengerDrop ?? null,
-        scoreDrop: impact?.scoreDrop ?? null,
-        winRateDrop: impact?.winRateDrop ?? null,
-        ...(WEIGHT_LABELS[key] ?? {
-          label: key,
-          description: "No description yet.",
-          group: "Other",
-          lowExplanation: "Lower values make the bot less eager to act on this lever.",
-          highExplanation: "Higher values make the bot lean harder into this lever.",
-        }),
-      }
-    })
-    .sort((rowA, rowB) =>
-      (rowA.importanceRank ?? Number.POSITIVE_INFINITY) - (rowB.importanceRank ?? Number.POSITIVE_INFINITY) ||
-      rowB.group.localeCompare(rowA.group) ||
-      Math.abs(rowB.delta) - Math.abs(rowA.delta),
-    )
-}
-
-function LeverImpactChart({
-  rows,
-  metric,
-  onMetricChange,
-  title = "Lever impact graph",
-  showMetricSelector = true,
-}: {
-  rows: LeverImpactChartRow[]
-  metric: LeverImpactMetricKey
-  onMetricChange: (metric: LeverImpactMetricKey) => void
-  title?: string
-  showMetricSelector?: boolean
-}) {
-  const metricConfig = LEVER_IMPACT_METRICS[metric]
-  const chartRows = rows
-    .map(row => ({
-      ...row,
-      value: row[metric],
-    }))
-    .filter((row): row is LeverImpactChartRow & { value: number } => row.value !== null)
-    .sort((rowA, rowB) => Math.abs(rowB.value) - Math.abs(rowA.value))
-
-  const maxMagnitude = Math.max(
-    1,
-    ...chartRows.map(row => Math.abs(row.value)),
-  )
-
-  return (
-    <div
-      style={{
-        border: "1px solid #d8dfd5",
-        borderRadius: 12,
-        background: "#ffffff",
-        padding: 14,
-        display: "grid",
-        gap: 12,
-      }}
-    >
-      <div style={{ display: "grid", gap: 6 }}>
-        <strong>{title}</strong>
-        <div style={{ color: "#56635a", lineHeight: 1.45 }}>
-          {metricConfig.description} Green bars helped. Red bars mean the trained value is probably hurting that metric.
-          The right-side explanation always shows the direction that helps the selected metric more.
-        </div>
-      </div>
-
-      {showMetricSelector && (
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {(Object.entries(LEVER_IMPACT_METRICS) as Array<
-            [LeverImpactMetricKey, (typeof LEVER_IMPACT_METRICS)[LeverImpactMetricKey]]
-          >).map(([nextMetric, config]) => (
-            <button
-              key={nextMetric}
-              type="button"
-              onClick={() => onMetricChange(nextMetric)}
-              style={{
-                borderRadius: 999,
-                border: `1px solid ${metric === nextMetric ? "#223024" : "#c7d0c4"}`,
-                background: metric === nextMetric ? "#223024" : "#ffffff",
-                color: metric === nextMetric ? "#ffffff" : "#223024",
-                padding: "8px 12px",
-                fontWeight: 700,
-                cursor: "pointer",
-              }}
-            >
-              {config.label}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {chartRows.length > 0 ? (
-        <div style={{ display: "grid", gap: 8, maxHeight: 620, overflowY: "auto", paddingRight: 4 }}>
-          {chartRows.map(row => {
-            const barWidth = `${(Math.abs(row.value) / maxMagnitude) * 50}%`
-            const isPositive = row.value >= 0
-            const helpfulDirectionIsHigh = row.value === 0 ? row.delta >= 0 : row.delta * row.value >= 0
-            const leftExplanation = helpfulDirectionIsHigh ? row.lowExplanation : row.highExplanation
-            const rightExplanation = helpfulDirectionIsHigh ? row.highExplanation : row.lowExplanation
-            return (
-              <div
-                key={row.key}
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "minmax(180px, 220px) minmax(220px, 1fr) minmax(340px, 1.3fr) minmax(220px, 1fr) 88px",
-                  gap: 12,
-                  alignItems: "center",
-                }}
-              >
-                <div style={{ display: "grid", gap: 2 }}>
-                  <div style={{ fontWeight: 700 }}>{row.label}</div>
-                  <div style={{ color: "#56635a", fontSize: 12 }}>
-                    {row.group} • delta {formatWeightDelta(row.delta)}
-                  </div>
-                </div>
-                <div
-                  style={{
-                    color: "#56635a",
-                    fontSize: 12,
-                    lineHeight: 1.35,
-                    textAlign: "right",
-                  }}
-                >
-                  {leftExplanation}
-                </div>
-                <div
-                  style={{
-                    position: "relative",
-                    height: 22,
-                    borderRadius: 999,
-                    background: "#f3f6f3",
-                    overflow: "hidden",
-                  }}
-                >
-                  <div
-                    style={{
-                      position: "absolute",
-                      inset: "0 auto 0 50%",
-                      width: 1,
-                      background: "#bcc8bc",
-                    }}
-                  />
-                  <div
-                    style={{
-                      position: "absolute",
-                      top: 3,
-                      bottom: 3,
-                      left: isPositive ? "50%" : `calc(50% - ${barWidth})`,
-                      width: barWidth,
-                      borderRadius: 999,
-                      background: isPositive ? "#2a7f3b" : "#b63b3b",
-                    }}
-                  />
-                </div>
-                <div
-                  style={{
-                    color: "#56635a",
-                    fontSize: 12,
-                    lineHeight: 1.35,
-                  }}
-                >
-                  {rightExplanation}
-                </div>
-                <div
-                  style={{
-                    textAlign: "right",
-                    fontVariantNumeric: "tabular-nums",
-                    fontWeight: 700,
-                    color: isPositive ? "#2a7f3b" : "#9b1c1c",
-                  }}
-                >
-                  {formatImpactMetric(metric, row.value)}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      ) : (
-        <div style={{ color: "#56635a" }}>Run lever importance analysis to populate the graph.</div>
-      )}
-    </div>
-  )
-}
-
-function LeverImpactComparisonChart({
-  rows,
-  title,
-}: {
-  rows: LeverImpactChartRow[]
-  title: string
-}) {
-  const metrics = Object.entries(LEVER_IMPACT_METRICS) as Array<
-    [LeverImpactMetricKey, (typeof LEVER_IMPACT_METRICS)[LeverImpactMetricKey]]
-  >
-  const metricColors: Record<LeverImpactMetricKey, string> = {
-    passengerDrop: "#2a7f3b",
-    scoreDrop: "#1d5d76",
-    winRateDrop: "#8a5a00",
-  }
-  const chartRows = rows
-    .filter(row => metrics.some(([metric]) => row[metric] !== null))
-    .sort(
-      (rowA, rowB) =>
-        Math.abs(rowB.passengerDrop ?? 0) - Math.abs(rowA.passengerDrop ?? 0) ||
-        (rowB.passengerDrop ?? Number.NEGATIVE_INFINITY) - (rowA.passengerDrop ?? Number.NEGATIVE_INFINITY),
-    )
-  const maxMagnitudeByMetric = Object.fromEntries(
-    metrics.map(([metric]) => [
-      metric,
-      Math.max(
-        1,
-        ...chartRows.map(row => Math.abs(row[metric] ?? 0)),
-      ),
-    ]),
-  ) as Record<LeverImpactMetricKey, number>
-
-  return (
-    <div
-      style={{
-        border: "1px solid #d8dfd5",
-        borderRadius: 12,
-        background: "#ffffff",
-        padding: 14,
-        display: "grid",
-        gap: 12,
-      }}
-    >
-      <div style={{ display: "grid", gap: 6 }}>
-        <strong>{title}</strong>
-        <div style={{ color: "#56635a", lineHeight: 1.45 }}>
-          Each row shows how that saved bot’s trained value affects passengers, score, and win rate. Green bars help;
-          bars extending left of center hurt.
-        </div>
-      </div>
-
-      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", color: "#56635a", fontSize: 12 }}>
-        {metrics.map(([metric, config]) => (
-          <div key={metric} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <span
-              style={{
-                width: 10,
-                height: 10,
-                borderRadius: 999,
-                background: metricColors[metric],
-                display: "inline-block",
-              }}
-            />
-            <span>{config.label}</span>
-          </div>
-        ))}
-      </div>
-
-      {chartRows.length > 0 ? (
-        <div style={{ display: "grid", gap: 8, maxHeight: 620, overflowY: "auto", paddingRight: 4 }}>
-          {chartRows.map(row => (
-            (() => {
-              const explanationValue = row.passengerDrop ?? 0
-              const helpfulDirectionIsHigh =
-                explanationValue === 0 ? row.delta >= 0 : row.delta * explanationValue >= 0
-              const leftExplanation = helpfulDirectionIsHigh ? row.lowExplanation : row.highExplanation
-              const rightExplanation = helpfulDirectionIsHigh ? row.highExplanation : row.lowExplanation
-
-              return (
-                <div
-                  key={row.key}
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns:
-                      "minmax(180px, 220px) minmax(220px, 1fr) minmax(360px, 1.2fr) minmax(220px, 1fr) 240px",
-                    gap: 12,
-                    alignItems: "center",
-                    padding: "6px 0",
-                  }}
-                >
-                  <div style={{ display: "grid", gap: 2 }}>
-                    <div style={{ fontWeight: 700 }}>{row.label}</div>
-                    <div style={{ color: "#56635a", fontSize: 12, lineHeight: 1.35 }}>{row.description}</div>
-                    <div style={{ color: "#56635a", fontSize: 12 }}>
-                      {row.group} • delta {formatWeightDelta(row.delta)}
-                    </div>
-                  </div>
-
-                  <div
-                    style={{
-                      color: "#56635a",
-                      fontSize: 12,
-                      lineHeight: 1.35,
-                      textAlign: "right",
-                    }}
-                  >
-                    {leftExplanation}
-                  </div>
-
-                  <div
-                    style={{
-                      position: "relative",
-                      height: 48,
-                      borderRadius: 12,
-                      background: "#f3f6f3",
-                      overflow: "hidden",
-                    }}
-                  >
-                    <div
-                      style={{
-                        position: "absolute",
-                        inset: "0 auto 0 50%",
-                        width: 1,
-                        background: "#bcc8bc",
-                      }}
-                    />
-                    {metrics.map(([metric], index) => {
-                      const value = row[metric]
-                      if (value === null) {
-                        return null
-                      }
-
-                      const barWidth = `${(Math.abs(value) / maxMagnitudeByMetric[metric]) * 50}%`
-                      const isPositive = value >= 0
-
-                      return (
-                        <div
-                          key={metric}
-                          style={{
-                            position: "absolute",
-                            top: 7 + index * 13,
-                            height: 10,
-                            left: isPositive ? "50%" : `calc(50% - ${barWidth})`,
-                            width: barWidth,
-                            borderRadius: 999,
-                            background: metricColors[metric],
-                            opacity: isPositive ? 1 : 0.55,
-                          }}
-                        />
-                      )
-                    })}
-                  </div>
-
-                  <div
-                    style={{
-                      color: "#56635a",
-                      fontSize: 12,
-                      lineHeight: 1.35,
-                    }}
-                  >
-                    {rightExplanation}
-                  </div>
-
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-                      gap: 8,
-                      fontSize: 12,
-                      fontVariantNumeric: "tabular-nums",
-                    }}
-                  >
-                    {metrics.map(([metric, config]) => {
-                      const value = row[metric]
-                      return (
-                        <div key={metric} style={{ display: "grid", gap: 2 }}>
-                          <div style={{ color: "#56635a" }}>{config.label}</div>
-                          <div
-                            style={{
-                              fontWeight: 700,
-                              color: value === null ? "#56635a" : value >= 0 ? metricColors[metric] : "#9b1c1c",
-                            }}
-                          >
-                            {value === null ? "—" : formatImpactMetric(metric, value)}
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                </div>
-              )
-            })()
-          ))}
-        </div>
-      ) : (
-        <div style={{ color: "#56635a" }}>Run lever importance analysis to populate the graph.</div>
-      )}
-    </div>
-  )
-}
-
 export default function TrainingApp() {
   const defaultServerUrl = getDefaultSessionServerUrl()
-  const [results, setResults] = useState<ScriptedBotTrainingResults | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [refreshNonce, setRefreshNonce] = useState(0)
-  const [trainingStatus, setTrainingStatus] = useState<TrainingStatus | null>(null)
   const [autotuneControlStatus, setAutotuneControlStatus] = useState<AutotuneControlStatus | null>(null)
   const [trainingPresets, setTrainingPresets] = useState<TrainingPresetStatus | null>(null)
   const [trainingImportance, setTrainingImportance] = useState<TrainingImportanceStatus | null>(null)
   const [modeComparisons, setModeComparisons] = useState<ModeComparisonEntry[]>([])
+  const [championFiles, setChampionFiles] = useState<ChampionFileEntry[]>([])
   const [autotuneStatus, setAutotuneStatus] = useState<AutotuneStatus | null>(null)
   const [autotuneHistory, setAutotuneHistory] = useState<AutotuneHistory | null>(null)
-  const [trainingRequest, setTrainingRequest] = useState<TrainingStartRequest>({
-    iterations: 10,
-    gamesPerCandidate: 8,
-    playerCount: 4,
-    baseSeed: 1,
-    candidatesPerIteration: 6,
-    mutationSeed: 1,
-    maxSteps: 2000,
-  })
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [confirmReset, setConfirmReset] = useState(false)
   const [promotingAutotuneRunKey, setPromotingAutotuneRunKey] = useState<string | null>(null)
-  const importanceRequestedForRunRef = useRef<string | null>(null)
-  const [selectedImpactMetric, setSelectedImpactMetric] = useState<LeverImpactMetricKey>("passengerDrop")
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [selectedModeImpactPlayerCount, setSelectedModeImpactPlayerCount] = useState<TrainingPlayerCount>(4)
+
+  const currentRunStartedAt = autotuneStatus?.currentRun?.startedAt ?? null
+  useEffect(() => {
+    if (!currentRunStartedAt) { setElapsedSeconds(0); return }
+    const update = () => setElapsedSeconds(Math.floor((Date.now() - new Date(currentRunStartedAt).getTime()) / 1000))
+    update()
+    const id = setInterval(update, 1000)
+    return () => clearInterval(id)
+  }, [currentRunStartedAt])
 
   useEffect(() => {
     let cancelled = false
@@ -1609,19 +748,14 @@ export default function TrainingApp() {
     async function reloadData() {
       const tick = `${Date.now()}-${refreshNonce}`
       const [
-        resultsResponse,
-        statusResponse,
         autotuneControlResponse,
         presetsResponse,
         importanceResponse,
         autotuneResponse,
         autotuneHistoryResponse,
         comparisonsResponse,
+        championFilesResponse,
       ] = await Promise.allSettled([
-        fetch(`/training-results/latest.json?tick=${tick}`, {
-          cache: "no-store",
-        }),
-        fetchTrainingStatus(defaultServerUrl),
         fetchAutotuneStatus(defaultServerUrl),
         fetchTrainingPresets(defaultServerUrl),
         fetchTrainingImportance(defaultServerUrl),
@@ -1634,7 +768,15 @@ export default function TrainingApp() {
               `/training-results/latest-${playerCount}p.json?tick=${tick}`,
             ),
             importance: await fetchOptionalJson<ScriptedBotLeverImportanceResults>(
-              `/training-results/latest-${playerCount}p-importance.json?tick=${tick}`,
+              `/training-results/champion-${playerCount}p-importance.json?tick=${tick}`,
+            ),
+          })),
+        ),
+        Promise.all(
+          TRAINING_PLAYER_COUNT_OPTIONS.map(async playerCount => ({
+            playerCount,
+            data: await fetchOptionalJson<ChampionFileEntry["data"]>(
+              `/training-results/champion-${playerCount}p.json?tick=${tick}`,
             ),
           })),
         ),
@@ -1644,14 +786,15 @@ export default function TrainingApp() {
         return
       }
 
-      if (statusResponse.status === "fulfilled") {
-        setTrainingStatus(statusResponse.value)
-      } else {
-        setError(statusResponse.reason instanceof Error ? statusResponse.reason.message : "Could not reach the training endpoint.")
-      }
-
       if (autotuneControlResponse.status === "fulfilled") {
         setAutotuneControlStatus(autotuneControlResponse.value)
+        setError(null)
+      } else {
+        setError(
+          autotuneControlResponse.reason instanceof Error
+            ? autotuneControlResponse.reason.message
+            : "Could not reach the training endpoint.",
+        )
       }
 
       if (presetsResponse.status === "fulfilled") {
@@ -1678,31 +821,13 @@ export default function TrainingApp() {
               entry.results?.config.playerCount === entry.playerCount
                 ? entry.results
                 : null,
-            importance:
-              entry.results &&
-              entry.results.config.playerCount === entry.playerCount &&
-              entry.importance?.sourceTrainingGeneratedAt === entry.results.generatedAt
-                ? entry.importance
-                : null,
+            importance: entry.importance ?? null,
           })),
         )
       }
 
-      if (resultsResponse.status === "fulfilled") {
-        if (resultsResponse.value.ok) {
-          const nextResults = (await resultsResponse.value.json()) as ScriptedBotTrainingResults
-          if (!cancelled) {
-            setResults(nextResults)
-            if (statusResponse.status === "fulfilled") {
-              setError(null)
-            }
-          }
-          return
-        }
-      }
-
-      if (statusResponse.status === "fulfilled") {
-        setError("No training results yet. Start a run below or use `npm run train:bots`.")
+      if (championFilesResponse.status === "fulfilled") {
+        setChampionFiles(championFilesResponse.value)
       }
     }
 
@@ -1716,77 +841,6 @@ export default function TrainingApp() {
       window.clearInterval(intervalId)
     }
   }, [defaultServerUrl, refreshNonce])
-
-  useEffect(() => {
-    if (!results) {
-      return
-    }
-
-    if (trainingStatus?.isRunning) {
-      return
-    }
-
-    if (trainingImportance?.isRunning) {
-      return
-    }
-
-    if (trainingImportance?.result?.sourceTrainingGeneratedAt === results.generatedAt) {
-      return
-    }
-
-    if (importanceRequestedForRunRef.current === results.generatedAt) {
-      return
-    }
-
-    const targetRun = results.generatedAt
-    importanceRequestedForRunRef.current = targetRun
-    void startTrainingImportance(defaultServerUrl)
-      .then(nextImportance => {
-        if (importanceRequestedForRunRef.current === targetRun) {
-          importanceRequestedForRunRef.current = null
-        }
-        setTrainingImportance(nextImportance)
-        setError(null)
-      })
-      .catch(error => {
-        window.setTimeout(() => {
-          if (importanceRequestedForRunRef.current === targetRun) {
-            importanceRequestedForRunRef.current = null
-          }
-        }, REFRESH_MS)
-        setError(
-          error instanceof Error
-            ? error.message
-            : "Could not start lever importance analysis.",
-        )
-      })
-  }, [defaultServerUrl, results, trainingImportance, trainingStatus?.isRunning])
-
-  async function handleStartTraining() {
-    setIsSubmitting(true)
-    try {
-      const nextStatus = await startTraining(defaultServerUrl, trainingRequest)
-      setTrainingStatus(nextStatus)
-      setError(null)
-    } catch (startError) {
-      setError(startError instanceof Error ? startError.message : "Could not start training.")
-    } finally {
-      setIsSubmitting(false)
-    }
-  }
-
-  async function handleCancelTraining() {
-    setIsSubmitting(true)
-    try {
-      const nextStatus = await cancelTraining(defaultServerUrl)
-      setTrainingStatus(nextStatus)
-      setError(null)
-    } catch (cancelError) {
-      setError(cancelError instanceof Error ? cancelError.message : "Could not cancel training.")
-    } finally {
-      setIsSubmitting(false)
-    }
-  }
 
   async function handleStartAutotune() {
     setIsSubmitting(true)
@@ -1828,6 +882,20 @@ export default function TrainingApp() {
     }
   }
 
+  async function handleResetAutotuneData() {
+    setIsSubmitting(true)
+    setConfirmReset(false)
+    try {
+      await resetAutotuneData(defaultServerUrl)
+      setRefreshNonce(current => current + 1)
+      setError(null)
+    } catch (resetError) {
+      setError(resetError instanceof Error ? resetError.message : "Could not reset autotune data.")
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
   async function handlePromoteAutotuneRun(target: { playerCount: number; generatedAt: string }) {
     const promotionKey = `${target.playerCount}-${target.generatedAt}`
     setPromotingAutotuneRunKey(promotionKey)
@@ -1847,87 +915,36 @@ export default function TrainingApp() {
     }
   }
 
-  function handleTrainingRequestChange(
-    field: keyof TrainingStartRequest,
-    value: number,
-  ) {
-    setTrainingRequest(current => ({
-      ...current,
-      [field]: value,
-    }))
-  }
-
-  const scoreSeries = useMemo(
-    () =>
-      results
-        ? buildMetricSeries(results.baseline.score, results.history, entry => entry.best.score)
-        : [],
-    [results],
+  const latestManagedTrainingResults = useMemo(
+    () => modeComparisons.find(entry => entry.playerCount === 4)?.results ?? null,
+    [modeComparisons],
   )
-  const passengerSeries = useMemo(
-    () =>
-      results
-        ? buildMetricSeries(
-            results.baseline.averagePassengers,
-            results.history,
-            entry => entry.best.averagePassengers,
-          )
-        : [],
-    [results],
-  )
-  const passengerMarginSeries = useMemo(
-    () =>
-      results
-        ? buildMetricSeries(
-            results.baseline.averagePassengerMargin,
-            results.history,
-            entry => entry.best.averagePassengerMargin,
-          )
-        : [],
-    [results],
-  )
-  const winRateSeries = useMemo(
-    () =>
-      results
-        ? buildMetricSeries(results.baseline.winRate, results.history, entry => entry.best.winRate)
-        : [],
-    [results],
-  )
-  const timeoutSeries = useMemo(
-    () =>
-      results
-        ? buildMetricSeries(
-            results.baseline.timeoutRate,
-            results.history,
-            entry => entry.best.timeoutRate,
-          )
-        : [],
-    [results],
-  )
-  const weightRows = useMemo(() => {
-    const currentImportance =
-      trainingImportance?.result && trainingImportance.result.sourceTrainingGeneratedAt === results?.generatedAt
-        ? trainingImportance.result
-        : null
-
-    return buildLeverImpactRows(
-      results,
-      currentImportance,
-    )
-  }, [results, trainingImportance])
-  const selectedModeComparison = useMemo(
-    () =>
-      modeComparisons.find(entry => entry.playerCount === selectedModeImpactPlayerCount) ?? {
-        playerCount: selectedModeImpactPlayerCount,
-        results: null,
-        importance: null,
-      },
-    [modeComparisons, selectedModeImpactPlayerCount],
-  )
+  const selectedModeComparison = useMemo(() => {
+    const entry = modeComparisons.find(e => e.playerCount === selectedModeImpactPlayerCount)
+    const champion = championFiles.find(e => e.playerCount === selectedModeImpactPlayerCount)?.data ?? null
+    const results = champion?.training ?? entry?.results ?? null
+    const importance =
+      entry?.importance ??
+      (trainingImportance?.result?.sourceTrainingGeneratedAt === results?.generatedAt
+        ? (trainingImportance?.result ?? null)
+        : null)
+    return { playerCount: selectedModeImpactPlayerCount, results, importance, champion }
+  }, [championFiles, modeComparisons, selectedModeImpactPlayerCount, trainingImportance])
   const selectedModeImpactRows = useMemo(
-    () => buildLeverImpactRows(selectedModeComparison.results, selectedModeComparison.importance),
+    () => buildLeverImpactRows(selectedModeComparison.results, selectedModeComparison.importance, { skipTimestampCheck: true }),
     [selectedModeComparison],
   )
+  const allChampionsLeverRows = useMemo(() => {
+    const result: Partial<Record<number, ReturnType<typeof buildLeverImpactRows>>> = {}
+    for (const pc of TRAINING_PLAYER_COUNT_OPTIONS) {
+      const champion = championFiles.find(e => e.playerCount === pc)?.data ?? null
+      const importance = modeComparisons.find(e => e.playerCount === pc)?.importance ?? null
+      if (champion?.training) {
+        result[pc] = buildLeverImpactRows(champion.training, importance, { skipTimestampCheck: true })
+      }
+    }
+    return result
+  }, [championFiles, modeComparisons])
   const effectiveAutotuneHistory = useMemo(
     () => mergeAutotuneHistories(autotuneHistory, buildAutotuneFallbackHistory(autotuneStatus)),
     [autotuneHistory, autotuneStatus],
@@ -1986,7 +1003,7 @@ export default function TrainingApp() {
   )
   const profitableCityLinks = useMemo(() => buildEstimatedCityLinkProfitabilityRows(20), [])
   const managedAveragePreset = trainingPresets?.presets["bot-avg"] ?? null
-  const managedStickbugPresets = ([2, 3, 4] as const).map(playerCount => ({
+  const managedStickbugPresets = ([1, 2, 3, 4] as const).map(playerCount => ({
     playerCount,
     preset: trainingPresets?.presets[`bot-best-${playerCount}p`] ?? null,
   }))
@@ -2010,7 +1027,13 @@ export default function TrainingApp() {
     [autotuneStatus],
   )
   const previousChampionBenchmarkByPlayerCount = useMemo(() => {
-    return new Map<TrainingPlayerCount, ScriptedBotWeightEvaluationSummary | null>(
+    type StoredBenchmark = {
+      score: number
+      winRate: number
+      averagePassengers: number
+      averagePassengerMargin: number
+    }
+    return new Map<TrainingPlayerCount, StoredBenchmark | null>(
       currentChampionEntries.map(entry => {
         const previousChampion = (effectiveAutotuneHistory?.championPromotions ?? [])
           .filter(promotion => promotion.playerCount === entry.playerCount && promotion.cycle < entry.champion.cycle)
@@ -2020,31 +1043,45 @@ export default function TrainingApp() {
           return [entry.playerCount, null] as const
         }
 
-        const previousChampionRun = (effectiveAutotuneHistory?.runs ?? []).find(
-          run => run.playerCount === entry.playerCount && run.generatedAt === previousChampion.generatedAt,
-        )
-
-        if (!previousChampionRun) {
-          return [entry.playerCount, null] as const
-        }
-
-        const benchmark = summarizeScriptedBotWeightEvaluation(
-          evaluateScriptedBotWeights({
-            seeds: createTrainingSeeds(9000 + entry.playerCount * 100, getBenchmarkGameCount(entry.playerCount)),
-            candidateWeights: previousChampionRun.final.weights,
-            playerCount: entry.playerCount,
-            maxSteps: 2500,
-          }),
-        )
-
-        return [entry.playerCount, benchmark] as const
+        return [
+          entry.playerCount,
+          {
+            score: previousChampion.benchmarkScore,
+            winRate: previousChampion.winRate,
+            averagePassengers: previousChampion.averagePassengers,
+            averagePassengerMargin: previousChampion.averagePassengerMargin,
+          },
+        ] as const
       }),
     )
   }, [currentChampionEntries, effectiveAutotuneHistory])
-  const hasCurrentImportance =
-    trainingImportance?.result?.sourceTrainingGeneratedAt === results?.generatedAt
+  function buildAutotuneQueue(count: number) {
+    if (!autotuneStatus) return []
+    const PLAYER_COUNTS = [4, 3, 2, 1] as const
+    const mc = { ...autotuneStatus.modeCycles }
+    // If a run is active, advance past it so queue shows what comes AFTER
+    let c = autotuneStatus.cycle
+    if (autotuneStatus.currentRun) {
+      c = autotuneStatus.currentRun.cycle
+      const key = `${autotuneStatus.currentRun.playerCount}p` as `${TrainingPlayerCount}p`
+      mc[key] = autotuneStatus.currentRun.modeCycle
+    }
+    const items: Array<{ cycle: number; playerCount: TrainingPlayerCount; modeCycle: number; profile: "refine" | "explore" | "deep"; startedFromScratch: boolean }> = []
+    for (let i = 0; i < count; i++) {
+      c += 1
+      const playerCount = PLAYER_COUNTS[(c - 1) % PLAYER_COUNTS.length]
+      const key = `${playerCount}p` as `${TrainingPlayerCount}p`
+      mc[key] = (mc[key] ?? 0) + 1
+      const modeCycle = mc[key]
+      const hasChampion = !!autotuneStatus.champions?.[key]
+      const startedFromScratch = !hasChampion || modeCycle % 5 === 0
+      const profile: "refine" | "explore" | "deep" =
+        startedFromScratch || modeCycle % 5 === 0 ? "deep" : modeCycle % 2 === 0 ? "explore" : "refine"
+      items.push({ cycle: c, playerCount, modeCycle, profile, startedFromScratch })
+    }
+    return items
+  }
   const canStartAutotune =
-    !trainingStatus?.isRunning &&
     !autotuneControlStatus?.isRunning &&
     autotuneControlStatus?.status !== "stopping" &&
     autotuneControlStatus?.status !== "unknown" &&
@@ -2060,17 +1097,13 @@ export default function TrainingApp() {
       showPromotionAction?: boolean
     },
   ) {
-    const canPromoteStickbug = run.playerCount === 2 || run.playerCount === 3 || run.playerCount === 4
+    const canPromoteStickbug = run.playerCount >= 1 && run.playerCount <= 4
     const isPromotingThisRun = promotingAutotuneRunKey === `${run.playerCount}-${run.generatedAt}`
     const previousChampion = (effectiveAutotuneHistory?.championPromotions ?? [])
       .filter(promotion => promotion.playerCount === run.playerCount && promotion.cycle < run.cycle)
       .sort((runA, runB) => runB.cycle - runA.cycle)[0] ?? null
     const promotedStickbugVariant = canPromoteStickbug
-      ? run.playerCount === 2
-        ? trainingPresets?.presets["bot-best-2p"]
-        : run.playerCount === 3
-          ? trainingPresets?.presets["bot-best-3p"]
-          : trainingPresets?.presets["bot-best-4p"]
+      ? trainingPresets?.presets[`bot-best-${run.playerCount}p` as `bot-best-${1 | 2 | 3 | 4}p`]
       : null
     const isAlreadyPromoted = promotedStickbugVariant?.sourceTrainingGeneratedAt === run.generatedAt
     const passengerDelta = previousChampion ? run.final.averagePassengers - previousChampion.averagePassengers : null
@@ -2098,7 +1131,7 @@ export default function TrainingApp() {
           </span>
         </div>
         <div style={{ color: "#56635a", fontSize: 13 }}>
-          {run.startedFromScratch ? "Started from scratch" : "Warm-started from champion"} • opponents: {run.opponent}
+          {run.startedFromScratch ? "Started from scratch" : "Warm-started from champion"} • opponents: {run.opponent}{run.durationMs != null ? ` • ${formatDuration(run.durationMs)}` : ""}
         </div>
         <div
           style={{
@@ -2177,15 +1210,11 @@ export default function TrainingApp() {
     playerCount: TrainingPlayerCount
     champion: NonNullable<NonNullable<AutotuneStatus["champions"]>[`${TrainingPlayerCount}p`]>
   }) {
-    const canPromoteStickbug = entry.playerCount === 2 || entry.playerCount === 3 || entry.playerCount === 4
+    const canPromoteStickbug = entry.playerCount >= 1 && entry.playerCount <= 4
     const generatedAt = entry.champion.training.generatedAt
     const isPromotingThisRun = promotingAutotuneRunKey === `${entry.playerCount}-${generatedAt}`
     const promotedStickbugVariant = canPromoteStickbug
-      ? entry.playerCount === 2
-        ? trainingPresets?.presets["bot-best-2p"]
-        : entry.playerCount === 3
-          ? trainingPresets?.presets["bot-best-3p"]
-          : trainingPresets?.presets["bot-best-4p"]
+      ? trainingPresets?.presets[`bot-best-${entry.playerCount}p` as `bot-best-${1 | 2 | 3 | 4}p`]
       : null
     const isAlreadyPromoted = promotedStickbugVariant?.sourceTrainingGeneratedAt === generatedAt
     const previousChampionBenchmark = previousChampionBenchmarkByPlayerCount.get(entry.playerCount) ?? null
@@ -2348,6 +1377,20 @@ export default function TrainingApp() {
                 Refresh now
               </button>
               <a
+                href="/manual-training.html"
+                style={{
+                  borderRadius: 999,
+                  border: "1px solid #c7d0c4",
+                  background: "#ffffff",
+                  color: "#223024",
+                  padding: "10px 16px",
+                  fontWeight: 700,
+                  textDecoration: "none",
+                }}
+              >
+                Manual training →
+              </a>
+              <a
                 href="/"
                 style={{
                   borderRadius: 999,
@@ -2361,118 +1404,68 @@ export default function TrainingApp() {
               >
                 Back to game
               </a>
-            </div>
-            <details
-              id="manual-training-dropdown"
-              open={trainingStatus?.isRunning ? true : undefined}
-              style={{
-                width: "min(100%, 320px)",
-                border: "1px solid #d8dfd5",
-                borderRadius: 10,
-                padding: 12,
-                background: "#ffffff",
-              }}
-            >
-              <summary
-                style={{
-                  cursor: "pointer",
-                  fontWeight: 700,
-                  color: "#223024",
-                  listStylePosition: "inside",
-                }}
-              >
-                Manual training
-              </summary>
-              <div
-                style={{
-                  display: "grid",
-                  gap: 10,
-                  marginTop: 12,
-                }}
-              >
-                <div style={{ color: "#56635a", lineHeight: 1.45, fontSize: 13 }}>
-                  This page talks to the local session server at <code>{defaultServerUrl}</code>. Manual runs write{" "}
-                  <code>public/training-results/latest.json</code>.
-                </div>
-                <div
+              {confirmReset ? (
+                <>
+                  <span style={{ alignSelf: "center", color: "#9b1c1c", fontWeight: 700, fontSize: 13 }}>
+                    Delete all training history, cycles, and champion records? Promoted Stickbug models will not be affected.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void handleResetAutotuneData()}
+                    disabled={isSubmitting}
+                    style={{
+                      borderRadius: 999,
+                      border: "1px solid #9b1c1c",
+                      background: "#9b1c1c",
+                      color: "#fff",
+                      padding: "10px 16px",
+                      fontWeight: 700,
+                      cursor: isSubmitting ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    Yes, reset
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmReset(false)}
+                    style={{
+                      borderRadius: 999,
+                      border: "1px solid #c7d0c4",
+                      background: "#ffffff",
+                      color: "#223024",
+                      padding: "10px 16px",
+                      fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmReset(true)}
+                  disabled={isSubmitting || !!autotuneControlStatus?.isRunning}
                   style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-                    gap: 10,
+                    borderRadius: 999,
+                    border: "1px solid #c7d0c4",
+                    background: "#ffffff",
+                    color:
+                      isSubmitting || autotuneControlStatus?.isRunning
+                        ? "#aaa"
+                        : "#9b1c1c",
+                    padding: "10px 16px",
+                    fontWeight: 700,
+                    cursor:
+                      isSubmitting || autotuneControlStatus?.isRunning
+                        ? "not-allowed"
+                        : "pointer",
                   }}
                 >
-                  {([
-                    ["iterations", "Iterations"],
-                    ["gamesPerCandidate", "Games / candidate"],
-                    ["playerCount", "Players / game"],
-                    ["baseSeed", "Base seed"],
-                    ["candidatesPerIteration", "Candidates / iteration"],
-                    ["mutationSeed", "Mutation seed"],
-                    ["maxSteps", "Max steps"],
-                  ] as const).map(([field, label]) => (
-                    <label key={field} style={{ display: "grid", gap: 4, fontSize: 13, color: "#56635a" }}>
-                      <span>{label}</span>
-                      <input
-                        type="number"
-                        min={1}
-                        step={1}
-                        value={trainingRequest[field]}
-                        onChange={event =>
-                          handleTrainingRequestChange(
-                            field,
-                            field === "playerCount"
-                              ? Math.min(4, Math.max(1, Number(event.target.value) || 4))
-                              : Math.max(1, Number(event.target.value) || 1),
-                          )
-                        }
-                        disabled={trainingStatus?.isRunning || autotuneControlStatus?.isRunning || isSubmitting}
-                        style={{
-                          borderRadius: 8,
-                          border: "1px solid #c7d0c4",
-                          padding: "9px 10px",
-                          fontSize: 14,
-                          color: "#223024",
-                        }}
-                      />
-                    </label>
-                  ))}
-                </div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button
-                    type="button"
-                    onClick={handleStartTraining}
-                    disabled={trainingStatus?.isRunning || autotuneControlStatus?.isRunning || isSubmitting}
-                    style={{
-                      borderRadius: 999,
-                      border: "1px solid #223024",
-                      background: trainingStatus?.isRunning || autotuneControlStatus?.isRunning ? "#c7d0c4" : "#223024",
-                      color: "#ffffff",
-                      padding: "10px 16px",
-                      fontWeight: 700,
-                      cursor: trainingStatus?.isRunning || autotuneControlStatus?.isRunning ? "not-allowed" : "pointer",
-                    }}
-                  >
-                    Start training
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleCancelTraining}
-                    disabled={!trainingStatus?.isRunning || isSubmitting}
-                    style={{
-                      borderRadius: 999,
-                      border: "1px solid #c97a7a",
-                      background: trainingStatus?.isRunning ? "#fff4f4" : "#f8faf8",
-                      color: "#8a1f1f",
-                      padding: "10px 16px",
-                      fontWeight: 700,
-                      cursor: trainingStatus?.isRunning ? "pointer" : "not-allowed",
-                    }}
-                  >
-                    Cancel training
-                  </button>
-                </div>
-              </div>
-            </details>
+                  Reset training data
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
@@ -2666,8 +1659,8 @@ export default function TrainingApp() {
                 : autotuneControlStatus?.status === "unknown"
                   ? "The session server found an autotune status file that still shows a running cycle. Use Force stop / clear lock if you want to clear it immediately."
                   : autotuneControlStatus?.isRunning
-                    ? "Autotune is running, so one-shot training controls are locked. Use Force stop / clear lock for an immediate emergency stop."
-                    : "Use autotune for continuous 2p/3p/4p training, or expand Manual training for a one-shot run."}
+                    ? "Autotune is running. Use Force stop / clear lock for an immediate emergency stop."
+                    : "Use this page for continuous 1p/2p/3p/4p tuning, or open Manual training for a one-shot run."}
             </div>
             {error && <div style={{ color: "#9b1c1c", fontWeight: 700 }}>{error}</div>}
 
@@ -2690,78 +1683,6 @@ export default function TrainingApp() {
             </div>
           </div>
 
-          {trainingStatus?.isRunning ? (
-            <div
-              id="manual-training-status-div"
-              style={{
-                border: "1px solid #d8dfd5",
-                borderRadius: 12,
-                padding: 14,
-                background: "#ffffff",
-                display: "grid",
-                gap: 10,
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-                <strong>Run status</strong>
-                <span style={{ fontWeight: 700, color: "#24613a" }}>{trainingStatus.status ?? "unavailable"}</span>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
-                <div>
-                  <div style={{ color: "#56635a", fontSize: 13 }}>PID</div>
-                  <div>{trainingStatus.pid ?? "—"}</div>
-                </div>
-                <div>
-                  <div style={{ color: "#56635a", fontSize: 13 }}>Started</div>
-                  <div>{trainingStatus.startedAt ? new Date(trainingStatus.startedAt).toLocaleString() : "—"}</div>
-                </div>
-                <div>
-                  <div style={{ color: "#56635a", fontSize: 13 }}>Finished</div>
-                  <div>{trainingStatus.finishedAt ? new Date(trainingStatus.finishedAt).toLocaleString() : "—"}</div>
-                </div>
-                <div>
-                  <div style={{ color: "#56635a", fontSize: 13 }}>Exit</div>
-                  <div>
-                    {trainingStatus.exitCode ?? "—"}
-                    {trainingStatus.signal ? ` (${trainingStatus.signal})` : ""}
-                  </div>
-                </div>
-              </div>
-              <div style={{ color: "#56635a", fontSize: 13 }}>
-                Latest result file: <code>{trainingStatus.outputPath ?? "public/training-results/latest.json"}</code>
-              </div>
-              <IterationProgressBar
-                idPrefix="manual-training-progress-panel"
-                label="Training iteration progress"
-                progress={trainingStatus.progress ?? null}
-                color="#24613a"
-              />
-              <div
-                id="training-run-log-panel"
-                style={{
-                  borderRadius: 10,
-                  border: "1px solid #d8dfd5",
-                  background: "#f5f8f5",
-                  padding: 12,
-                  minHeight: 180,
-                  maxHeight: 260,
-                  overflow: "auto",
-                  fontFamily: "ui-monospace, SFMono-Regular, monospace",
-                  fontSize: 12,
-                  whiteSpace: "pre-wrap",
-                }}
-              >
-                {(trainingStatus.logs?.length ?? 0) > 0
-                  ? trainingStatus.logs.join("\n")
-                  : "No training logs yet."}
-              </div>
-              {results && (
-                <div style={{ color: "#56635a", fontSize: 13 }}>
-                  Last updated {new Date(results.generatedAt).toLocaleString()} • maxSteps {results.config.maxSteps}
-                </div>
-              )}
-            </div>
-          ) : null}
         </div>
 
         <div
@@ -2873,8 +1794,42 @@ export default function TrainingApp() {
                   Mode cycle {autotuneStatus.currentRun.modeCycle} • {autotuneStatus.currentRun.startedFromScratch ? "starting from scratch" : "warm-starting from champion"} • opponents: {autotuneStatus.currentRun.opponent}
                 </div>
                 <div style={{ color: "#56635a", fontSize: 13 }}>
-                  Started {new Date(autotuneStatus.currentRun.startedAt).toLocaleString()}
+                  Started {new Date(autotuneStatus.currentRun.startedAt).toLocaleString()} • running for <strong>{formatDuration(elapsedSeconds * 1000)}</strong>
                 </div>
+                {(() => {
+                  const currentPc = autotuneStatus.currentRun.playerCount
+                  const modeImportance = modeComparisons.find(e => e.playerCount === currentPc)?.importance
+                  const champion = autotuneStatus.champions?.[`${currentPc}p`]
+                  if (!modeImportance || !champion) return null
+                  const topLevers = modeImportance.rows
+                    .filter(row => row.passengerDrop > 0)
+                    .slice(0, 6)
+                  if (topLevers.length === 0) return null
+                  return (
+                    <div style={{ marginTop: 6, display: "grid", gap: 4 }}>
+                      <div style={{ color: "#56635a", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                        Top levers being optimized ({currentPc}p importance)
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: "2px 10px", fontSize: 12, alignItems: "center" }}>
+                        <span style={{ color: "#888", fontSize: 11 }}>Lever</span>
+                        <span style={{ color: "#888", fontSize: 11, textAlign: "right" }}>Champion</span>
+                        <span style={{ color: "#888", fontSize: 11, textAlign: "right" }}>Default</span>
+                        <span style={{ color: "#888", fontSize: 11, textAlign: "right" }}>Pax loss if removed</span>
+                        {topLevers.map(row => {
+                          const championVal = champion.training.final.weights?.[row.key] ?? row.finalValue
+                          return (
+                            <>
+                              <span key={`lk-${row.key}`} style={{ color: "#223024", fontFamily: "monospace", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.key}</span>
+                              <span key={`lv-${row.key}`} style={{ color: "#223024", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{formatMetric(championVal, 2)}</span>
+                              <span key={`lb-${row.key}`} style={{ color: "#56635a", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{formatMetric(row.baselineValue, 2)}</span>
+                              <span key={`ld-${row.key}`} style={{ color: "#9b1c1c", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>−{formatWholeNumber(row.passengerDrop)}</span>
+                            </>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )
+                })()}
               </>
             ) : (
               <div style={{ color: "#56635a", fontSize: 13 }}>
@@ -2882,6 +1837,96 @@ export default function TrainingApp() {
               </div>
             )}
           </div>
+
+          {autotuneStatus && (() => {
+            const PLAYER_COUNT_COLORS: Record<TrainingPlayerCount, { bg: string; border: string; text: string }> = {
+              1: { bg: "#eef4ff", border: "#6b9fe4", text: "#1e3a6e" },
+              2: { bg: "#f0faf0", border: "#5a9e6f", text: "#1a4d2b" },
+              3: { bg: "#fdf4e7", border: "#d4892a", text: "#6b3c0a" },
+              4: { bg: "#fdf0f8", border: "#b96bb0", text: "#5a1a55" },
+            }
+            const PROFILE_LABELS: Record<string, string> = { deep: "deep", explore: "expl", refine: "rfn" }
+
+            const lastRun = autotuneStatus.recentRuns.length > 0
+              ? [...autotuneStatus.recentRuns].sort((a, b) => b.cycle - a.cycle)[0]
+              : null
+            const currentRun = autotuneStatus.currentRun
+            const upcoming = buildAutotuneQueue(7)
+
+            const renderStop = (
+              item: { cycle: number; playerCount: TrainingPlayerCount; profile: string },
+              variant: "past" | "current" | "upcoming",
+              key: string,
+            ) => {
+              const colors = PLAYER_COUNT_COLORS[item.playerCount]
+              const isPast = variant === "past"
+              const isCurrent = variant === "current"
+              return (
+                <div
+                  key={key}
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    gap: 4,
+                    opacity: isPast ? 0.4 : 1,
+                    minWidth: isCurrent ? 72 : 56,
+                    flexShrink: 0,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: isCurrent ? 64 : 48,
+                      height: isCurrent ? 64 : 48,
+                      borderRadius: isCurrent ? 14 : 10,
+                      border: `${isCurrent ? 3 : 2}px solid ${isPast ? "#bbb" : colors.border}`,
+                      background: isPast ? "#f0f0f0" : colors.bg,
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 2,
+                      boxShadow: isCurrent ? "0 0 0 3px rgba(0,0,0,0.12)" : undefined,
+                    }}
+                  >
+                    <span style={{ fontWeight: 800, fontSize: isCurrent ? 18 : 14, color: isPast ? "#888" : colors.text, lineHeight: 1 }}>
+                      {item.playerCount}p
+                    </span>
+                    <span style={{ fontSize: 10, color: isPast ? "#aaa" : colors.text, fontWeight: 600, lineHeight: 1 }}>
+                      {PROFILE_LABELS[item.profile] ?? item.profile}
+                    </span>
+                  </div>
+                  <span style={{ fontSize: 10, color: isPast ? "#aaa" : "#56635a", fontWeight: isCurrent ? 700 : 400 }}>
+                    #{item.cycle}
+                  </span>
+                </div>
+              )
+            }
+
+            return (
+              <div style={{ display: "flex", alignItems: "center", gap: 4, overflowX: "auto", padding: "4px 0" }}>
+                {lastRun && !currentRun && renderStop(
+                  { cycle: lastRun.cycle, playerCount: lastRun.playerCount as TrainingPlayerCount, profile: lastRun.profile },
+                  "past", `past-${lastRun.cycle}`,
+                )}
+                {currentRun && renderStop(
+                  { cycle: currentRun.cycle, playerCount: currentRun.playerCount, profile: currentRun.profile },
+                  "current", `current-${currentRun.cycle}`,
+                )}
+                {upcoming.map((item, i) => (
+                  <div key={`upcoming-${item.cycle}`} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    {(i === 0) && (
+                      <div style={{ width: 16, height: 2, background: "#c7d0c4", borderRadius: 1, flexShrink: 0 }} />
+                    )}
+                    {renderStop(item, "upcoming", `upcoming-${item.cycle}`)}
+                    {i < upcoming.length - 1 && (
+                      <div style={{ width: 16, height: 2, background: "#c7d0c4", borderRadius: 1, flexShrink: 0 }} />
+                    )}
+                  </div>
+                ))}
+              </div>
+            )
+          })()}
 
           <div id="autotune-mode-cycles-div" style={{ display: "grid", gap: 6 }}>
             <div style={{ color: "#56635a", fontSize: 12, fontWeight: 700 }}>Per-mode cycles</div>
@@ -2907,7 +1952,7 @@ export default function TrainingApp() {
             </div>
           </div>
 
-          <details id="recent-autotune-champions-div" open style={{ display: "grid", gap: 8 }}>
+          <details id="recent-autotune-champions-div" style={{ display: "grid", gap: 8 }}>
             <summary style={{ cursor: "pointer", fontWeight: 700, color: "#223024", listStylePosition: "inside" }}>
               Recent autotune champions
             </summary>
@@ -2922,12 +1967,12 @@ export default function TrainingApp() {
             </div>
           </details>
 
-          <div id="recent-autotune-runs-div" style={{ display: "grid", gap: 8 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-              <div style={{ color: "#56635a", fontSize: 12, fontWeight: 700 }}>Recent autotune runs</div>
-              <div style={{ color: "#56635a", fontSize: 12 }}>
-                Updated {autotuneStatus?.updatedAt ? new Date(autotuneStatus.updatedAt).toLocaleString() : "—"}
-              </div>
+          <details style={{ display: "grid", gap: 8 }}>
+            <summary style={{ cursor: "pointer", color: "#56635a", fontSize: 12, fontWeight: 700, listStylePosition: "inside" }}>
+              Recent autotune runs
+            </summary>
+            <div style={{ color: "#56635a", fontSize: 12 }}>
+              Updated {autotuneStatus?.updatedAt ? new Date(autotuneStatus.updatedAt).toLocaleString() : "—"}
             </div>
             <div style={{ display: "grid", gap: 8 }}>
               {displayedAutotuneRuns.length > 0 ? (
@@ -2938,10 +1983,11 @@ export default function TrainingApp() {
                 </div>
               )}
             </div>
-          </div>
+          </details>
         </div>
 
-        <div
+        <details
+          open
           id="playable-bot-presets-div"
           style={{
             border: "1px solid #d8dfd5",
@@ -2952,36 +1998,43 @@ export default function TrainingApp() {
             gap: 12,
           }}
         >
-          <div style={{ display: "grid", gap: 4 }}>
-            <strong>Playable bot presets</strong>
-            <div style={{ color: "#56635a", lineHeight: 1.45 }}>
-              These are the presets the game can use right now. Stickbug variants are promoted from champion autotune
-              runs, while Malcolm Gladwell is shown here as the current managed baseline when present.
-            </div>
+          <summary style={{ cursor: "pointer", fontWeight: 700, color: "#223024", listStylePosition: "inside" }}>
+            Playable bot presets
+          </summary>
+          <div style={{ color: "#56635a", lineHeight: 1.45 }}>
+            These are the presets the game can use right now. Stickbug variants are promoted from champion autotune
+            runs, while Malcolm Gladwell is shown here as the current managed baseline when present.
           </div>
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+              gridTemplateColumns: "repeat(3, 1fr)",
               gap: 12,
             }}
           >
             {BOT_PRESETS.map(preset => {
-              const isManagedPreset = preset.id === "bot-best" || preset.id === "bot-avg"
+              const stickbugPlayerCount = (["bot-best-1p", "bot-best-2p", "bot-best-3p", "bot-best-4p"] as const)
+                .indexOf(preset.id as never) >= 0
+                ? (parseInt(preset.id.replace("bot-best-", "")) as 1 | 2 | 3 | 4)
+                : null
+              const stickbugEntry = stickbugPlayerCount !== null
+                ? managedStickbugPresets.find(e => e.playerCount === stickbugPlayerCount) ?? null
+                : null
+              const isStickbugPreset = stickbugPlayerCount !== null
+              const isManagedPreset = preset.id === "bot-best" || preset.id === "bot-avg" || isStickbugPreset
               const managedPreset = preset.id === "bot-avg" ? managedAveragePreset : null
-              const managedPresetSource =
-                preset.id === "bot-best"
-                  ? managedStickbugPresets.some(entry => entry.preset)
-                    ? "Managed 2p/3p/4p variants"
-                    : "Built-in fallback"
-                  : managedPreset
-                    ? "Managed file"
-                    : "Built-in fallback"
+              const badgeLabel = isStickbugPreset
+                ? stickbugEntry?.preset ? "Promoted" : "Built-in fallback"
+                : preset.id === "bot-best"
+                  ? managedStickbugPresets.some(entry => entry.preset) ? "Managed variants" : "Built-in fallback"
+                  : preset.id === "bot-avg"
+                    ? managedPreset ? "Managed file" : "Built-in fallback"
+                    : "Fixed"
               const fallbackSummary =
                 preset.id === "bot-avg"
-                  ? results?.baseline ?? null
+                  ? latestManagedTrainingResults?.baseline ?? null
                   : preset.id === "bot-best"
-                    ? results?.final ?? null
+                    ? latestManagedTrainingResults?.final ?? null
                     : null
               const passengerComparisonValue =
                 managedPreset?.sourceSummary.averagePassengers ?? fallbackSummary?.averagePassengers ?? null
@@ -3007,17 +2060,42 @@ export default function TrainingApp() {
                       style={{
                         borderRadius: 999,
                         padding: "4px 10px",
-                        background: isManagedPreset ? "#eef6ff" : "#f3f6f3",
-                        color: isManagedPreset ? "#24527a" : "#56635a",
+                        background: isManagedPreset ? (isStickbugPreset && stickbugEntry?.preset ? "#eef6ff" : "#f3f6f3") : "#f3f6f3",
+                        color: isManagedPreset ? (isStickbugPreset && stickbugEntry?.preset ? "#24527a" : "#56635a") : "#56635a",
                         fontSize: 12,
                         fontWeight: 700,
                       }}
                     >
-                      {isManagedPreset ? managedPresetSource : "Fixed"}
+                      {badgeLabel}
                     </div>
                   </div>
 
-                  {isManagedPreset ? (
+                  {isStickbugPreset ? (
+                    stickbugEntry?.preset ? (
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
+                        <div>
+                          <div style={{ color: "#56635a", fontSize: 12 }}>Passengers</div>
+                          <div style={{ fontWeight: 700 }}>{formatWholeNumber(stickbugEntry.preset.sourceSummary.averagePassengers)}</div>
+                        </div>
+                        <div>
+                          <div style={{ color: "#56635a", fontSize: 12 }}>Win rate</div>
+                          <div style={{ fontWeight: 700 }}>{formatPercent(stickbugEntry.preset.sourceSummary.winRate)}</div>
+                        </div>
+                        <div>
+                          <div style={{ color: "#56635a", fontSize: 12 }}>Score</div>
+                          <div style={{ fontWeight: 700 }}>{formatWholeNumber(stickbugEntry.preset.sourceSummary.score)}</div>
+                        </div>
+                        <div>
+                          <div style={{ color: "#56635a", fontSize: 12 }}>Promoted</div>
+                          <div style={{ fontWeight: 700, fontSize: 13 }}>{new Date(stickbugEntry.preset.promotedAt).toLocaleString()}</div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ color: "#56635a", fontSize: 13 }}>
+                        No {stickbugPlayerCount}p Stickbug promoted yet — using built-in weights.
+                      </div>
+                    )
+                  ) : isManagedPreset ? (
                     <>
                       <div style={{ color: "#56635a", fontSize: 13 }}>
                         Source file: <code>{trainingPresets?.outputPath ?? "public/training-results/bot-presets.json"}</code>
@@ -3037,79 +2115,18 @@ export default function TrainingApp() {
                           {passengerComparisonValue === null ? "—" : formatWholeNumber(passengerComparisonValue)}
                         </div>
                         <div style={{ color: "#56635a", fontSize: 12 }}>
-                          {preset.id === "bot-best"
-                            ? managedStickbugPresets.some(entry => entry.preset)
-                              ? "Showing the active managed Stickbug lobby variants"
-                              : fallbackSummary
-                                ? "Using current training final as the built-in comparison until a Stickbug variant is promoted"
-                                : "Run training once to populate comparison stats"
-                            : managedPreset
-                              ? "Current playable preset summary"
-                              : fallbackSummary
-                                ? "Using current training baseline/final as the built-in comparison"
-                                : "Run training once to populate comparison stats"}
+                          {managedPreset
+                            ? "Current playable preset summary"
+                            : fallbackSummary
+                              ? "Using current training baseline as the built-in comparison"
+                              : "Run training once to populate comparison stats"}
                         </div>
                       </div>
-                      {preset.id === "bot-best" ? (
-                        <div style={{ display: "grid", gap: 8 }}>
-                          {managedStickbugPresets.map(entry => (
-                            <div
-                              key={`stickbug-${entry.playerCount}`}
-                              style={{
-                                borderRadius: 10,
-                                border: "1px solid #d8dfd5",
-                                background: "#ffffff",
-                                padding: 10,
-                                display: "grid",
-                                gap: 6,
-                              }}
-                            >
-                              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-                                <strong>Stickbug {entry.playerCount}p</strong>
-                                <span style={{ color: entry.preset ? "#24527a" : "#56635a", fontSize: 12, fontWeight: 700 }}>
-                                  {entry.preset ? "Managed" : "Fallback"}
-                                </span>
-                              </div>
-                              {entry.preset ? (
-                                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
-                                  <div>
-                                    <div style={{ color: "#56635a", fontSize: 12 }}>Passengers</div>
-                                    <div style={{ fontWeight: 700 }}>{formatWholeNumber(entry.preset.sourceSummary.averagePassengers)}</div>
-                                  </div>
-                                  <div>
-                                    <div style={{ color: "#56635a", fontSize: 12 }}>Win rate</div>
-                                    <div style={{ fontWeight: 700 }}>{formatPercent(entry.preset.sourceSummary.winRate)}</div>
-                                  </div>
-                                  <div>
-                                    <div style={{ color: "#56635a", fontSize: 12 }}>Score</div>
-                                    <div style={{ fontWeight: 700 }}>{formatWholeNumber(entry.preset.sourceSummary.score)}</div>
-                                  </div>
-                                  <div>
-                                    <div style={{ color: "#56635a", fontSize: 12 }}>Promoted</div>
-                                    <div style={{ fontWeight: 700, fontSize: 13 }}>{new Date(entry.preset.promotedAt).toLocaleString()}</div>
-                                  </div>
-                                </div>
-                              ) : (
-                                <div style={{ color: "#56635a", fontSize: 13 }}>
-                                  No managed {entry.playerCount}p Stickbug has been promoted yet.
-                                </div>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      ) : managedPreset ? (
+                      {managedPreset ? (
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
-                          <div>
-                            <div style={{ color: "#56635a", fontSize: 12 }}>Average passengers</div>
-                            <div style={{ fontWeight: 700 }}>{formatWholeNumber(managedPreset.sourceSummary.averagePassengers)}</div>
-                          </div>
                           <div>
                             <div style={{ color: "#56635a", fontSize: 12 }}>Win rate</div>
                             <div style={{ fontWeight: 700 }}>{formatPercent(managedPreset.sourceSummary.winRate)}</div>
-                          </div>
-                          <div>
-                            <div style={{ color: "#56635a", fontSize: 12 }}>Score</div>
-                            <div style={{ fontWeight: 700 }}>{formatWholeNumber(managedPreset.sourceSummary.score)}</div>
                           </div>
                           <div>
                             <div style={{ color: "#56635a", fontSize: 12 }}>Promoted</div>
@@ -3118,72 +2135,25 @@ export default function TrainingApp() {
                         </div>
                       ) : (
                         <div style={{ color: "#56635a", fontSize: 13 }}>
-                          No managed {preset.label} preset has been promoted yet. New games are still using the built-in {preset.label} weights.
+                          Malcolm Gladwell no longer has a dashboard overwrite button.
                         </div>
                       )}
-                      <div style={{ color: "#56635a", fontSize: 13 }}>
-                        {preset.id === "bot-best"
-                          ? "Use Recent autotune runs to promote champion Stickbug variants."
-                          : "Malcolm Gladwell no longer has a dashboard overwrite button."}
-                      </div>
                     </>
                   ) : (
                     <div style={{ color: "#56635a", fontSize: 13 }}>
-                      This preset is still code-defined and is not overwritten from the training dashboard.
+                      This preset is code-defined and not overwritten from the training dashboard.
                     </div>
                   )}
                 </div>
               )
             })}
           </div>
-        </div>
+        </details>
 
-        {results && (
-          <>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-                gap: 12,
-              }}
-            >
-              {([
-                ["Baseline lead", results.baseline.averagePassengerMargin],
-                ["Final lead", results.final.averagePassengerMargin],
-                ["Baseline passengers", results.baseline.averagePassengers],
-                ["Final passengers", results.final.averagePassengers],
-                ["Final win rate", results.final.winRate],
-                ["Final timeout rate", results.final.timeoutRate],
-                ["Iterations", results.history.length],
-                ["Games / candidate", results.config.gamesPerCandidate],
-                ["Players / game", results.config.playerCount ?? 4],
-              ] as Array<[string, number]>).map(([label, value]) => (
-                <div
-                  key={label}
-                  style={{
-                    border: "1px solid #d8dfd5",
-                    borderRadius: 12,
-                    background: "#ffffff",
-                    padding: 14,
-                    display: "grid",
-                    gap: 4,
-                  }}
-                >
-                  <div style={{ color: "#56635a", fontSize: 13 }}>{label}</div>
-                  <strong style={{ fontSize: 24 }}>
-                    {typeof value === "number"
-                      ? label.toLowerCase().includes("rate")
-                        ? formatPercent(value)
-                        : label.toLowerCase().includes("lead")
-                          ? formatWholeDelta(value)
-                          : formatWholeNumber(value)
-                      : value}
-                  </strong>
-                </div>
-              ))}
-            </div>
-
-            <div
+        <>
+            <details
+              id="compare-by-player-count-div"
+              open
               style={{
                 border: "1px solid #d8dfd5",
                 borderRadius: 12,
@@ -3193,30 +2163,25 @@ export default function TrainingApp() {
                 gap: 12,
               }}
             >
-              <div style={{ display: "grid", gap: 4 }}>
-                <strong>Compare by player count</strong>
-                <div style={{ color: "#56635a", lineHeight: 1.45 }}>
-                  These cards compare the latest saved training run for each player count. Passenger lead is the
-                  best cross-mode comparison. Raw score is shown for reference, but it is not directly comparable
-                  across different player counts.
-                </div>
+              <summary style={{ cursor: "pointer", fontWeight: 700, color: "#223024", listStylePosition: "inside" }}>
+                Compare by player count
+              </summary>
+              <div style={{ color: "#56635a", lineHeight: 1.45 }}>
+                These cards show the <strong>current champion</strong> for each player count — the best bot
+                ever promoted, evaluated on fixed benchmark seeds. Passenger lead and win rate reflect
+                performance against the default bot pool.
               </div>
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+                  gridTemplateColumns: "repeat(2, 1fr)",
                   gap: 12,
                 }}
               >
                 {TRAINING_PLAYER_COUNT_OPTIONS.map(playerCount => {
-                  const comparison = modeComparisons.find(entry => entry.playerCount === playerCount) ?? {
-                    playerCount,
-                    results: null,
-                    importance: null,
-                  }
-                  const comparisonResults = comparison.results
-                  const comparisonImportance = comparison.importance
-                  const topLevers = comparisonImportance?.rows.slice(0, 3) ?? []
+                  const champion = championFiles.find(e => e.playerCount === playerCount)?.data ?? null
+                  const importance = modeComparisons.find(e => e.playerCount === playerCount)?.importance ?? null
+                  const topLevers = importance?.rows.slice(0, 3) ?? []
 
                   return (
                     <div
@@ -3231,15 +2196,15 @@ export default function TrainingApp() {
                       }}
                     >
                       <div style={{ display: "grid", gap: 4 }}>
-                        <strong>{playerCount}-player training</strong>
+                        <strong>{playerCount}-player champion</strong>
                         <div style={{ color: "#56635a", fontSize: 13 }}>
-                          {comparisonResults
-                            ? `Saved ${new Date(comparisonResults.generatedAt).toLocaleString()}`
-                            : "No saved run yet"}
+                          {champion
+                            ? `Promoted at cycle ${champion.cycle} · ${new Date(champion.updatedAt).toLocaleString()}`
+                            : "No champion yet"}
                         </div>
                       </div>
 
-                      {comparisonResults ? (
+                      {champion ? (
                         <>
                           <div
                             style={{
@@ -3249,42 +2214,26 @@ export default function TrainingApp() {
                             }}
                           >
                             <div>
-                              <div style={{ color: "#56635a", fontSize: 12 }}>Final lead</div>
-                              <div style={{ fontWeight: 700 }}>{formatWholeDelta(comparisonResults.final.averagePassengerMargin)}</div>
+                              <div style={{ color: "#56635a", fontSize: 12 }}>Passenger lead</div>
+                              <div style={{ fontWeight: 700 }}>{formatWholeDelta(champion.benchmark.averagePassengerMargin)}</div>
                             </div>
                             <div>
-                              <div style={{ color: "#56635a", fontSize: 12 }}>Final passengers</div>
-                              <div style={{ fontWeight: 700 }}>{formatWholeNumber(comparisonResults.final.averagePassengers)}</div>
-                            </div>
-                            <div>
-                              <div style={{ color: "#56635a", fontSize: 12 }}>Passenger delta</div>
-                              <div
-                                style={{
-                                  fontWeight: 700,
-                                  color:
-                                    comparisonResults.final.averagePassengers - comparisonResults.baseline.averagePassengers >= 0
-                                      ? "#2a7f3b"
-                                      : "#9b1c1c",
-                                }}
-                              >
-                                {formatWholeDelta(
-                                  comparisonResults.final.averagePassengers - comparisonResults.baseline.averagePassengers,
-                                )}
-                              </div>
+                              <div style={{ color: "#56635a", fontSize: 12 }}>Passengers</div>
+                              <div style={{ fontWeight: 700 }}>{formatWholeNumber(champion.benchmark.averagePassengers)}</div>
                             </div>
                             <div>
                               <div style={{ color: "#56635a", fontSize: 12 }}>Win rate</div>
-                              <div style={{ fontWeight: 700 }}>{formatPercent(comparisonResults.final.winRate)}</div>
+                              <div style={{ fontWeight: 700 }}>{formatPercent(champion.benchmark.winRate)}</div>
                             </div>
                             <div>
-                              <div style={{ color: "#56635a", fontSize: 12 }}>Score</div>
-                              <div style={{ fontWeight: 700 }}>{formatWholeNumber(comparisonResults.final.score)}</div>
+                              <div style={{ color: "#56635a", fontSize: 12 }}>Avg rank</div>
+                              <div style={{ fontWeight: 700 }}>#{champion.benchmark.averageRank.toFixed(1)}</div>
                             </div>
                           </div>
 
                           <div style={{ display: "grid", gap: 6 }}>
                             <div style={{ color: "#56635a", fontSize: 12, fontWeight: 700 }}>
-                              Top levers for this mode
+                              Top levers (latest importance run)
                             </div>
                             {topLevers.length > 0 ? (
                               topLevers.map(lever => (
@@ -3305,23 +2254,24 @@ export default function TrainingApp() {
                               ))
                             ) : (
                               <div style={{ color: "#56635a", fontSize: 13 }}>
-                                Lever importance is not ready for this saved run yet.
+                                No importance data yet for this player count.
                               </div>
                             )}
                           </div>
                         </>
                       ) : (
                         <div style={{ color: "#56635a", fontSize: 13 }}>
-                          Run and finish a {playerCount}-player training session to compare it here.
+                          No champion promoted yet for {playerCount}-player games.
                         </div>
                       )}
                     </div>
                   )
                 })}
               </div>
-            </div>
+            </details>
 
-            <div
+            <details
+              open
               style={{
                 border: "1px solid #d8dfd5",
                 borderRadius: 12,
@@ -3331,12 +2281,13 @@ export default function TrainingApp() {
                 gap: 12,
               }}
             >
-              <div style={{ display: "grid", gap: 4 }}>
-                <strong>Lever impact by player count</strong>
-                <div style={{ color: "#56635a", lineHeight: 1.45 }}>
-                  Each saved bot keeps its own lever-importance snapshot. Pick a player count to see one chart
-                  where every lever row shows passengers, score, and win-rate impact together.
-                </div>
+              <summary style={{ cursor: "pointer", fontWeight: 700, color: "#223024", listStylePosition: "inside" }}>
+                Lever impact by player count
+              </summary>
+              <div style={{ color: "#56635a", lineHeight: 1.45 }}>
+                Shows the lever importance snapshot from each <strong>promoted champion</strong>. Pick a player
+                count to see which levers matter most — and how much removing each one costs in passengers,
+                score, and win rate.
               </div>
 
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -3361,57 +2312,28 @@ export default function TrainingApp() {
               </div>
 
               {selectedModeComparison.results && selectedModeComparison.importance ? (
-                <LeverImpactComparisonChart
-                  rows={selectedModeImpactRows}
-                  title={`${selectedModeImpactPlayerCount}-player saved bot impact`}
-                />
+                <>
+                  {selectedModeComparison.champion && (
+                    <div style={{ color: "#56635a", fontSize: 13 }}>
+                      Champion promoted at cycle {selectedModeComparison.champion.cycle} · {new Date(selectedModeComparison.champion.updatedAt).toLocaleString()}
+                    </div>
+                  )}
+                  <LeverImpactComparisonChart
+                    rows={selectedModeImpactRows}
+                    title={`${selectedModeImpactPlayerCount}-player champion lever impact`}
+                  />
+                </>
               ) : (
                 <div style={{ color: "#56635a", fontSize: 13 }}>
-                  Finish a {selectedModeImpactPlayerCount}-player run and lever importance analysis to show this chart.
+                  No champion promoted yet for {selectedModeImpactPlayerCount}-player games.
                 </div>
               )}
-            </div>
+            </details>
 
-            <div
-              style={{
-                border: "1px solid #d8dfd5",
-                borderRadius: 12,
-                background: "#ffffff",
-                padding: 14,
-                display: "grid",
-                gap: 8,
-              }}
-            >
-              <strong>Score model</strong>
-              <div style={{ color: "#56635a", lineHeight: 1.5 }}>
-                Training score now rewards both production and margin:
-                <code> passengers + passengerLead + winRate*5000 - averageRank*1000 + connectedCities*50 + money/1,000,000 - timeoutRate*250,000</code>.
-                That means the trainer still wants to serve lots of passengers, but it also prefers finishing farther ahead of the strongest
-                opponent instead of settling for low-scoring blocking lines. In 1-player training, opponent passengers are treated as zero.
-              </div>
-            </div>
+            <AllChampionsLeverChart rowsByPlayerCount={allChampionsLeverRows} />
 
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
-                gap: 12,
-              }}
-            >
-              <LineChart title="Score" points={scoreSeries} color="#1d5d76" formatter={formatWholeNumber} />
-              <LineChart title="Passenger lead" points={passengerMarginSeries} color="#24527a" formatter={formatWholeDelta} />
-              <LineChart title="Passengers moved" points={passengerSeries} color="#2a7f3b" formatter={formatWholeNumber} />
-              <LineChart title="Win rate" points={winRateSeries} color="#8a5a00" formatter={formatPercent} />
-              <LineChart title="Timeout rate" points={timeoutSeries} color="#9b1c1c" formatter={formatPercent} />
-            </div>
-
-            <LeverImpactChart
-              rows={weightRows}
-              metric={selectedImpactMetric}
-              onMetricChange={setSelectedImpactMetric}
-            />
-
-            <div
+            <details
+              open
               style={{
                 border: "1px solid #d8dfd5",
                 borderRadius: 12,
@@ -3421,7 +2343,9 @@ export default function TrainingApp() {
                 gap: 10,
               }}
             >
-              <strong>Estimated profitable city links</strong>
+              <summary style={{ cursor: "pointer", fontWeight: 700, color: "#223024", listStylePosition: "inside" }}>
+                Estimated profitable city links
+              </summary>
               <div style={{ color: "#56635a", lineHeight: 1.45 }}>
                 These estimates rank direct <strong>rail</strong> and <strong>air</strong> city links by
                 modeled net revenue over one period using the current map, demand, fare buckets, and vehicle cards.
@@ -3504,91 +2428,7 @@ export default function TrainingApp() {
                   </tbody>
                 </table>
               </div>
-            </div>
-
-            <div
-              style={{
-                border: "1px solid #d8dfd5",
-                borderRadius: 12,
-                background: "#ffffff",
-                padding: 14,
-                display: "grid",
-                gap: 10,
-              }}
-            >
-              <strong>Weight changes</strong>
-              <div style={{ color: "#56635a", lineHeight: 1.45 }}>
-                Positive deltas mean the final bot values that behavior more than the baseline. Importance is measured by
-                re-running the latest trained bot with one lever reverted to baseline at a time, then ranking the passenger
-                and score drop from that ablation.
-              </div>
-              <div style={{ color: "#56635a", fontSize: 13 }}>
-                {trainingImportance?.isRunning
-                  ? "Analyzing lever importance..."
-                  : hasCurrentImportance
-                    ? `Importance reference score ${formatWholeNumber(trainingImportance?.result?.reference.score ?? 0)} on ${trainingImportance?.result?.config.gamesPerCandidate ?? 0} games.`
-                    : trainingImportance?.error
-                      ? trainingImportance.error
-                      : "Waiting for lever importance analysis to finish."}
-              </div>
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1120 }}>
-                  <thead>
-                    <tr>
-                      {["Rank", "Passengers drop", "Score drop", "Win-rate drop", "Group", "Lever", "Baseline", "Final", "Delta", "Meaning"].map(header => (
-                        <th
-                          key={header}
-                          style={{
-                            textAlign: "left",
-                            padding: "10px 8px",
-                            borderBottom: "1px solid #d8dfd5",
-                            fontSize: 13,
-                            color: "#56635a",
-                          }}
-                        >
-                          {header}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {weightRows.map(row => (
-                      <tr key={row.key}>
-                        <td style={{ padding: "10px 8px", borderBottom: "1px solid #edf2ec", fontWeight: 700 }}>
-                          {row.importanceRank ?? "—"}
-                        </td>
-                        <td style={{ padding: "10px 8px", borderBottom: "1px solid #edf2ec" }}>
-                          {row.passengerDrop === null ? "—" : formatWholeNumber(row.passengerDrop)}
-                        </td>
-                        <td style={{ padding: "10px 8px", borderBottom: "1px solid #edf2ec" }}>
-                          {row.scoreDrop === null ? "—" : formatWholeNumber(row.scoreDrop)}
-                        </td>
-                        <td style={{ padding: "10px 8px", borderBottom: "1px solid #edf2ec" }}>
-                          {row.winRateDrop === null ? "—" : formatPercent(row.winRateDrop)}
-                        </td>
-                        <td style={{ padding: "10px 8px", borderBottom: "1px solid #edf2ec", fontWeight: 700 }}>{row.group}</td>
-                        <td style={{ padding: "10px 8px", borderBottom: "1px solid #edf2ec" }}>{row.label}</td>
-                        <td style={{ padding: "10px 8px", borderBottom: "1px solid #edf2ec" }}>{formatMetric(row.baselineValue, 3)}</td>
-                        <td style={{ padding: "10px 8px", borderBottom: "1px solid #edf2ec" }}>{formatMetric(row.finalValue, 3)}</td>
-                        <td
-                          style={{
-                            padding: "10px 8px",
-                            borderBottom: "1px solid #edf2ec",
-                            color: row.delta > 0 ? "#2a7f3b" : row.delta < 0 ? "#9b1c1c" : "#56635a",
-                            fontWeight: 700,
-                          }}
-                        >
-                          {formatWeightDelta(row.delta)}
-                        </td>
-                        <td style={{ padding: "10px 8px", borderBottom: "1px solid #edf2ec", color: "#56635a" }}>
-                          {row.description}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+            </details>
 
             <div
               id="bot-decision-tree-div"
@@ -3711,7 +2551,6 @@ export default function TrainingApp() {
               </div>
             </div>
           </>
-        )}
       </div>
     </div>
   )

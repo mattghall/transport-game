@@ -224,13 +224,14 @@ export function evaluateScriptedBotWeights(options: {
     averageConnectedCities,
     averageMoney,
     timeoutRate,
+    // In 1-player games passengerMargin === passengers (no opponent), so weight it at
+    // 1/10 to avoid double-counting it against the raw passenger total.
     score:
       averagePassengers +
-      averagePassengerMargin +
+      averagePassengerMargin * (options.playerCount === 1 ? 0.1 : 1) +
       winRate * 5_000 -
       averageRank * 1_000 +
-      averageConnectedCities * 50 +
-      averageMoney / 1_000_000 -
+      averageConnectedCities * 50 -
       timeoutRate * 250_000,
     samples,
   }

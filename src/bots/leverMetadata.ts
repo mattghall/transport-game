@@ -16,6 +16,8 @@ export const SCRIPTED_BOT_WEIGHT_KEYS = Object.keys(
 
 // These levers had zero passenger/score/win-rate ablation impact across the latest 2p/3p/4p
 // importance snapshots, so they are the first conservative freeze batch.
+// podRemoveCityBaseScore is frozen at 0 so bots only remove cities when there's a measurable
+// net-revenue or passengers-per-distance gain, not unconditionally.
 export const FROZEN_SCRIPTED_BOT_WEIGHT_KEYS = [
   "claimFirstModeBonus",
   "claimMountainPreference",
@@ -25,6 +27,7 @@ export const FROZEN_SCRIPTED_BOT_WEIGHT_KEYS = [
   "earlyExpansionMultiplier",
   "earlyPopulationMultiplier",
   "lateReadyOperationsScore",
+  "podRemoveCityBaseScore",
 ] as const satisfies Array<keyof ScriptedBotWeights>
 
 const FROZEN_SCRIPTED_BOT_WEIGHT_KEY_SET = new Set<keyof ScriptedBotWeights>(
@@ -207,6 +210,58 @@ export const SCRIPTED_BOT_LEVER_METADATA: Record<keyof ScriptedBotWeights, Scrip
   },
   lateClaimBudget: {
     mutationStep: 1,
+    minimum: 0,
+    enabled: true,
+  },
+  podSplitBaseScore: {
+    mutationStep: 12,
+    enabled: true,
+  },
+  podCityCountScore: {
+    mutationStep: 4,
+    enabled: true,
+  },
+  podPopulationPerMillionScore: {
+    mutationStep: 2,
+    minimum: 0,
+    enabled: true,
+  },
+  podPopulationPerDistanceScore: {
+    mutationStep: 6,
+    minimum: 0,
+    enabled: true,
+  },
+  podDemandScore: {
+    mutationStep: 1.5,
+    minimum: 0,
+    enabled: true,
+  },
+  podDemandPerMileScore: {
+    mutationStep: 2,
+    minimum: 0,
+    enabled: true,
+  },
+  podNetRevenueScore: {
+    mutationStep: 8,
+    minimum: 0,
+    enabled: true,
+  },
+  podAdditionalRoutePenalty: {
+    mutationStep: 4,
+    minimum: 0,
+    enabled: true,
+  },
+  podRemoveCityBaseScore: {
+    mutationStep: 4,
+    enabled: true,
+  },
+  podRemovePassengersPerDistanceGainScore: {
+    mutationStep: 6,
+    minimum: 0,
+    enabled: true,
+  },
+  podRemoveNetRevenueGainScore: {
+    mutationStep: 5,
     minimum: 0,
     enabled: true,
   },

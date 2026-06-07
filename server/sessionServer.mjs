@@ -4,7 +4,7 @@ import { networkInterfaces } from "node:os"
 import { spawn, spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { dirname, resolve } from "node:path"
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
 
 const PORT = Number(process.env.PORT ?? 8787)
 const sessions = new Map()
@@ -23,7 +23,7 @@ const MANAGED_BOT_PRESETS_PATH = resolve(PROJECT_ROOT, "public/training-results/
 const AUTOTUNE_STATUS_PATH = resolve(PROJECT_ROOT, "public/training-results/autotune-status.json")
 const AUTOTUNE_HISTORY_PATH = resolve(PROJECT_ROOT, "public/training-results/autotune-history.json")
 const TRAINING_LOG_LIMIT = 400
-const MANAGED_BOT_PRESET_STORAGE_IDS = ["bot-avg", "bot-best-2p", "bot-best-3p", "bot-best-4p"]
+const MANAGED_BOT_PRESET_STORAGE_IDS = ["bot-avg", "bot-best-1p", "bot-best-2p", "bot-best-3p", "bot-best-4p"]
 const TRAINED_WEIGHT_KEYS = [
   "vehiclePriorityBus",
   "vehiclePriorityTrain",
@@ -445,11 +445,15 @@ function normalizeManagedPresetStorageId(presetId, sourcePlayerCount) {
     return "bot-avg"
   }
 
-  if (presetId === "bot-best" && (sourcePlayerCount === 2 || sourcePlayerCount === 3 || sourcePlayerCount === 4)) {
+  if (MANAGED_BOT_PRESET_STORAGE_IDS.includes(presetId)) {
+    return presetId
+  }
+
+  if (presetId === "bot-best" && (sourcePlayerCount === 1 || sourcePlayerCount === 2 || sourcePlayerCount === 3 || sourcePlayerCount === 4)) {
     return `bot-best-${sourcePlayerCount}p`
   }
 
-  return MANAGED_BOT_PRESET_STORAGE_IDS.includes(presetId) ? presetId : null
+  return null
 }
 
 function resolveManagedPresetStorageId(presetId, playerCount) {
@@ -457,8 +461,12 @@ function resolveManagedPresetStorageId(presetId, playerCount) {
     return "bot-avg"
   }
 
-  if (presetId === "bot-best" && (playerCount === 2 || playerCount === 3 || playerCount === 4)) {
+  if (presetId === "bot-best" && (playerCount === 1 || playerCount === 2 || playerCount === 3 || playerCount === 4)) {
     return `bot-best-${playerCount}p`
+  }
+
+  if (MANAGED_BOT_PRESET_STORAGE_IDS.includes(presetId)) {
+    return presetId
   }
 
   return null
@@ -704,7 +712,7 @@ function promoteAutotuneRunToStickbug(playerCount, generatedAt) {
   const storagePresetId = resolveManagedPresetStorageId("bot-best", playerCount)
 
   if (!storagePresetId) {
-    const error = new Error("Stickbug autotune promotions only support 2-player, 3-player, or 4-player runs.")
+    const error = new Error("Stickbug autotune promotions only support 1-player through 4-player runs.")
     error.statusCode = 422
     throw error
   }
@@ -1250,6 +1258,13 @@ function getAssignedPlayerId(lobby, clientId, requestedPlayerId) {
   const nextAvailablePlayer = currentLobby.players.find(lobbyPlayer => lobbyPlayer.claimedBy === null) ?? null
 
   if (!nextAvailablePlayer) {
+    // All seats are taken — allow joining as spectator if every claimed seat is a bot
+    const allSeatsTakenByBots = currentLobby.players.every(
+      lobbyPlayer => lobbyPlayer.claimedBy && lobbyPlayer.isBot,
+    )
+    if (allSeatsTakenByBots) {
+      return null
+    }
     const error = new Error("This session is full.")
     error.statusCode = 409
     throw error
@@ -1281,7 +1296,7 @@ function getNextLobby(lobby, clientId, playerId, isReady) {
       return lobbyPlayer
     }
 
-    if (lobbyPlayer.claimedBy && lobbyPlayer.claimedBy !== clientId) {
+    if (lobbyPlayer.claimedBy && lobbyPlayer.claimedBy !== clientId && currentLobby.status !== "started") {
       const error = new Error(`Player ${playerId} has already been claimed by another browser.`)
       error.statusCode = 409
       throw error
@@ -1301,6 +1316,25 @@ function getNextLobby(lobby, clientId, playerId, isReady) {
 
 function getNextLobbySession(session, lobbyUpdate) {
   const assignedPlayerId = getAssignedPlayerId(session.lobby, lobbyUpdate.clientId, lobbyUpdate.playerId)
+
+  // Spectator: no seat to claim, just return current state (or start game if requested)
+  if (assignedPlayerId === null) {
+    const currentLobby = session.lobby ?? { status: "forming", players: [] }
+    if (!lobbyUpdate.startGame) {
+      return session
+    }
+    if (!canStartLobby(currentLobby)) {
+      const error = new Error("Every filled seat must be ready before starting the game.")
+      error.statusCode = 409
+      throw error
+    }
+    const startedPlayerIds = getStartedPlayerIds(currentLobby)
+    return {
+      game: getStartedGame(session.game, startedPlayerIds),
+      lobby: { ...currentLobby, status: "started" },
+    }
+  }
+
   const nextLobby = getNextLobby(session.lobby, lobbyUpdate.clientId, assignedPlayerId, lobbyUpdate.isReady)
   const trimmedPlayerName = lobbyUpdate.playerName?.trim() ?? ""
   const nextGame =
@@ -1673,6 +1707,52 @@ const server = createServer(async (request, response) => {
       } catch (error) {
         sendJson(response, error?.statusCode ?? 400, {
           error: error instanceof Error ? error.message : "Could not promote autotune run.",
+        })
+        return
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/training/autotune/reset") {
+      try {
+        if (activeTrainingProcess || activeAutotuneProcess) {
+          const error = new Error("Cannot reset while training or autotune is running. Stop it first.")
+          error.statusCode = 409
+          throw error
+        }
+        const filesToDelete = [
+          resolve(PROJECT_ROOT, "public/training-results/autotune-status.json"),
+          resolve(PROJECT_ROOT, "public/training-results/autotune-history.json"),
+          resolve(PROJECT_ROOT, "public/training-results/champion-1p.json"),
+          resolve(PROJECT_ROOT, "public/training-results/champion-2p.json"),
+          resolve(PROJECT_ROOT, "public/training-results/champion-3p.json"),
+          resolve(PROJECT_ROOT, "public/training-results/champion-4p.json"),
+          resolve(PROJECT_ROOT, "public/training-results/champion-1p-importance.json"),
+          resolve(PROJECT_ROOT, "public/training-results/champion-2p-importance.json"),
+          resolve(PROJECT_ROOT, "public/training-results/champion-3p-importance.json"),
+          resolve(PROJECT_ROOT, "public/training-results/champion-4p-importance.json"),
+          resolve(PROJECT_ROOT, "public/training-results/latest-1p.json"),
+          resolve(PROJECT_ROOT, "public/training-results/latest-2p.json"),
+          resolve(PROJECT_ROOT, "public/training-results/latest-3p.json"),
+          resolve(PROJECT_ROOT, "public/training-results/latest-4p.json"),
+          resolve(PROJECT_ROOT, "public/training-results/latest-1p-importance.json"),
+          resolve(PROJECT_ROOT, "public/training-results/latest-2p-importance.json"),
+          resolve(PROJECT_ROOT, "public/training-results/latest-3p-importance.json"),
+          resolve(PROJECT_ROOT, "public/training-results/latest-4p-importance.json"),
+          resolve(PROJECT_ROOT, "public/training-results/latest-importance.json"),
+          resolve(PROJECT_ROOT, "public/training-results/latest.json"),
+        ]
+        const deleted = []
+        for (const filePath of filesToDelete) {
+          if (existsSync(filePath)) {
+            unlinkSync(filePath)
+            deleted.push(filePath.split("/").pop())
+          }
+        }
+        sendJson(response, 200, { deleted })
+        return
+      } catch (error) {
+        sendJson(response, error?.statusCode ?? 500, {
+          error: error instanceof Error ? error.message : "Could not reset autotune data.",
         })
         return
       }

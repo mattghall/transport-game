@@ -220,41 +220,31 @@ function applyOpeningBusPurchases(
   players: Player[],
   vehicleCards: VehicleCard[],
 ) {
-  const seededBusCards = [1, 2]
-    .map(number => vehicleCards.find(card => card.type === "bus" && card.number === number) ?? null)
-    .filter((card): card is VehicleCard => card !== null)
+  const siennaCard = vehicleCards.find(card => card.id === "bus-toyota-sienna") ?? null
 
   const nextPlayers = players.map(player => ({
     ...player,
     inventory: {
       ...player.inventory,
-      vehicles: {
-        ...player.inventory.vehicles,
-      },
-      fuel: {
-        ...player.inventory.fuel,
-      },
+      vehicles: { ...player.inventory.vehicles },
+      fuel: { ...player.inventory.fuel },
     },
     ownedVehicleCardIds: [...player.ownedVehicleCardIds],
     ownedVehicleCountsByCardId: { ...player.ownedVehicleCountsByCardId },
   }))
 
-  seededBusCards.forEach((card, index) => {
-    const player = nextPlayers[index]
-
-    if (!player) {
-      return
-    }
-
-    player.money -= card.purchasePrice
-    player.ownedVehicleCardIds = [...new Set([...player.ownedVehicleCardIds, card.id])]
-    player.ownedVehicleCountsByCardId[card.id] = (player.ownedVehicleCountsByCardId[card.id] ?? 0) + 1
-    player.inventory.vehicles.buses += 1
-  })
+  // Give every player a free Toyota Sienna starter vehicle
+  if (siennaCard) {
+    nextPlayers.forEach(player => {
+      player.ownedVehicleCardIds = [...new Set([...player.ownedVehicleCardIds, siennaCard.id])]
+      player.ownedVehicleCountsByCardId[siennaCard.id] = (player.ownedVehicleCountsByCardId[siennaCard.id] ?? 0) + 1
+      player.inventory.vehicles.buses += 1
+    })
+  }
 
   return {
     players: nextPlayers,
-    seededVehicleCardIds: seededBusCards.map(card => card.id),
+    seededVehicleCardIds: [] as string[],
   }
 }
 

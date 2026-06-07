@@ -26,6 +26,20 @@ export type ClaimRouteBotAction = {
   cityIds: [string, string]
 }
 
+export type CreateServicePodBotAction = {
+  type: "create-service-pod"
+  corridorId: string
+  routeId: string
+  cityIds: string[]
+}
+
+export type RemovePodCityBotAction = {
+  type: "remove-pod-city"
+  corridorId: string
+  cityId: string
+  sourceRouteId: string
+}
+
 export type ReadyOperationsBotAction = {
   type: "ready-operations"
 }
@@ -44,6 +58,8 @@ export type BotAction =
   | KeepCityOfferBotAction
   | ConfirmAddCityPicksBotAction
   | ClaimRouteBotAction
+  | CreateServicePodBotAction
+  | RemovePodCityBotAction
   | ReadyOperationsBotAction
   | ReadyBureaucracyBotAction
   | EndTurnBotAction

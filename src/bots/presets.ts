@@ -7,9 +7,17 @@ import { createScriptedBot, mergeScriptedBotWeights, type ScriptedBotWeights } f
 import type { BotAction, BotController } from "./types"
 import type { ScriptedBotTrainingResults } from "./training"
 
-export const BOT_PRESET_IDS = ["bot-avg", "bot-best", "bot-chaos"] as const
+export const BOT_PRESET_IDS = [
+  "bot-avg",
+  "bot-best",
+  "bot-best-1p",
+  "bot-best-2p",
+  "bot-best-3p",
+  "bot-best-4p",
+  "bot-chaos",
+] as const
 export type BotPresetId = (typeof BOT_PRESET_IDS)[number]
-type StickbugVariantPlayerCount = 2 | 3 | 4
+type StickbugVariantPlayerCount = 1 | 2 | 3 | 4
 
 export const DEFAULT_BOT_PRESET_ID: BotPresetId = "bot-avg"
 export const MANAGED_BOT_PRESETS_PATH = "/training-results/bot-presets.json"
@@ -55,6 +63,17 @@ export const BEST_BOT_WEIGHTS: ScriptedBotWeights = {
   earlyClaimBudget: 2.3417058870506784,
   midClaimBudget: 2.480065156829854,
   lateClaimBudget: 1.6523259414670368,
+  podSplitBaseScore: 28,
+  podCityCountScore: 11,
+  podPopulationPerMillionScore: 8,
+  podPopulationPerDistanceScore: 18,
+  podDemandScore: 4,
+  podDemandPerMileScore: 0,
+  podNetRevenueScore: 30,
+  podAdditionalRoutePenalty: 16,
+  podRemoveCityBaseScore: 0,
+  podRemovePassengersPerDistanceGainScore: 20,
+  podRemoveNetRevenueGainScore: 15,
 }
 
 export const BOT_PRESETS: ReadonlyArray<{
@@ -68,9 +87,24 @@ export const BOT_PRESETS: ReadonlyArray<{
     description: "The baseline scripted bot.",
   },
   {
-    id: "bot-best",
-    label: "Stickbug",
-    description: "Uses the managed Stickbug weights for this lobby size when available.",
+    id: "bot-best-1p",
+    label: "Stickbug 1P",
+    description: "Uses the Stickbug weights tuned for solo play.",
+  },
+  {
+    id: "bot-best-2p",
+    label: "Stickbug 2P",
+    description: "Uses the Stickbug weights tuned for 2-player games.",
+  },
+  {
+    id: "bot-best-3p",
+    label: "Stickbug 3P",
+    description: "Uses the Stickbug weights tuned for 3-player games.",
+  },
+  {
+    id: "bot-best-4p",
+    label: "Stickbug 4P",
+    description: "Uses the Stickbug weights tuned for 4-player games.",
   },
   {
     id: "bot-chaos",
@@ -81,7 +115,7 @@ export const BOT_PRESETS: ReadonlyArray<{
 
 export const MANAGED_BOT_PRESET_IDS = ["bot-avg", "bot-best"] as const
 export type ManagedBotPresetId = (typeof MANAGED_BOT_PRESET_IDS)[number]
-export const MANAGED_BOT_PRESET_STORAGE_IDS = ["bot-avg", "bot-best-2p", "bot-best-3p", "bot-best-4p"] as const
+export const MANAGED_BOT_PRESET_STORAGE_IDS = ["bot-avg", "bot-best-1p", "bot-best-2p", "bot-best-3p", "bot-best-4p"] as const
 export type ManagedBotPresetStorageId = (typeof MANAGED_BOT_PRESET_STORAGE_IDS)[number]
 
 export type ManagedBotPresetEntry = {
@@ -114,14 +148,21 @@ function getStickbugVariantStorageId(playerCount: StickbugVariantPlayerCount): M
 }
 
 export function getManagedPresetStorageId(
-  presetId: ManagedBotPresetId,
+  presetId: ManagedBotPresetId | BotPresetId,
   playerCount?: number,
 ): ManagedBotPresetStorageId | null {
   if (presetId === "bot-avg") {
     return "bot-avg"
   }
 
-  if (playerCount === 2 || playerCount === 3 || playerCount === 4) {
+  // Explicit per-count variants map directly
+  if (presetId === "bot-best-1p") return "bot-best-1p"
+  if (presetId === "bot-best-2p") return "bot-best-2p"
+  if (presetId === "bot-best-3p") return "bot-best-3p"
+  if (presetId === "bot-best-4p") return "bot-best-4p"
+
+  // Legacy "bot-best" resolves by player count
+  if (presetId === "bot-best" && (playerCount === 1 || playerCount === 2 || playerCount === 3 || playerCount === 4)) {
     return getStickbugVariantStorageId(playerCount)
   }
 
@@ -136,7 +177,13 @@ function normalizeManagedPresetStorageId(
     return "bot-avg"
   }
 
-  if (presetId === "bot-best" && (sourcePlayerCount === 2 || sourcePlayerCount === 3 || sourcePlayerCount === 4)) {
+  // Explicit per-count variants
+  if (presetId === "bot-best-1p" || presetId === "bot-best-2p" || presetId === "bot-best-3p" || presetId === "bot-best-4p") {
+    return MANAGED_BOT_PRESET_STORAGE_IDS.find(id => id === presetId) ?? null
+  }
+
+  // Legacy "bot-best" resolved by source player count
+  if (presetId === "bot-best" && (sourcePlayerCount === 1 || sourcePlayerCount === 2 || sourcePlayerCount === 3 || sourcePlayerCount === 4)) {
     return getStickbugVariantStorageId(sourcePlayerCount)
   }
 
@@ -295,21 +342,30 @@ export async function fetchManagedBotPresetStore() {
 
 export async function fetchManagedBotPresetWeightOverrides(playerCount?: number) {
   const store = await fetchManagedBotPresetStore()
-  const baseWeights = {
-    ...(store?.presets["bot-avg"] ? { "bot-avg": store.presets["bot-avg"].weights } : {}),
-  } satisfies Partial<Record<BotPresetId, ScriptedBotWeights>>
+  const result: Partial<Record<BotPresetId, ScriptedBotWeights>> = {}
 
-  const managedStickbugStorageId = getManagedPresetStorageId("bot-best", playerCount)
-  const managedStickbug = managedStickbugStorageId ? store?.presets[managedStickbugStorageId] : null
-
-  if (!managedStickbug) {
-    return baseWeights
+  if (store?.presets["bot-avg"]) {
+    result["bot-avg"] = store.presets["bot-avg"].weights
   }
 
-  return {
-    ...baseWeights,
-    "bot-best": managedStickbug.weights,
-  } satisfies Partial<Record<BotPresetId, ScriptedBotWeights>>
+  // Load all explicit per-count stickbug variants
+  for (const pc of [1, 2, 3, 4] as const) {
+    const storageId: ManagedBotPresetStorageId = `bot-best-${pc}p`
+    const entry = store?.presets[storageId]
+    if (entry) {
+      const presetId: BotPresetId = `bot-best-${pc}p`
+      result[presetId] = entry.weights
+    }
+  }
+
+  // Legacy "bot-best": use the player-count-specific variant for backward compat
+  const legacyStorageId = getManagedPresetStorageId("bot-best", playerCount)
+  const legacyEntry = legacyStorageId ? store?.presets[legacyStorageId] : null
+  if (legacyEntry) {
+    result["bot-best"] = legacyEntry.weights
+  }
+
+  return result
 }
 
 function hashText(value: string) {
@@ -356,6 +412,14 @@ export function createPresetBotController(
   weightOverridesByPresetId: Partial<Record<BotPresetId, ScriptedBotWeights>> = {},
 ): BotController {
   switch (normalizeBotPresetId(presetId)) {
+    case "bot-best-1p":
+      return createScriptedBot(id, weightOverridesByPresetId["bot-best-1p"] ?? BEST_BOT_WEIGHTS)
+    case "bot-best-2p":
+      return createScriptedBot(id, weightOverridesByPresetId["bot-best-2p"] ?? BEST_BOT_WEIGHTS)
+    case "bot-best-3p":
+      return createScriptedBot(id, weightOverridesByPresetId["bot-best-3p"] ?? BEST_BOT_WEIGHTS)
+    case "bot-best-4p":
+      return createScriptedBot(id, weightOverridesByPresetId["bot-best-4p"] ?? BEST_BOT_WEIGHTS)
     case "bot-best":
       return createScriptedBot(id, weightOverridesByPresetId["bot-best"] ?? BEST_BOT_WEIGHTS)
     case "bot-chaos":
