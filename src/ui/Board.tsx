@@ -321,22 +321,6 @@ const TOP_BAR_PLAYER_STYLE = {
   fontSize: 11,
 } as const
 
-const TOP_BAR_PROGRESS_STYLE = {
-  minWidth: 0,
-  flex: "1 1 35%",
-  alignSelf: "stretch",
-  margin: "-6px -6px -6px 0",
-  border: "none",
-  borderRadius: "0 12px 12px 0",
-  padding: 0,
-  display: "flex",
-  alignItems: "stretch",
-  justifyContent: "stretch",
-  background: "transparent",
-  fontSize: 12,
-  overflow: "hidden",
-} as const
-
 const BOTTOM_BAR_STYLE = {
   position: "relative",
   minHeight: 0,
@@ -4148,125 +4132,6 @@ export default function Board({
           ),
         )}
         </div>
-        <div style={TOP_BAR_PROGRESS_STYLE}>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "stretch",
-              gap: 0,
-              width: "100%",
-              height: "100%",
-              minWidth: 0,
-            }}
-          >
-            {Array.from({ length: game.operatingConfig.totalWeeks }, (_, index) => {
-              const monthNumber = index + 1
-              const isLastMonth = monthNumber === game.operatingConfig.totalWeeks
-              const isPast = monthNumber < game.currentWeek
-              const isCurrent = monthNumber === game.currentWeek
-              const isFuture = monthNumber > game.currentWeek
-
-              if (isCurrent) {
-                return (
-                  <div
-                    key={`month-progress-${monthNumber}`}
-                    title={`Month ${monthNumber}: ${formatPhaseLabel(game.currentPhase)}`}
-                    style={{
-                      position: "relative",
-                      flex: "0.72 1 0%",
-                      minWidth: 0,
-                      borderRadius: isLastMonth ? "0 12px 12px 0" : 0,
-                      background: "#d9ddd7",
-                      overflow: "hidden",
-                      zIndex: 1,
-                    }}
-                  >
-                    <div
-                      style={{
-                        position: "absolute",
-                        inset: 0,
-                        background:
-                          "repeating-linear-gradient(135deg, rgba(126, 155, 115, 0.85) 0 8px, rgba(111, 143, 100, 0.85) 8px 12px)",
-                        opacity: isLiveStagePulseOn ? 0.95 : 0.2,
-                        transition: "opacity 2800ms ease-in-out",
-                      }}
-                    />
-                    <div
-                      style={{
-                        position: "absolute",
-                        inset: 0,
-                        display: "grid",
-                        gridTemplateRows: `repeat(${TOP_BAR_PHASE_ORDER.length}, minmax(0, 1fr))`,
-                        gap: 1,
-                        background: "rgba(255, 255, 255, 0.28)",
-                      }}
-                    >
-                      {Array.from(
-                        { length: TOP_BAR_PHASE_ORDER.length },
-                        (_, index) => TOP_BAR_PHASE_ORDER.length - 1 - index,
-                      ).map(requiredPhaseIndex => (
-                        <div
-                          key={`${monthNumber}-band-${requiredPhaseIndex}`}
-                          style={{
-                            background:
-                              currentPhaseProgressIndex >= requiredPhaseIndex
-                                ? "repeating-linear-gradient(135deg, #7e9b73 0 8px, #6f8f64 8px 12px)"
-                                : "transparent",
-                          }}
-                        />
-                      ))}
-                    </div>
-                    <div
-                      style={{
-                        position: "relative",
-                        zIndex: 1,
-                        height: "100%",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        color: "#ffffff",
-                        fontSize: 11,
-                        fontWeight: 800,
-                        textShadow: "0 1px 2px rgba(0, 0, 0, 0.35)",
-                      }}
-                    >
-                      {monthNumber}
-                    </div>
-                  </div>
-                )
-              }
-
-              return (
-                <div
-                  key={`month-progress-${monthNumber}`}
-                  title={`Month ${monthNumber}`}
-                      style={{
-                        position: "relative",
-                        flex: "0.72 1 0%",
-                        minWidth: 0,
-                        borderRadius: isLastMonth ? "0 12px 12px 0" : 0,
-                        background: isPast
-                          ? "repeating-linear-gradient(135deg, #a9c3dc 0 8px, #9bb7d4 8px 12px)"
-                          : isFuture
-                        ? "#d9ddd7"
-                        : "#edf3e8",
-                    boxShadow: isPast
-                      ? "none"
-                      : "inset 0 0 0 1px rgba(124, 146, 127, 0.18)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    color: isPast ? "#ffffff" : "#56635a",
-                    fontSize: 11,
-                        fontWeight: 800,
-                      }}
-                    >
-                      {monthNumber}
-                    </div>
-              )
-            })}
-          </div>
-        </div>
       </div>
       <div style={rowTwoStyle}>
         <div style={HUD_STYLE}>
@@ -4960,6 +4825,83 @@ export default function Board({
                 </button>
               </div>
             )}
+            <div
+              style={{
+                flex: "1 1 0%",
+                minHeight: 0,
+                display: "flex",
+                flexDirection: "column",
+                gap: 1,
+                borderRadius: 6,
+                overflow: "hidden",
+              }}
+            >
+              {Array.from({ length: game.operatingConfig.totalWeeks }, (_, index) => {
+                const weekNum = index + 1
+                const isPast = weekNum < game.currentWeek
+                const isCurrent = weekNum === game.currentWeek
+
+                return (
+                  <div
+                   key={`week-tracker-${weekNum}`}
+                   title={`Month ${weekNum}${isCurrent ? `: ${formatPhaseLabel(game.currentPhase)}` : ""}`}
+                   style={{
+                     flex: "1 1 0%",
+                     minHeight: 0,
+                     position: "relative",
+                     display: "flex",
+                     gap: 1,
+                     overflow: "hidden",
+                   }}
+                  >
+                   {TOP_BAR_PHASE_ORDER.map((_, phaseIndex) => {
+                     const isFilled = isPast || (isCurrent && currentPhaseProgressIndex >= phaseIndex)
+                     return (
+                       <div
+                         key={phaseIndex}
+                         style={{
+                           flex: 1,
+                           background: isPast
+                             ? "repeating-linear-gradient(135deg, #a9c3dc 0 4px, #9bb7d4 4px 6px)"
+                             : isCurrent && isFilled
+                               ? "repeating-linear-gradient(135deg, #7e9b73 0 4px, #6f8f64 4px 6px)"
+                               : "#d9ddd7",
+                         }}
+                       />
+                     )
+                   })}
+                   {isCurrent && (
+                     <div
+                       style={{
+                         position: "absolute",
+                         inset: 0,
+                         background:
+                           "repeating-linear-gradient(135deg, rgba(126, 155, 115, 0.85) 0 4px, rgba(111, 143, 100, 0.85) 4px 6px)",
+                         opacity: isLiveStagePulseOn ? 0.4 : 0,
+                         transition: "opacity 2800ms ease-in-out",
+                       }}
+                     />
+                   )}
+                   <div
+                     style={{
+                       position: "absolute",
+                       inset: 0,
+                       display: "flex",
+                       alignItems: "center",
+                       justifyContent: "center",
+                       fontSize: 9,
+                       fontWeight: 800,
+                       color: isPast ? "rgba(255,255,255,0.85)" : isCurrent ? "#ffffff" : "#9ba59d",
+                       textShadow: isPast || isCurrent ? "0 1px 1px rgba(0,0,0,0.3)" : "none",
+                       pointerEvents: "none",
+                     }}
+                   >
+                     {weekNum}
+                   </div>
+                  </div>
+                )
+              })}
+            </div>
             {game.currentPhase !== "bureaucracy" && (
               <button
                 type="button"
@@ -4969,8 +4911,8 @@ export default function Board({
                   marginTop: "auto",
                   alignSelf: "center",
                   width: 44,
-                  minHeight: 176,
-                  padding: "12px 0",
+                  minHeight: 88,
+                  padding: "8px 0",
                   borderRadius: 10,
                   border: "1px solid #c7d0c4",
                   cursor: game.isGameOver || isAdvanceBlocked ? "not-allowed" : "pointer",
@@ -4985,7 +4927,7 @@ export default function Board({
                 title={advanceTurnLabel}
               >
                 <span style={{ display: "inline-block", whiteSpace: "nowrap", transform: "rotate(90deg)" }}>
-                  {advanceTurnLabel}
+                  Next
                 </span>
               </button>
             )}
