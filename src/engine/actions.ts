@@ -1812,47 +1812,6 @@ function advancePhase(game: GameState): GameState {
   }
 }
 
-function getNextPlayerId(game: GameState) {
-  if (game.players.length === 0) {
-    return game.currentPlayerId
-  }
-
-  const currentPlayerIndex = game.players.findIndex(
-    player => player.id === game.currentPlayerId,
-  )
-
-  if (currentPlayerIndex === -1) {
-    return game.players[0].id
-  }
-
-  return game.players[(currentPlayerIndex + 1) % game.players.length].id
-}
-
-function getVehicleInventoryKey(type: VehicleType) {
-  switch (type) {
-    case "bus":
-      return "buses"
-    case "train":
-      return "trains"
-    case "air":
-      return "planes"
-  }
-}
-
-export function isLastPlayerTurn(game: GameState) {
-  if (game.players.length <= 1) {
-    return true
-  }
-
-  const currentPlayerIndex = game.players.findIndex(
-    player => player.id === game.currentPlayerId,
-  )
-  const lastPlayerIndex =
-    (game.leadPlayerIndex + game.players.length - 1) % game.players.length
-
-  return currentPlayerIndex === -1 || currentPlayerIndex === lastPlayerIndex
-}
-
 export function advanceTurn(game: GameState, playerId = game.currentPlayerId): GameState {
   if (isGameLocked(game)) {
     return game
@@ -1863,32 +1822,17 @@ export function advanceTurn(game: GameState, playerId = game.currentPlayerId): G
     return result.ok ? result.game : game
   }
 
-  if (game.currentPhase === "add-city") {
-    const result = playerId === game.currentPlayerId
-      ? confirmAddCityPicks(game, playerId)
-      : markOperationsReady(game, playerId)
-    return result.ok ? result.game : game
-  }
+  return game
+}
 
-  if (game.currentPhase === "operations") {
-    const result = markOperationsReady(game, playerId)
-    return result.ok ? result.game : game
-  }
-
-  if (game.currentPhase === "bureaucracy") {
-    const result = markBureaucracyReady(game, playerId)
-    return result.ok ? result.game : game
-  }
-
-  if (isLastPlayerTurn(game)) {
-    return advancePhase(game)
-  }
-
-  return {
-    ...game,
-    currentPlayerId: getNextPlayerId(game),
-    claimedRoutePlayerIdsThisTurn: [],
-    activeCityOffer: null,
+function getVehicleInventoryKey(type: VehicleType) {
+  switch (type) {
+    case "bus":
+      return "buses"
+    case "train":
+      return "trains"
+    case "air":
+      return "planes"
   }
 }
 

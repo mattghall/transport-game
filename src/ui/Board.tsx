@@ -16,7 +16,6 @@ import {
   getEffectiveClaimCityIds,
   getConnectionOptions,
   getCurrentPlayer,
-  isLastPlayerTurn,
   resolveSegmentSelection,
   resolveRouteSelection,
   type DrawCityOfferResult,
@@ -2892,8 +2891,7 @@ export default function Board({
     (viewerPhase === "purchase-equipment" && canBuyVehiclesInPipeline && purchaseEquipmentPlayersRemaining <= 1) ||
     (canManageCurrentCityOffer && addCityPlayersRemaining <= 1) ||
     (canEditOperations && operationsPlayersRemaining <= 1) ||
-    (game.currentPhase === "bureaucracy" && (game.bureaucracyReadyPlayerIds.length + 1 >= game.players.length)) ||
-    isLastPlayerTurn(game)
+    (game.currentPhase === "bureaucracy" && (game.bureaucracyReadyPlayerIds.length + 1 >= game.players.length))
   const hasInvalidOperationsPods =
     canEditOperations && invalidCurrentPlayerPodRouteIds.size > 0
   const hasPendingOperationsRouteSelection =
