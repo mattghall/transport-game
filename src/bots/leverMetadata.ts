@@ -19,6 +19,7 @@ export const SCRIPTED_BOT_WEIGHT_KEYS = Object.keys(
 // podRemoveCityBaseScore is frozen at 0 so bots only remove cities when there's a measurable
 // net-revenue or passengers-per-distance gain, not unconditionally.
 export const FROZEN_SCRIPTED_BOT_WEIGHT_KEYS = [
+  // Already frozen
   "claimFirstModeBonus",
   "claimMountainPreference",
   "claimPacificPreference",
@@ -28,6 +29,31 @@ export const FROZEN_SCRIPTED_BOT_WEIGHT_KEYS = [
   "earlyPopulationMultiplier",
   "lateReadyOperationsScore",
   "podRemoveCityBaseScore",
+  // 0 in all champions: ready-phase timing (dominated by other logic)
+  "earlyReadyOperationsScore",
+  "midReadyOperationsScore",
+  // 0 everywhere: constant base score, can't differentiate between options
+  "podSplitBaseScore",
+  // 0 everywhere: geographic region biases
+  "claimMidwestPreference",
+  "claimNortheastPreference",
+  "claimSoutheastPreference",
+  "claimSouthPreference",
+  // 0 everywhere: other dead levers
+  "claimSameRegionLinkBonus",
+  "podNetRevenueScore",
+  "drawRegionOpponentCityPenalty",
+  "podRemoveNetRevenueGainScore",
+  "podRemovePassengersPerDistanceGainScore",
+  "buyFirstAirBonus",
+  "buyFirstTrainBonus",
+  "buyAirNoClaimPenalty",
+  "buyTrainNoClaimPenalty",
+  "buyAirFallbackOwnedCityBonus",
+  "buyTrainFallbackOwnedCityBonus",
+  "midExpansionMultiplier",
+  "lateExpansionMultiplier",
+  "latePopulationMultiplier",
 ] as const satisfies Array<keyof ScriptedBotWeights>
 
 const FROZEN_SCRIPTED_BOT_WEIGHT_KEY_SET = new Set<keyof ScriptedBotWeights>(
@@ -262,6 +288,41 @@ export const SCRIPTED_BOT_LEVER_METADATA: Record<keyof ScriptedBotWeights, Scrip
   },
   podRemoveNetRevenueGainScore: {
     mutationStep: 5,
+    minimum: 0,
+    enabled: true,
+  },
+  drawRegionDeckSizeScore: {
+    mutationStep: 1,
+    minimum: 0,
+    enabled: true,
+  },
+  drawRegionOwnedCityBonus: {
+    mutationStep: 2,
+    minimum: 0,
+    enabled: true,
+  },
+  drawRegionOpponentCityPenalty: {
+    mutationStep: 1,
+    minimum: 0,
+    enabled: true,
+  },
+  drawRegionBigCityScarcityBonus: {
+    mutationStep: 2,
+    minimum: 0,
+    enabled: true,
+  },
+  keepCityPopulationScore: {
+    mutationStep: 2,
+    minimum: 0,
+    enabled: true,
+  },
+  keepCityNetworkProximityScore: {
+    mutationStep: 2,
+    minimum: 0,
+    enabled: true,
+  },
+  keepCityRegionMatchScore: {
+    mutationStep: 2,
     minimum: 0,
     enabled: true,
   },

@@ -334,12 +334,45 @@ export function getPlayerById(game: GameState, playerId: string | null | undefin
   return game.players.find(player => player.id === playerId) ?? null
 }
 
+function getWeeklyPhaseIndex(phase: WeeklyPhase) {
+  return WEEKLY_PHASES.indexOf(phase)
+}
+
+function computeCurrentPhase(players: GameState["players"]): WeeklyPhase {
+  if (players.length === 0) return "purchase-equipment"
+
+  let minIndex = WEEKLY_PHASES.length - 1
+
+  for (const player of players) {
+    const phaseIndex = getWeeklyPhaseIndex(player.phase)
+
+    if (phaseIndex < minIndex) {
+      minIndex = phaseIndex
+    }
+  }
+
+  return WEEKLY_PHASES[minIndex] ?? "purchase-equipment"
+}
+
+export function hasPlayerCompletedPurchaseEquipment(game: GameState, playerId: string | null | undefined) {
+  if (typeof playerId !== "string") return false
+  const player = getPlayerById(game, playerId)
+  if (!player) return false
+  return getWeeklyPhaseIndex(player.phase) > getWeeklyPhaseIndex("purchase-equipment")
+}
+
 export function hasPlayerCompletedAddCity(game: GameState, playerId: string | null | undefined) {
-  return typeof playerId === "string" && game.addCityReadyPlayerIds.includes(playerId)
+  if (typeof playerId !== "string") return false
+  const player = getPlayerById(game, playerId)
+  if (!player) return false
+  return getWeeklyPhaseIndex(player.phase) > getWeeklyPhaseIndex("add-city")
 }
 
 export function hasPlayerCompletedOperations(game: GameState, playerId: string | null | undefined) {
-  return typeof playerId === "string" && game.operationsReadyPlayerIds.includes(playerId)
+  if (typeof playerId !== "string") return false
+  const player = getPlayerById(game, playerId)
+  if (!player) return false
+  return getWeeklyPhaseIndex(player.phase) > getWeeklyPhaseIndex("operations")
 }
 
 export function hasPlayerCompletedBureaucracy(game: GameState, playerId: string | null | undefined) {
@@ -350,12 +383,44 @@ export function hasPlayerClaimedRouteThisTurn(game: GameState, playerId: string 
   return typeof playerId === "string" && game.claimedRoutePlayerIdsThisTurn.includes(playerId)
 }
 
+function getPlayerTurnOrderPosition(game: GameState, playerId: string): number {
+  const idx = game.players.findIndex(player => player.id === playerId)
+  if (idx === -1) return -1
+  return (idx - game.leadPlayerIndex + game.players.length) % game.players.length
+}
+
+export function canPlayerStartPhaseByPipeline(
+  game: GameState,
+  playerId: string | null | undefined,
+  phase: WeeklyPhase,
+): boolean {
+  if (!playerId) return false
+  const position = getPlayerTurnOrderPosition(game, playerId)
+  if (position === 0) return true
+  const prevIdx = (game.leadPlayerIndex + position - 1) % game.players.length
+  const prevPlayer = game.players[prevIdx]
+  if (!prevPlayer) return false
+  return getWeeklyPhaseIndex(prevPlayer.phase) > getWeeklyPhaseIndex(phase)
+}
+
+export function canPlayerPickCities(
+  game: GameState,
+  playerId: string | null | undefined,
+): boolean {
+  if (!playerId) return false
+  if (hasPlayerCompletedAddCity(game, playerId)) return false
+  const player = getPlayerById(game, playerId)
+  if (!player) return false
+  if (player.phase !== "add-city") return false
+  return canPlayerStartPhaseByPipeline(game, playerId, "add-city")
+}
+
 export function isOperationsUnlockedForPlayer(game: GameState, playerId: string | null | undefined) {
-  return (
-    Boolean(playerId) &&
-    (game.currentPhase === "add-city" || game.currentPhase === "operations") &&
-    hasPlayerCompletedAddCity(game, playerId)
-  )
+  if (!playerId) return false
+  if (game.isGameOver) return false
+  const player = getPlayerById(game, playerId)
+  if (!player) return false
+  return player.phase === "operations"
 }
 
 export function canPlayerEditOperations(game: GameState, playerId: string | null | undefined) {
@@ -411,8 +476,8 @@ function isVisibleVehicleMarketCard(game: GameState, cardId: string) {
   return getVisibleVehicleMarketCardIds(game).includes(cardId)
 }
 
-function isOwnedVehicleCard(game: GameState, cardId: string) {
-  return getCurrentPlayer(game)?.ownedVehicleCardIds.includes(cardId) ?? false
+function isOwnedVehicleCard(game: GameState, cardId: string, playerId = game.currentPlayerId) {
+  return getPlayerById(game, playerId)?.ownedVehicleCardIds.includes(cardId) ?? false
 }
 
 function getCityById(cities: City[], cityId: string) {
@@ -759,7 +824,7 @@ function getCityDeckFallbackOrder(game: GameState, region: CityDeckRegion) {
   })
 }
 
-function applyKeptCityOfferToCurrentPlayer(game: GameState) {
+function applyKeptCityOfferToCurrentPlayer(game: GameState, playerId = game.currentPlayerId) {
   const keptCityIds = game.activeCityOffer?.keptCityIds ?? []
 
   if (keptCityIds.length !== 2) {
@@ -769,7 +834,7 @@ function applyKeptCityOfferToCurrentPlayer(game: GameState) {
   return {
     ...game,
     players: game.players.map(player =>
-      player.id === game.currentPlayerId
+      player.id === playerId
         ? {
             ...player,
             ownedCityCardIds: [...new Set([...player.ownedCityCardIds, ...keptCityIds])],
@@ -1252,19 +1317,18 @@ export function getCurrentPlayer(game: GameState) {
   )
 }
 
-function getNextPendingPlayerId(game: GameState, readyPlayerIds: string[]) {
+function getNextPlayerIdInPhase(game: GameState, phase: WeeklyPhase) {
   if (game.players.length <= 1) {
     return game.players[0]?.id ?? game.currentPlayerId
   }
 
-  const readySet = new Set(readyPlayerIds)
   const currentPlayerIndex = game.players.findIndex(player => player.id === game.currentPlayerId)
   const safeCurrentPlayerIndex = currentPlayerIndex === -1 ? 0 : currentPlayerIndex
 
   for (let step = 1; step <= game.players.length; step += 1) {
     const candidate = game.players[(safeCurrentPlayerIndex + step) % game.players.length]
 
-    if (!readySet.has(candidate.id)) {
+    if (candidate?.phase === phase) {
       return candidate.id
     }
   }
@@ -1332,21 +1396,14 @@ export function drawCityOffer(
     }
   }
 
-  if (game.currentPhase !== "add-city") {
+  if (!canPlayerPickCities(game, playerId)) {
     return {
       ok: false,
-      error: "City cards can only be drawn during the add city phase.",
+      error: "Only the active player can pick city cards.",
     }
   }
 
-  if (playerId !== game.currentPlayerId) {
-    return {
-      ok: false,
-      error: "Only the active player can draw city cards.",
-    }
-  }
-
-  if (hasPlayerClaimedRouteThisTurn(game, game.currentPlayerId)) {
+  if (hasPlayerClaimedRouteThisTurn(game, playerId)) {
     return {
       ok: false,
       error: "You already claimed a route this turn.",
@@ -1412,14 +1469,7 @@ export function setActiveCityOfferKeptCityIds(
     }
   }
 
-  if (game.currentPhase !== "add-city") {
-    return {
-      ok: false,
-      error: "City cards can only be picked during the add city phase.",
-    }
-  }
-
-  if (playerId !== game.currentPlayerId) {
+  if (!canPlayerPickCities(game, playerId)) {
     return {
       ok: false,
       error: "Only the active player can pick city cards.",
@@ -1457,7 +1507,10 @@ export function setActiveCityOfferKeptCityIds(
   }
 }
 
-export function confirmAddCityPicks(game: GameState): ReadyPhaseResult {
+export function confirmAddCityPicks(
+  game: GameState,
+  playerId = game.currentPlayerId,
+): ReadyPhaseResult {
   if (isGameLocked(game)) {
     return {
       ok: false,
@@ -1465,10 +1518,17 @@ export function confirmAddCityPicks(game: GameState): ReadyPhaseResult {
     }
   }
 
-  if (game.currentPhase !== "add-city") {
+  if (hasPlayerCompletedAddCity(game, playerId)) {
     return {
       ok: false,
-      error: "City picks can only be confirmed during the add city phase.",
+      error: "You have already confirmed your city picks this turn.",
+    }
+  }
+
+  if (!canPlayerPickCities(game, playerId)) {
+    return {
+      ok: false,
+      error: "City picks can only be confirmed once your city selection step is active.",
     }
   }
 
@@ -1480,35 +1540,80 @@ export function confirmAddCityPicks(game: GameState): ReadyPhaseResult {
   }
 
   const gameWithKeptCityCards = returnUnkeptCityOfferCardsToDecks(
-    applyKeptCityOfferToCurrentPlayer(game),
+    applyKeptCityOfferToCurrentPlayer(game, playerId),
   )
   const migratedBureaucracyState = migrateBureaucracyServiceState(
     game,
     gameWithKeptCityCards,
   )
-  const addCityReadyPlayerIds = dedupePlayerIds([
-    ...game.addCityReadyPlayerIds,
-    game.currentPlayerId,
-  ])
-  const advancedPhase = addCityReadyPlayerIds.length >= game.players.length
+  const updatedPlayers = gameWithKeptCityCards.players.map(player =>
+    player.id === playerId ? { ...player, phase: "operations" as WeeklyPhase } : player,
+  )
+  const newCurrentPhase = computeCurrentPhase(updatedPlayers)
+  const advancedPhase = newCurrentPhase !== game.currentPhase
   const firstPlayerId = game.players[game.leadPlayerIndex]?.id ?? game.players[0]?.id ?? game.currentPlayerId
 
   return {
     ok: true,
-    playerId: game.currentPlayerId,
+    playerId,
     advancedPhase,
     game: {
       ...gameWithKeptCityCards,
       ...migratedBureaucracyState,
-      addCityReadyPlayerIds,
-      operationsReadyPlayerIds: game.operationsReadyPlayerIds.filter(playerId =>
-        addCityReadyPlayerIds.includes(playerId),
-      ),
-      currentPhase: advancedPhase ? "operations" : "add-city",
-      currentPlayerId: advancedPhase
-        ? firstPlayerId
-        : getNextPendingPlayerId(game, addCityReadyPlayerIds),
+      players: updatedPlayers,
+      currentPhase: newCurrentPhase,
+      currentPlayerId:
+        newCurrentPhase === "add-city"
+          ? getNextPlayerIdInPhase({ ...game, players: updatedPlayers }, "add-city")
+          : firstPlayerId,
       activeCityOffer: null,
+    },
+  }
+}
+
+export function markPurchaseEquipmentReady(
+  game: GameState,
+  playerId: string,
+): ReadyPhaseResult {
+  if (isGameLocked(game)) {
+    return { ok: false, error: "The game is over." }
+  }
+  if (game.currentPhase !== "purchase-equipment") {
+    return {
+      ok: false,
+      error: "Vehicle purchases are only made during the purchase equipment phase.",
+    }
+  }
+  if (hasPlayerCompletedPurchaseEquipment(game, playerId)) {
+    return { ok: true, playerId, advancedPhase: false, game }
+  }
+  if (!canPlayerStartPhaseByPipeline(game, playerId, "purchase-equipment")) {
+    const position = getPlayerTurnOrderPosition(game, playerId)
+    const prevIdx = (game.leadPlayerIndex + position - 1) % game.players.length
+    const prevPlayer = game.players[prevIdx]
+    return {
+      ok: false,
+      error: `Wait for ${prevPlayer?.name ?? "the previous player"} to finish purchasing.`,
+    }
+  }
+
+  const updatedPlayers = game.players.map(player =>
+    player.id === playerId ? { ...player, phase: "add-city" as WeeklyPhase } : player,
+  )
+  const newCurrentPhase = computeCurrentPhase(updatedPlayers)
+
+  return {
+    ok: true,
+    playerId,
+    advancedPhase: newCurrentPhase !== game.currentPhase,
+    game: {
+      ...game,
+      players: updatedPlayers,
+      currentPhase: newCurrentPhase,
+      vehicleMarketCardIds:
+        newCurrentPhase !== "purchase-equipment"
+          ? game.vehicleMarketCardIds.filter(cardId => !getVehicleMarketBurnCardIds(game).includes(cardId))
+          : game.vehicleMarketCardIds,
     },
   }
 }
@@ -1540,24 +1645,22 @@ export function markOperationsReady(
     }
   }
 
-  const operationsReadyPlayerIds = dedupePlayerIds([
-    ...game.operationsReadyPlayerIds,
-    playerId,
-  ])
-  const advancedPhase = operationsReadyPlayerIds.length >= game.players.length
+  const updatedPlayers = game.players.map(player =>
+    player.id === playerId ? { ...player, phase: "bureaucracy" as WeeklyPhase } : player,
+  )
+  const newCurrentPhase = computeCurrentPhase(updatedPlayers)
   const firstPlayerId = game.players[game.leadPlayerIndex]?.id ?? game.players[0]?.id ?? game.currentPlayerId
 
   return {
     ok: true,
     playerId,
-    advancedPhase,
+    advancedPhase: newCurrentPhase !== game.currentPhase,
     game: {
       ...game,
-      currentPhase: advancedPhase ? "bureaucracy" : game.currentPhase,
-      currentPlayerId: advancedPhase ? firstPlayerId : game.currentPlayerId,
-      operationsReadyPlayerIds: advancedPhase ? [] : operationsReadyPlayerIds,
-      bureaucracyReadyPlayerIds: advancedPhase ? [] : game.bureaucracyReadyPlayerIds,
-      activeCityOffer: advancedPhase ? null : game.activeCityOffer,
+      players: updatedPlayers,
+      currentPhase: newCurrentPhase,
+      currentPlayerId: newCurrentPhase === "bureaucracy" ? firstPlayerId : game.currentPlayerId,
+      activeCityOffer: newCurrentPhase === "bureaucracy" ? null : game.activeCityOffer,
     },
   }
 }
@@ -1573,17 +1676,19 @@ export function markBureaucracyReady(
     }
   }
 
-  if (game.currentPhase !== "bureaucracy") {
-    return {
-      ok: false,
-      error: "Bureaucracy can only be advanced during the bureaucracy phase.",
-    }
-  }
+  const player = getPlayerById(game, playerId)
 
-  if (!getPlayerById(game, playerId)) {
+  if (!player) {
     return {
       ok: false,
       error: `Player ${playerId} could not be found.`,
+    }
+  }
+
+  if (player.phase !== "bureaucracy") {
+    return {
+      ok: false,
+      error: "Bureaucracy can only be advanced once you have completed operations.",
     }
   }
 
@@ -1618,173 +1723,92 @@ export function markBureaucracyReady(
   }
 }
 
-export function advancePhase(game: GameState): GameState {
-  if (isGameLocked(game)) {
+function advancePhase(game: GameState): GameState {
+  if (isGameLocked(game) || game.currentPhase !== "bureaucracy") {
     return game
   }
 
-  const currentPhaseIndex = WEEKLY_PHASES.indexOf(game.currentPhase)
-  const safePhaseIndex = currentPhaseIndex === -1 ? 0 : currentPhaseIndex
-  const nextPhaseIndex = (safePhaseIndex + 1) % WEEKLY_PHASES.length
-  const wrappedWeek = nextPhaseIndex === 0 ? game.currentWeek + 1 : game.currentWeek
+  const nextWeek = game.currentWeek + 1
   const nextLeadPlayerIndex =
-    nextPhaseIndex === 0
-      ? (game.leadPlayerIndex + 1) % Math.max(game.players.length, 1)
-      : game.leadPlayerIndex
+    (game.leadPlayerIndex + 1) % Math.max(game.players.length, 1)
   const firstPlayerId = game.players[nextLeadPlayerIndex]?.id ?? game.currentPlayerId
+  const resolvedGame = applyBureaucracyFuelConsumption(game)
 
-  if (game.currentPhase === "purchase-equipment") {
-    const burnedCardIds = getVehicleMarketBurnCardIds(game)
-    const nextVehicleMarketCardIds =
-      burnedCardIds.length === 0
-        ? game.vehicleMarketCardIds
-        : game.vehicleMarketCardIds.filter(cardId => !burnedCardIds.includes(cardId))
-
-    return {
-      ...game,
-      currentWeek: wrappedWeek,
-      currentPhase: WEEKLY_PHASES[nextPhaseIndex],
-      leadPlayerIndex: nextLeadPlayerIndex,
-      currentPlayerId: firstPlayerId,
-      addCityReadyPlayerIds: [],
-      operationsReadyPlayerIds: [],
-      bureaucracyReadyPlayerIds: [],
-      hasPurchasedVehicleThisTurn: false,
-      hasPurchasedVehicleThisPhase: false,
-      purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
-      claimedRoutePlayerIdsThisTurn: [],
-      claimedRouteCountsByPlayerIdThisTurn: {},
-      claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
-      vehicleMarketCardIds: nextVehicleMarketCardIds,
-      activeCityOffer: null,
-    }
-  }
-
-  if (game.currentPhase === "add-city") {
-    const gameWithKeptCityCards = returnUnkeptCityOfferCardsToDecks(
-      applyKeptCityOfferToCurrentPlayer(game),
-    )
-    const migratedBureaucracyState = migrateBureaucracyServiceState(
-      game,
-      gameWithKeptCityCards,
-    )
-
-    return {
-      ...gameWithKeptCityCards,
-      ...migratedBureaucracyState,
-      currentWeek: wrappedWeek,
-      currentPhase: WEEKLY_PHASES[nextPhaseIndex],
-      leadPlayerIndex: nextLeadPlayerIndex,
-      currentPlayerId: firstPlayerId,
-      addCityReadyPlayerIds: [],
-      operationsReadyPlayerIds: [],
-      bureaucracyReadyPlayerIds: [],
-      hasPurchasedVehicleThisTurn: false,
-      hasPurchasedVehicleThisPhase: false,
-      purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
-      claimedRoutePlayerIdsThisTurn: [],
-      claimedRouteCountsByPlayerIdThisTurn: {},
-      claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
-      activeCityOffer: null,
-    }
-  }
-
-  if (game.currentPhase === "bureaucracy") {
-    const resolvedGame = applyBureaucracyFuelConsumption(game)
-
-    if (game.currentWeek >= game.operatingConfig.totalWeeks) {
-      return {
-        ...resolvedGame,
-        isGameOver: true,
-        leadPlayerIndex: nextLeadPlayerIndex,
-        currentPlayerId: firstPlayerId,
-        addCityReadyPlayerIds: [],
-        operationsReadyPlayerIds: [],
-        bureaucracyReadyPlayerIds: [],
-        hasPurchasedVehicleThisTurn: false,
-        hasPurchasedVehicleThisPhase: false,
-        purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
-        claimedRoutePlayerIdsThisTurn: [],
-        claimedRouteCountsByPlayerIdThisTurn: {},
-        claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
-        activeCityOffer: null,
-      }
-    }
-
-    const dieselRefill = refillResourceTrack(
-      resolvedGame.resourceMarket.diesel,
-      resolvedGame.resourceSupply.diesel,
-      "diesel",
-      STEP_ONE_REFILL.diesel,
-    )
-    const jetFuelRefill = refillResourceTrack(
-      resolvedGame.resourceMarket.jetFuel,
-      resolvedGame.resourceSupply.jetFuel,
-      "jetFuel",
-      STEP_ONE_REFILL.jetFuel,
-    )
-    let nextDiscard = resolvedGame.activeChanceCardId
-      ? [...resolvedGame.chanceDiscardCardIds, resolvedGame.activeChanceCardId]
-      : [...resolvedGame.chanceDiscardCardIds]
-    let nextDeck = [...resolvedGame.chanceDeckCardIds]
-    let randomState = resolvedGame.randomState
-
-    if (nextDeck.length === 0 && nextDiscard.length > 0) {
-      const reshuffledDiscard = shuffleWithRandomState(nextDiscard, randomState)
-      nextDeck = reshuffledDiscard.items
-      nextDiscard = []
-      randomState = reshuffledDiscard.randomState
-    }
-
-    const activeChanceCardId = nextDeck[0] ?? null
-
+  if (game.currentWeek >= game.operatingConfig.totalWeeks) {
     return {
       ...resolvedGame,
-      randomState,
-      currentWeek: wrappedWeek,
-      currentPhase: WEEKLY_PHASES[nextPhaseIndex],
-      activeChanceCardId,
-      chanceDeckCardIds: activeChanceCardId === null ? [] : nextDeck.slice(1),
-      chanceDiscardCardIds: nextDiscard,
+      isGameOver: true,
       leadPlayerIndex: nextLeadPlayerIndex,
       currentPlayerId: firstPlayerId,
-      addCityReadyPlayerIds: [],
-      operationsReadyPlayerIds: [],
       bureaucracyReadyPlayerIds: [],
-      hasPurchasedVehicleThisTurn: false,
+      purchasedVehiclePlayerIds: [],
       hasPurchasedVehicleThisPhase: false,
       purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
       claimedRoutePlayerIdsThisTurn: [],
       claimedRouteCountsByPlayerIdThisTurn: {},
       claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
       activeCityOffer: null,
-      resourceMarket: {
-        diesel: dieselRefill.counts,
-        jetFuel: jetFuelRefill.counts,
-      },
-      resourceSupply: {
-        diesel: dieselRefill.remainingSupply,
-        jetFuel: jetFuelRefill.remainingSupply,
-      },
     }
   }
 
+  const dieselRefill = refillResourceTrack(
+    resolvedGame.resourceMarket.diesel,
+    resolvedGame.resourceSupply.diesel,
+    "diesel",
+    STEP_ONE_REFILL.diesel,
+  )
+  const jetFuelRefill = refillResourceTrack(
+    resolvedGame.resourceMarket.jetFuel,
+    resolvedGame.resourceSupply.jetFuel,
+    "jetFuel",
+    STEP_ONE_REFILL.jetFuel,
+  )
+  let nextDiscard = resolvedGame.activeChanceCardId
+    ? [...resolvedGame.chanceDiscardCardIds, resolvedGame.activeChanceCardId]
+    : [...resolvedGame.chanceDiscardCardIds]
+  let nextDeck = [...resolvedGame.chanceDeckCardIds]
+  let randomState = resolvedGame.randomState
+
+  if (nextDeck.length === 0 && nextDiscard.length > 0) {
+    const reshuffledDiscard = shuffleWithRandomState(nextDiscard, randomState)
+    nextDeck = reshuffledDiscard.items
+    nextDiscard = []
+    randomState = reshuffledDiscard.randomState
+  }
+
+  const activeChanceCardId = nextDeck[0] ?? null
+  const players = resolvedGame.players.map(player => ({
+    ...player,
+    phase: "purchase-equipment" as WeeklyPhase,
+  }))
+
   return {
-    ...game,
-    currentWeek: wrappedWeek,
-    currentPhase: WEEKLY_PHASES[nextPhaseIndex],
+    ...resolvedGame,
+    players,
+    randomState,
+    currentWeek: nextWeek,
+    currentPhase: "purchase-equipment",
+    activeChanceCardId,
+    chanceDeckCardIds: activeChanceCardId === null ? [] : nextDeck.slice(1),
+    chanceDiscardCardIds: nextDiscard,
     leadPlayerIndex: nextLeadPlayerIndex,
     currentPlayerId: firstPlayerId,
-    addCityReadyPlayerIds: [],
-    operationsReadyPlayerIds: [],
     bureaucracyReadyPlayerIds: [],
-    hasPurchasedVehicleThisTurn: false,
+    purchasedVehiclePlayerIds: [],
     hasPurchasedVehicleThisPhase: false,
     purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
     claimedRoutePlayerIdsThisTurn: [],
     claimedRouteCountsByPlayerIdThisTurn: {},
     claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
     activeCityOffer: null,
+    resourceMarket: {
+      diesel: dieselRefill.counts,
+      jetFuel: jetFuelRefill.counts,
+    },
+    resourceSupply: {
+      diesel: dieselRefill.remainingSupply,
+      jetFuel: jetFuelRefill.remainingSupply,
+    },
   }
 }
 
@@ -1829,23 +1853,30 @@ export function isLastPlayerTurn(game: GameState) {
   return currentPlayerIndex === -1 || currentPlayerIndex === lastPlayerIndex
 }
 
-export function advanceTurn(game: GameState): GameState {
+export function advanceTurn(game: GameState, playerId = game.currentPlayerId): GameState {
   if (isGameLocked(game)) {
     return game
   }
 
+  if (game.currentPhase === "purchase-equipment") {
+    const result = markPurchaseEquipmentReady(game, playerId)
+    return result.ok ? result.game : game
+  }
+
   if (game.currentPhase === "add-city") {
-    const result = confirmAddCityPicks(game)
+    const result = playerId === game.currentPlayerId
+      ? confirmAddCityPicks(game, playerId)
+      : markOperationsReady(game, playerId)
     return result.ok ? result.game : game
   }
 
   if (game.currentPhase === "operations") {
-    const result = markOperationsReady(game, game.currentPlayerId)
+    const result = markOperationsReady(game, playerId)
     return result.ok ? result.game : game
   }
 
   if (game.currentPhase === "bureaucracy") {
-    const result = markBureaucracyReady(game, game.currentPlayerId)
+    const result = markBureaucracyReady(game, playerId)
     return result.ok ? result.game : game
   }
 
@@ -1856,7 +1887,6 @@ export function advanceTurn(game: GameState): GameState {
   return {
     ...game,
     currentPlayerId: getNextPlayerId(game),
-    hasPurchasedVehicleThisTurn: false,
     claimedRoutePlayerIdsThisTurn: [],
     activeCityOffer: null,
   }
@@ -1866,6 +1896,7 @@ export function buyVehicleCard(
   game: GameState,
   cardId: string,
   quantity = 1,
+  playerId = game.currentPlayerId,
 ): VehiclePurchaseResult {
   if (isGameLocked(game)) {
     return {
@@ -1881,14 +1912,7 @@ export function buyVehicleCard(
     }
   }
 
-  if (game.hasPurchasedVehicleThisTurn) {
-    return {
-      ok: false,
-      error: "You can make only 1 vehicle purchase per turn.",
-    }
-  }
-
-  const currentPlayer = getCurrentPlayer(game)
+  const currentPlayer = getPlayerById(game, playerId)
 
   if (!currentPlayer) {
     return {
@@ -1897,7 +1921,31 @@ export function buyVehicleCard(
     }
   }
 
-  const isOwnedCard = isOwnedVehicleCard(game, cardId)
+  if (hasPlayerCompletedPurchaseEquipment(game, currentPlayer.id)) {
+    return {
+      ok: false,
+      error: "You have already finished purchasing this round.",
+    }
+  }
+
+  if (!canPlayerStartPhaseByPipeline(game, playerId, "purchase-equipment")) {
+    const position = getPlayerTurnOrderPosition(game, currentPlayer.id)
+    const prevIdx = (game.leadPlayerIndex + position - 1) % game.players.length
+    const prevPlayer = game.players[prevIdx]
+    return {
+      ok: false,
+      error: `Wait for ${prevPlayer?.name ?? "the previous player"} to finish purchasing.`,
+    }
+  }
+
+  if (game.purchasedVehiclePlayerIds.includes(currentPlayer.id)) {
+    return {
+      ok: false,
+      error: "You can make only 1 vehicle purchase per turn.",
+    }
+  }
+
+  const isOwnedCard = isOwnedVehicleCard(game, cardId, currentPlayer.id)
   const isVisibleMarketCard = isVisibleVehicleMarketCard(game, cardId)
 
   if (!isVisibleMarketCard && !isOwnedCard) {
@@ -1952,7 +2000,10 @@ export function buyVehicleCard(
     cost,
     game: {
       ...game,
-      hasPurchasedVehicleThisTurn: true,
+      purchasedVehiclePlayerIds: dedupePlayerIds([
+        ...game.purchasedVehiclePlayerIds,
+        currentPlayer.id,
+      ]),
       hasPurchasedVehicleThisPhase: true,
       purchasedVehicleTypesThisPhase: {
         ...game.purchasedVehicleTypesThisPhase,

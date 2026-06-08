@@ -52,7 +52,8 @@ export function getCityDemandSize(game: GameState, city: City) {
 }
 
 export function getCityDemandAbsorptionSize(game: GameState, city: City) {
-  return Math.max(0, getCityDemandSize(game, city)) + 1
+  const baseDemandSize = city.size ?? 0
+  return (baseDemandSize + 1) * game.operatingConfig.demandPointsPerCitySize
 }
 
 export function getCombinedDemandForCityIds(game: GameState, cityIds: string[]) {

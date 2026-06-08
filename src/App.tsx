@@ -28,6 +28,8 @@ import {
   advanceTurn,
   buyVehicleCard,
   canPlayerEditOperations,
+  canPlayerPickCities,
+  canPlayerStartPhaseByPipeline,
   claimRoute,
   confirmAddCityPicks,
   deleteBureaucracyServicePod,
@@ -35,6 +37,7 @@ import {
   hasPlayerCompletedBureaucracy,
   hasPlayerCompletedOperations,
   hasPlayerCompletedAddCity,
+  hasPlayerCompletedPurchaseEquipment,
   markBureaucracyReady,
   markOperationsReady,
   moveBureaucracyServiceCity,
@@ -123,6 +126,13 @@ function appendActionLog(
 
 function getAdvanceTurnLogMessage(previousGame: GameState, nextGame: GameState) {
   const nextPlayer = nextGame.players.find(player => player.id === nextGame.currentPlayerId)
+
+  if (
+    previousGame.currentPhase === "purchase-equipment" &&
+    nextGame.currentPhase === "purchase-equipment"
+  ) {
+    return "finished purchasing"
+  }
 
   return nextGame.currentWeek !== previousGame.currentWeek
     ? `advanced to month ${nextGame.currentWeek} ${formatPhaseLabel(nextGame.currentPhase)}`
@@ -277,6 +287,20 @@ function getDefaultLocalViewingPlayerId(game: GameState) {
     return null
   }
 
+  if (game.currentPhase === "purchase-equipment") {
+    return (
+      humanPlayers.find(player => canPlayerPickCities(game, player.id))?.id ??
+      humanPlayers.find(player => canPlayerEditOperations(game, player.id) && !hasPlayerCompletedOperations(game, player.id))?.id ??
+      humanPlayers.find(
+        player =>
+          !hasPlayerCompletedPurchaseEquipment(game, player.id) &&
+          canPlayerStartPhaseByPipeline(game, player.id, "purchase-equipment"),
+      )?.id ??
+      humanPlayers[0]?.id ??
+      null
+    )
+  }
+
   if (game.currentPhase === "operations") {
     return (
       humanPlayers.find(player => canPlayerEditOperations(game, player.id) && !hasPlayerCompletedOperations(game, player.id))
@@ -295,16 +319,11 @@ function getDefaultLocalViewingPlayerId(game: GameState) {
   }
 
   if (game.currentPhase === "add-city") {
-    const currentHumanPlayer = humanPlayers.find(player => player.id === game.currentPlayerId)
-
-    if (currentHumanPlayer && !hasPlayerCompletedAddCity(game, currentHumanPlayer.id)) {
-      return currentHumanPlayer.id
-    }
-
     return (
+      humanPlayers.find(player => canPlayerPickCities(game, player.id))?.id ??
       humanPlayers.find(player => canPlayerEditOperations(game, player.id) && !hasPlayerCompletedOperations(game, player.id))
         ?.id ??
-      currentHumanPlayer?.id ??
+      humanPlayers.find(player => player.id === game.currentPlayerId)?.id ??
       humanPlayers[0]?.id ??
       null
     )
@@ -334,12 +353,20 @@ function getNextLocalViewingPlayerId(game: GameState, currentSelectedPlayerId: s
 
     if (
       game.currentPhase === "add-city" &&
-      (currentSelectedPlayerId === game.currentPlayerId || canPlayerEditOperations(game, currentSelectedPlayerId))
+      (canPlayerPickCities(game, currentSelectedPlayerId) || canPlayerEditOperations(game, currentSelectedPlayerId))
     ) {
       return currentSelectedPlayerId
     }
 
-    if (game.currentPhase === "purchase-equipment" && currentSelectedPlayerId === game.currentPlayerId) {
+    if (
+      game.currentPhase === "purchase-equipment" &&
+      (
+        canPlayerPickCities(game, currentSelectedPlayerId) ||
+        canPlayerEditOperations(game, currentSelectedPlayerId) ||
+        (!hasPlayerCompletedPurchaseEquipment(game, currentSelectedPlayerId) &&
+          canPlayerStartPhaseByPipeline(game, currentSelectedPlayerId, "purchase-equipment"))
+      )
+    ) {
       return currentSelectedPlayerId
     }
   }
@@ -864,60 +891,46 @@ export default function App() {
       return "Pick your player seat in the lobby before playing."
     }
 
-    if (sourceGame.currentPhase === "purchase-equipment") {
-      return `It is ${sourceGame.players.find(player => player.id === sourceGame.currentPlayerId)?.name ?? sourceGame.currentPlayerId}'s turn.`
+    const player = sourceGame.players.find(entry => entry.id === playerId)
+
+    if (!player) {
+      return "That seat is no longer available."
     }
 
-    if (sourceGame.currentPhase === "add-city") {
-      if (playerId === sourceGame.currentPlayerId) {
+    switch (player.phase) {
+      case "purchase-equipment":
+        if (!canPlayerStartPhaseByPipeline(sourceGame, playerId, "purchase-equipment")) {
+          return "Wait for the previous player to finish purchasing."
+        }
+        return "Finish your purchase before moving on."
+      case "add-city":
+        if (!canPlayerPickCities(sourceGame, playerId)) {
+          return "Wait for the previous player to finish picking cities before starting yours."
+        }
         return "Confirm picks before moving on."
-      }
-
-      if (hasPlayerCompletedOperations(sourceGame, playerId)) {
-        return "You already clicked Next player for Operations."
-      }
-
-      if (hasPlayerCompletedAddCity(sourceGame, playerId)) {
+      case "operations":
         return "Finish your operations planning before moving on."
-      }
-
-      return `Wait for ${sourceGame.players.find(player => player.id === sourceGame.currentPlayerId)?.name ?? sourceGame.currentPlayerId} to finish picking cities.`
+      case "bureaucracy":
+        return hasPlayerCompletedBureaucracy(sourceGame, playerId)
+          ? "You already clicked Next player for bureaucracy."
+          : "Review bureaucracy before moving on."
     }
-
-    if (sourceGame.currentPhase === "operations") {
-      if (hasPlayerCompletedOperations(sourceGame, playerId)) {
-        return "You already clicked Next player for Operations."
-      }
-
-      return "Confirm your city picks before using Operations."
-    }
-
-    if (sourceGame.currentPhase === "bureaucracy") {
-      return hasPlayerCompletedBureaucracy(sourceGame, playerId)
-        ? "You already clicked Next player for bureaucracy."
-        : "Wait for Bureaucracy to unlock."
-    }
-
-    return "That action is not available right now."
   }, [])
 
   const canPlayerWriteLiveGame = useCallback((sourceGame: GameState, playerId: string | null) => {
-    if (!playerId) {
-      return false
-    }
+    if (!playerId) return false
+    const player = sourceGame.players.find(p => p.id === playerId)
+    if (!player) return false
 
-    switch (sourceGame.currentPhase) {
+    switch (player.phase) {
       case "purchase-equipment":
-        return playerId === sourceGame.currentPlayerId
+        return canPlayerStartPhaseByPipeline(sourceGame, playerId, "purchase-equipment")
       case "add-city":
-        return playerId === sourceGame.currentPlayerId || canPlayerEditOperations(sourceGame, playerId)
+        return canPlayerPickCities(sourceGame, playerId) || canPlayerEditOperations(sourceGame, playerId)
       case "operations":
         return canPlayerEditOperations(sourceGame, playerId)
       case "bureaucracy":
-        return Boolean(
-          sourceGame.players.find(player => player.id === playerId) &&
-          !hasPlayerCompletedBureaucracy(sourceGame, playerId),
-        )
+        return !hasPlayerCompletedBureaucracy(sourceGame, playerId)
     }
   }, [])
 
@@ -1286,10 +1299,10 @@ export default function App() {
   const handleAdvanceTurn = useCallback(
     async () =>
       commitGameMutation(baseGame => {
-        const actingPlayerId = resolveActingPlayerId(baseGame)
+        const actingPlayerId = resolveActingPlayerId(baseGame) ?? baseGame.currentPlayerId
 
-        if (baseGame.currentPhase === "add-city" && actingPlayerId === baseGame.currentPlayerId) {
-          const result = confirmAddCityPicks(baseGame)
+        if (actingPlayerId && canPlayerPickCities(baseGame, actingPlayerId)) {
+          const result = confirmAddCityPicks(baseGame, actingPlayerId)
 
           if (!result.ok) {
             return result
@@ -1310,7 +1323,7 @@ export default function App() {
           }
         }
 
-        if (baseGame.currentPhase === "add-city" || baseGame.currentPhase === "operations") {
+        if (actingPlayerId && canPlayerEditOperations(baseGame, actingPlayerId)) {
           const result = markOperationsReady(baseGame, actingPlayerId)
 
           if (!result.ok) {
@@ -1332,7 +1345,12 @@ export default function App() {
           }
         }
 
-        if (baseGame.currentPhase === "bureaucracy") {
+        if (
+          baseGame.currentPhase === "bureaucracy" ||
+          (actingPlayerId &&
+            hasPlayerCompletedOperations(baseGame, actingPlayerId) &&
+            !hasPlayerCompletedBureaucracy(baseGame, actingPlayerId))
+        ) {
           const result = markBureaucracyReady(baseGame, actingPlayerId)
 
           if (!result.ok) {
@@ -1354,7 +1372,7 @@ export default function App() {
           }
         }
 
-        const nextGame = advanceTurn(baseGame)
+        const nextGame = advanceTurn(baseGame, actingPlayerId)
         const message = getAdvanceTurnLogMessage(baseGame, nextGame)
         const discardMessage = getPhaseDiscardLogMessage(baseGame, nextGame)
         const fullMessage = discardMessage
@@ -1387,20 +1405,20 @@ export default function App() {
   const handleBuyVehicleCardAndAdvance = useCallback(
     async (cardId: string, quantity: number) =>
       commitGameMutation(baseGame => {
-        const purchaseResult = buyVehicleCard(baseGame, cardId, quantity)
+        const actingPlayerId = resolveActingPlayerId(baseGame) ?? baseGame.currentPlayerId
+        const purchaseResult = buyVehicleCard(baseGame, cardId, quantity, actingPlayerId)
 
         if (!purchaseResult.ok) {
           return purchaseResult
         }
 
-        const actingPlayerId = resolveActingPlayerId(baseGame)
         const purchasedGame = appendActionLog(
           baseGame,
           purchaseResult.game,
           `purchased ${purchaseResult.quantity} vehicle${purchaseResult.quantity === 1 ? "" : "s"} of #${purchaseResult.card.number} ${purchaseResult.card.name}`,
           actingPlayerId,
         )
-        const advancedGame = advanceTurn(purchasedGame)
+        const advancedGame = advanceTurn(purchasedGame, actingPlayerId)
         const finalGame = appendActionLog(
           purchasedGame,
           advancedGame,
@@ -1617,6 +1635,18 @@ export default function App() {
   // In phases where players independently ready up, currentPlayerId may not reflect who's actually
   // blocking — find the first player who hasn't completed the current phase.
   const waitingForPlayer = useMemo(() => {
+    if (game.currentPhase === "purchase-equipment") {
+      return (
+        game.players.find(p => canPlayerPickCities(game, p.id)) ??
+        game.players.find(p => canPlayerEditOperations(game, p.id)) ??
+        game.players.find(
+          p =>
+            !hasPlayerCompletedPurchaseEquipment(game, p.id) &&
+            canPlayerStartPhaseByPipeline(game, p.id, "purchase-equipment"),
+        ) ??
+        currentTurnPlayer
+      )
+    }
     if (game.currentPhase === "operations") {
       return game.players.find(p => canPlayerEditOperations(game, p.id)) ?? currentTurnPlayer
     }
@@ -1629,17 +1659,23 @@ export default function App() {
     () => new Set(game.players.filter(player => player.isBot).map(player => player.id)),
     [game.players],
   )
-  const isLocalPlayerInteractive = !isSpectator && Boolean(activeViewingPlayerId) && (
-    game.currentPhase === "purchase-equipment"
-      ? activeViewingPlayerId === game.currentPlayerId
-      : game.currentPhase === "add-city"
-        ? activeViewingPlayerId === game.currentPlayerId || canPlayerEditOperations(game, activeViewingPlayerId)
-        : game.currentPhase === "operations"
-          ? canPlayerEditOperations(game, activeViewingPlayerId)
-          : game.currentPhase === "bureaucracy"
-            ? !hasPlayerCompletedBureaucracy(game, activeViewingPlayerId)
-            : false
-  )
+  const isLocalPlayerInteractive = !isSpectator && Boolean(activeViewingPlayerId) && (() => {
+    if (!activeViewingPlayerId) return false
+    const player = game.players.find(p => p.id === activeViewingPlayerId)
+    if (!player) return false
+    switch (player.phase) {
+      case "purchase-equipment":
+        return canPlayerStartPhaseByPipeline(game, activeViewingPlayerId, "purchase-equipment")
+      case "add-city":
+        return canPlayerPickCities(game, activeViewingPlayerId) || canPlayerEditOperations(game, activeViewingPlayerId)
+      case "operations":
+        return canPlayerEditOperations(game, activeViewingPlayerId)
+      case "bureaucracy":
+        return !hasPlayerCompletedBureaucracy(game, activeViewingPlayerId)
+      default:
+        return false
+    }
+  })()
   const pendingBotPlayerId = useMemo(
     () => getPendingBotPlayerId(game, localBotPlayerIds),
     [game, localBotPlayerIds],
@@ -1671,8 +1707,7 @@ export default function App() {
       week: game.currentWeek,
       phase: game.currentPhase,
       currentPlayerId: game.currentPlayerId,
-      addCityReadyPlayerIds: game.addCityReadyPlayerIds,
-      operationsReadyPlayerIds: game.operationsReadyPlayerIds,
+      playerPhases: game.players.map(player => [player.id, player.phase]),
       bureaucracyReadyPlayerIds: game.bureaucracyReadyPlayerIds,
       pendingBotPlayerId,
     })
@@ -1723,8 +1758,7 @@ export default function App() {
       week: game.currentWeek,
       phase: game.currentPhase,
       currentPlayerId: game.currentPlayerId,
-      addCityReadyPlayerIds: game.addCityReadyPlayerIds,
-      operationsReadyPlayerIds: game.operationsReadyPlayerIds,
+      playerPhases: game.players.map(player => [player.id, player.phase]),
       bureaucracyReadyPlayerIds: game.bureaucracyReadyPlayerIds,
       pendingBotPlayerId,
     })
@@ -2778,18 +2812,47 @@ export default function App() {
                 top: 12,
                 left: "50%",
                 transform: "translateX(-50%)",
-                background: "rgba(34, 48, 36, 0.82)",
+                background: "rgba(34, 48, 36, 0.88)",
                 color: "#ffffff",
-                borderRadius: 999,
-                padding: "5px 14px",
+                borderRadius: 14,
+                padding: "8px 14px",
                 fontSize: 13,
                 fontWeight: 700,
-                pointerEvents: "none",
                 zIndex: 2,
                 whiteSpace: "nowrap",
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
               }}
             >
-              👁 Spectating · Viewing {game.players.find(p => p.id === game.currentPlayerId)?.name ?? "current player"}
+              <span>👁 Spectating · Viewing {game.players.find(p => p.id === game.currentPlayerId)?.name ?? "current player"}</span>
+              {lanLobby?.players
+                .filter(lp => !lp.isBot)
+                .map(lp => {
+                  const player = game.players.find(p => p.id === lp.playerId)
+                  if (!player) return null
+                  return (
+                    <button
+                      key={lp.playerId}
+                      type="button"
+                      disabled={isUpdatingLobby}
+                      onClick={() => handleClaimSeat(lp.playerId)}
+                      style={{
+                        padding: "5px 12px",
+                        borderRadius: 999,
+                        border: "1px solid rgba(255,255,255,0.35)",
+                        background: "rgba(255,255,255,0.15)",
+                        color: "#ffffff",
+                        fontSize: 12,
+                        fontWeight: 700,
+                        cursor: isUpdatingLobby ? "not-allowed" : "pointer",
+                        opacity: isUpdatingLobby ? 0.6 : 1,
+                      }}
+                    >
+                      {isUpdatingLobby ? "Joining…" : `Join as ${player.name}`}
+                    </button>
+                  )
+                })}
             </div>
           )}
         </>

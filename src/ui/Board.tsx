@@ -5,6 +5,10 @@ import {
   calculateClaimRouteCost,
   type BureaucracyServiceSplitResult,
   type BureaucracyVehicleCardResult,
+  canPlayerEditOperations,
+  canPlayerPickCities,
+  canPlayerStartPhaseByPipeline,
+  hasPlayerCompletedBureaucracy,
   getVisibleVehicleMarketCardIds,
   getVehiclePurchaseLimit,
   getFuelUnitPrice,
@@ -1387,8 +1391,20 @@ export default function Board({
 
   const map = game.map
   const activeViewingPlayerId = viewingPlayerId ?? game.currentPlayerId
+  const viewerPhase: WeeklyPhase = useMemo(() => {
+    const player = game.players.find(entry => entry.id === activeViewingPlayerId)
+    return player?.phase ?? game.currentPhase
+  }, [game, activeViewingPlayerId])
   const currentPlayer =
     game.players.find(player => player.id === activeViewingPlayerId) ?? getCurrentPlayer(game)
+  const hasUsedVehiclePurchase =
+    activeViewingPlayerId !== null && activeViewingPlayerId !== undefined
+      ? game.purchasedVehiclePlayerIds.includes(activeViewingPlayerId)
+      : false
+  const canBuyVehiclesInPipeline =
+    activeViewingPlayerId !== null && activeViewingPlayerId !== undefined &&
+    viewerPhase === "purchase-equipment" &&
+    canPlayerStartPhaseByPipeline(game, activeViewingPlayerId, "purchase-equipment")
   const boardClearanceBottom = tableZoneHeight + PANEL_GAP * 2
   const boardLeftInset = leftPanelWidth + PANEL_GAP * 2
   const boardRightInset = rightRailWidth + PANEL_GAP * 2
@@ -1601,7 +1617,7 @@ export default function Board({
         : new Set<string>(),
     [currentPlayer],
   )
-  const isSelectingCityCards = game.currentPhase === "add-city"
+  const isSelectingCityCards = canPlayerPickCities(game, activeViewingPlayerId)
   const expandedCityIds = useMemo(() => {
     const cardVisibleCityIds = new Set<string>([
       ...selectedCityIds,
@@ -2192,9 +2208,7 @@ export default function Board({
     selectedClaimPreview === null
       ? false
       : selectedClaimPreview.claimCost <= (currentPlayer?.money ?? 0)
-  const isViewingActivePlayer = activeViewingPlayerId === game.currentPlayerId
-  const canManageCurrentCityOffer =
-    game.currentPhase === "add-city" && isViewingActivePlayer
+  const canManageCurrentCityOffer = isSelectingCityCards
   const canConfirmSelectedClaim =
     Boolean(selectedClaimPreview?.valid) &&
     canAffordSelectedClaim
@@ -2218,7 +2232,12 @@ export default function Board({
   const activeChanceCard = useMemo(() => getActiveChanceCard(game), [game])
   const victoryStandings = useMemo(() => buildVictoryStandings(game), [game])
   const leadingStanding = victoryStandings[0]
-  const completedPeriod = game.isGameOver ? game.currentWeek : game.currentWeek - 1
+  const playerConfirmedBureaucracy = hasPlayerCompletedBureaucracy(game, activeViewingPlayerId)
+  const completedPeriod = game.isGameOver
+    ? game.currentWeek
+    : playerConfirmedBureaucracy
+      ? game.currentWeek
+      : game.currentWeek - 1
   const isPeriodSummaryVisible = !suppressPeriodSummary && isPeriodSummaryOpen && completedPeriod >= 1
   const effectiveFuelPriceByResource = useMemo(
     () => ({
@@ -2846,7 +2865,7 @@ export default function Board({
     ? pendingVehiclePurchaseCard.purchasePrice * pendingVehiclePurchaseQuantity
     : 0
   const canConfirmPicks =
-    game.currentPhase === "add-city" &&
+    canManageCurrentCityOffer &&
     (game.activeCityOffer?.keptCityIds.length ?? 0) === 2
   const currentPlayerVehicleTotals = currentPlayer
     ? [
@@ -2865,16 +2884,23 @@ export default function Board({
     : ""
   const areResizeHandlesVisible =
     !isResourceMarketOpen && !isBureaucracyOpen && !isEconomicsOpen && !isWikiOpen
+  const canEditOperations = canPlayerEditOperations(game, activeViewingPlayerId)
+  const purchaseEquipmentPlayersRemaining = game.players.filter(player => player.phase === "purchase-equipment").length
+  const addCityPlayersRemaining = game.players.filter(player => player.phase === "add-city").length
+  const operationsPlayersRemaining = game.players.filter(player => player.phase === "operations").length
   const shouldAdvancePhase =
-    game.currentPhase === "add-city" || isLastPlayerTurn(game)
-  const canEditOperations = game.currentPhase === "operations"
+    (viewerPhase === "purchase-equipment" && canBuyVehiclesInPipeline && purchaseEquipmentPlayersRemaining <= 1) ||
+    (canManageCurrentCityOffer && addCityPlayersRemaining <= 1) ||
+    (canEditOperations && operationsPlayersRemaining <= 1) ||
+    (game.currentPhase === "bureaucracy" && (game.bureaucracyReadyPlayerIds.length + 1 >= game.players.length)) ||
+    isLastPlayerTurn(game)
   const hasInvalidOperationsPods =
     canEditOperations && invalidCurrentPlayerPodRouteIds.size > 0
   const hasPendingOperationsRouteSelection =
     canEditOperations &&
     ((selectedRouteMode !== null && selectedCityIds.length >= 2) || selectedRailSegmentKeys.length > 0)
   const isAdvanceBlocked =
-    (game.currentPhase === "add-city" && (game.activeCityOffer?.keptCityIds.length ?? 0) !== 2) ||
+    (canManageCurrentCityOffer && (game.activeCityOffer?.keptCityIds.length ?? 0) !== 2) ||
     hasPendingOperationsRouteSelection ||
     hasInvalidOperationsPods
   const advanceTurnLabel = game.isGameOver
@@ -3260,33 +3286,38 @@ export default function Board({
     setSelectedRailSegmentKeys([])
     setPendingVehiclePurchaseCardId(null)
     setRevealedVehicleFunFactCardId(null)
-    setStatusMessage(getPhaseStatusMessage(game.currentPhase))
-  }, [game.currentPhase])
+    setStatusMessage(getPhaseStatusMessage(viewerPhase))
+  }, [viewerPhase])
 
   useEffect(() => {
     setSelectedDrawCityIds(game.activeCityOffer?.keptCityIds ?? [])
   }, [game.activeCityOffer?.keptCityIds])
 
   useEffect(() => {
-    const completedPeriod = game.isGameOver ? game.currentWeek : game.currentWeek - 1
+    if (suppressPeriodSummary) return
 
-    if (suppressPeriodSummary) {
+    const doneBureaucracy = hasPlayerCompletedBureaucracy(game, activeViewingPlayerId)
+
+    if (doneBureaucracy) {
+      // Show immediately after player confirms bureaucracy — week hasn't ended yet
+      const summaryKey = `bureaucracy-wait:${game.currentWeek}:${activeViewingPlayerId}`
+      if (summaryKey !== lastShownPeriodSummaryKey) {
+        setIsPeriodSummaryOpen(true)
+        setIsBureaucracyOpen(false)
+        setLastShownPeriodSummaryKey(summaryKey)
+      }
       return
     }
 
-    if (game.currentPhase !== "purchase-equipment" || completedPeriod < 1) {
-      return
-    }
-
-    const summaryKey = `${completedPeriod}:${game.isGameOver ? "game-over" : "continue"}`
-
-    if (summaryKey === lastShownPeriodSummaryKey) {
-      return
-    }
+    // Also show once the week fully ends so final data is visible
+    const completedPeriodLocal = game.isGameOver ? game.currentWeek : game.currentWeek - 1
+    if (game.currentPhase !== "purchase-equipment" || completedPeriodLocal < 1) return
+    const summaryKey = `${completedPeriodLocal}:${game.isGameOver ? "game-over" : "continue"}`
+    if (summaryKey === lastShownPeriodSummaryKey) return
 
     setIsPeriodSummaryOpen(true)
     setLastShownPeriodSummaryKey(summaryKey)
-  }, [game.currentPhase, game.currentWeek, game.isGameOver, lastShownPeriodSummaryKey, suppressPeriodSummary])
+  }, [game, activeViewingPlayerId, lastShownPeriodSummaryKey, suppressPeriodSummary])
 
   useEffect(() => {
     onPeriodSummaryVisibilityChange?.(isPeriodSummaryVisible)
@@ -3294,17 +3325,17 @@ export default function Board({
 
   useEffect(() => {
     setIsResourceMarketOpen(false)
-    setIsVehicleMarketOpen(game.currentPhase === "purchase-equipment")
-    setIsBureaucracyOpen(game.currentPhase === "bureaucracy" && !game.isGameOver)
+    setIsVehicleMarketOpen(viewerPhase === "purchase-equipment")
+    setIsBureaucracyOpen(viewerPhase === "bureaucracy" && !game.isGameOver)
     setIsEconomicsOpen(false)
     setIsWikiOpen(false)
     setWikiPreviousPanel(null)
-  }, [game.currentPhase, game.isGameOver])
+  }, [viewerPhase, game.isGameOver])
 
   function restorePhasePanel() {
     setIsResourceMarketOpen(false)
-    setIsVehicleMarketOpen(game.currentPhase === "purchase-equipment")
-    setIsBureaucracyOpen(game.currentPhase === "bureaucracy" && !game.isGameOver)
+    setIsVehicleMarketOpen(viewerPhase === "purchase-equipment")
+    setIsBureaucracyOpen(viewerPhase === "bureaucracy" && !game.isGameOver)
     setIsEconomicsOpen(false)
   }
 
@@ -3363,12 +3394,12 @@ export default function Board({
   }
 
   function handleCityClick() {
-    if (game.currentPhase === "add-city") {
+    if (isSelectingCityCards) {
       setStatusMessage("Use the table lane to draw 4 city cards and keep exactly 2.")
       return
     }
 
-    if (game.currentPhase === "operations") {
+    if (canEditOperations) {
       setStatusMessage("Use your city cards or click highlighted rail segments on the map to build a route.")
       return
     }
@@ -3381,7 +3412,7 @@ export default function Board({
     source: "draw" | "owned",
     mode: RouteMode,
   ) {
-    if (game.currentPhase === "add-city") {
+    if (isSelectingCityCards) {
       if (source !== "draw") {
         return
       }
@@ -3494,7 +3525,7 @@ export default function Board({
   }
 
   async function handleClaim() {
-    if (game.currentPhase !== "operations") {
+    if (!canEditOperations) {
       setStatusMessage(getRouteInteractionMessage(game.currentPhase))
       return
     }
@@ -3550,19 +3581,19 @@ export default function Board({
 
   async function handleAdvanceTurnClick() {
     if (
-      game.currentPhase === "add-city" &&
+      canManageCurrentCityOffer &&
       (game.activeCityOffer?.keptCityIds.length ?? 0) !== 2
     ) {
       setStatusMessage("Draw 4 city cards and keep exactly 2 before ending the turn.")
       return
     }
 
-    if (game.currentPhase === "operations" && hasPendingOperationsRouteSelection) {
+    if (canEditOperations && hasPendingOperationsRouteSelection) {
       setStatusMessage("Build or clear the selected route before ending the turn.")
       return
     }
 
-    if (game.currentPhase === "operations" && hasInvalidOperationsPods) {
+    if (canEditOperations && hasInvalidOperationsPods) {
       setStatusMessage("Fix the red routes before ending Operations.")
       return
     }
@@ -3653,8 +3684,8 @@ export default function Board({
     const accentColor = currentPlayer?.color ?? "#457b9d"
     const isOwnedSection = section === "owned"
     const canBuy =
-      game.currentPhase === "purchase-equipment" &&
-      !game.hasPurchasedVehicleThisTurn &&
+      canBuyVehiclesInPipeline &&
+      !hasUsedVehiclePurchase &&
       (currentPlayer?.money ?? 0) >= card.purchasePrice &&
       (isOwnedSection ? isOwnedModel : visibleVehicleCards.some(visibleCard => visibleCard.id === card.id))
     const buyLabel = isOwnedSection || isOwnedModel ? "Buy more" : "Buy model"
@@ -3769,7 +3800,7 @@ export default function Board({
                       : "#5d6c61",
                 }}
               >
-                {`${demandCoverage?.selectedFleetSize ?? 0}/${demandCoverage?.demandFleetSize ?? 0}`}
+                {`${ownedCount}/${demandCoverage?.demandFleetSize ?? 0}`}
               </span>
             )}
           </div>
@@ -3868,7 +3899,7 @@ export default function Board({
             }}
           >
             <strong>Demand:</strong>{" "}
-            {`${demandCoverage?.selectedFleetSize ?? 0}/${demandCoverage?.demandFleetSize ?? 0} fleet`}
+            {`${demandCoverage?.selectedFleetSize ?? 0}/${demandCoverage?.demandFleetSize ?? 0} demand (${ownedCount} owned)`}
           </div>
         )}
         <button
@@ -4322,9 +4353,9 @@ export default function Board({
                       ? "Build tracks, split routes, assign service, and set up routes."
                       : "Review passenger flow and route ledgers before ending the month."}
               </div>
-              {game.currentPhase === "purchase-equipment" && game.hasPurchasedVehicleThisTurn && (
+              {game.currentPhase === "purchase-equipment" && hasUsedVehiclePurchase && (
                 <div style={{ color: "#9b1c1c", fontSize: 13 }}>
-                  You have already used your vehicle purchase this turn. Advance to the next player.
+                  You have already used your vehicle purchase this turn. Advance to finish purchasing.
                 </div>
               )}
               {game.currentPhase === "operations" &&
@@ -5009,7 +5040,9 @@ export default function Board({
               <div>
                 <strong>End of month {completedPeriod} summary</strong>
                 <div style={{ color: "#56635a", fontSize: 13 }}>
-                  Revenue, costs, and passenger totals from the month that just finished.
+                  {game.bureaucracyReadyPlayerIds.length > 0 && game.currentPhase !== "purchase-equipment"
+                    ? "Waiting for other players to finish…"
+                    : "Revenue, costs, and passenger totals from the month that just finished."}
                 </div>
               </div>
               <button
@@ -5028,7 +5061,10 @@ export default function Board({
               </button>
             </div>
               <div style={{ display: "grid", gap: 10 }}>
-                {playerSummaries.map(({ player, connectedCities, weeklyNet }) => (
+                {playerSummaries.map(({ player, connectedCities, weeklyNet }) => {
+                  const isMidBureaucracy = game.bureaucracyReadyPlayerIds.length > 0 && game.currentPhase !== "purchase-equipment"
+                  const playerDone = !isMidBureaucracy || game.bureaucracyReadyPlayerIds.includes(player.id)
+                  return (
                   <div
                   key={`${player.id}-period-summary`}
                   style={{
@@ -5036,7 +5072,7 @@ export default function Board({
                     borderRadius: 12,
                     padding: 12,
                     display: "grid",
-                    gridTemplateColumns: "minmax(140px, 1fr) repeat(5, auto)",
+                    gridTemplateColumns: playerDone ? "minmax(140px, 1fr) repeat(5, auto)" : "minmax(140px, 1fr) 1fr",
                     gap: 10,
                     alignItems: "center",
                     background: "#ffffff",
@@ -5048,7 +5084,7 @@ export default function Board({
                       Connected cities: {connectedCities.length}
                     </div>
                   </div>
-                  {[
+                  {playerDone ? [
                     {
                       label: "Passengers",
                       value: formatDecimal(player.lastPeriodPassengersServed, 0),
@@ -5098,9 +5134,14 @@ export default function Board({
                         {stat.value}
                       </div>
                     </div>
-                  ))}
+                  )) : (
+                    <div style={{ color: "#7b857d", fontSize: 13, fontStyle: "italic" }}>
+                      Still playing…
+                    </div>
+                  )}
                 </div>
-              ))}
+                  )
+                })}
             </div>
           </div>
         </div>
@@ -7278,7 +7319,7 @@ export default function Board({
                   </div>
                 )}
               </div>
-            ) : game.currentPhase === "purchase-equipment" ? (
+            ) : game.currentPhase === "purchase-equipment" && !isSelectingCityCards && !canEditOperations ? (
               <>
                 <div
                   style={{
@@ -7345,7 +7386,7 @@ export default function Board({
                   </div>
                 </div>
               </>
-          ) : game.currentPhase === "add-city" || game.currentPhase === "operations" ? (
+          ) : game.currentPhase === "add-city" || game.currentPhase === "operations" || isSelectingCityCards || canEditOperations ? (
             <div
               style={{
                 flex: 1,
@@ -7356,7 +7397,7 @@ export default function Board({
                 paddingRight: 2,
               }}
             >
-              {game.currentPhase === "add-city" && (
+              {(game.currentPhase === "add-city" || isSelectingCityCards) && (
                 <>
                   <div style={{ display: "grid", gap: 8 }}>
                     <div
@@ -7497,7 +7538,7 @@ export default function Board({
                 >
                   Owned city cards
                 </div>
-                {game.currentPhase === "operations" && (
+                {canEditOperations && (
                   <div style={{ display: "grid", gap: 10 }}>
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                       <button
@@ -7595,6 +7636,24 @@ export default function Board({
                     </div>
                   </div>
                 )}
+                {currentPlayerOwnedVehicleCards.length > 0 && (
+                  <div style={{ display: "grid", gap: 8 }}>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 800,
+                        color: "#324236",
+                        letterSpacing: "0.05em",
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      Your Fleet
+                    </div>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      {currentPlayerOwnedVehicleCards.map(card => renderVehiclePurchaseCard(card, "owned"))}
+                    </div>
+                  </div>
+                )}
                 {currentPlayerOwnedCityCards.length === 0 ? (
                   <div
                     style={{
@@ -7626,7 +7685,7 @@ export default function Board({
                             ? "bus"
                             : "rail"
                       const disabled =
-                        game.currentPhase !== "operations" ||
+                        !canEditOperations ||
                         mode === "rail" ||
                         !currentPlayerOwnedModes.has(mode)
 
@@ -7715,7 +7774,7 @@ export default function Board({
           )}
         </div>
         <div style={TABLE_LANE_STYLE}>
-          {game.currentPhase === "add-city" ? (
+          {game.currentPhase === "add-city" || isSelectingCityCards ? (
             <>
               <div>
                 <div style={{ color: "#56635a", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em" }}>
@@ -8053,7 +8112,7 @@ export default function Board({
                   Cash on hand: <strong>{formatCurrency(currentPlayer?.money ?? 0)}</strong>
                 </div>
                 <div>
-                  Purchase used this turn: <strong>{game.hasPurchasedVehicleThisTurn ? "Yes" : "No"}</strong>
+                  Purchase used this turn: <strong>{hasUsedVehiclePurchase ? "Yes" : "No"}</strong>
                 </div>
                 <div>
                   Next after purchase:{" "}

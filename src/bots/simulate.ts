@@ -1,6 +1,6 @@
 import { createGameState, type CreateGameStateOptions } from "../engine/createGameState"
 import { buildVictoryStandings } from "../engine/economy"
-import type { GameState } from "../engine/types"
+import type { GameState, WeeklyPhase } from "../engine/types"
 import { usMap } from "../data/maps/usMap"
 import { createPresetBotController, DEFAULT_BOT_PRESET_ID } from "./presets"
 import { PLAYER_SETUP_PRESETS } from "../gameSetup/defaultPlayers"
@@ -10,7 +10,7 @@ import type { BotAction, BotController } from "./types"
 export type SimulationTraceEntry = {
   step: number
   playerId: string
-  phase: GameState["currentPhase"]
+  phase: WeeklyPhase
   action: BotAction
 }
 
@@ -94,20 +94,21 @@ export function runBotSimulation(options: SimulationOptions = {}): SimulationRes
       throw new Error(`No pending bot player found during ${game.currentPhase}.`)
     }
 
+    const playerPhase = game.players.find(player => player.id === playerId)?.phase ?? game.currentPhase
     const legalActions = getBotLegalActions(game, playerId)
     const bot = getBotController(game, playerId, botsByPlayerId)
     const action = bot.pickAction({
       game,
       playerId,
       legalActions,
-      phase: game.currentPhase,
+      phase: playerPhase,
     })
 
     if (recordTrace) {
       trace.push({
         step,
         playerId,
-        phase: game.currentPhase,
+        phase: playerPhase,
         action,
       })
     }

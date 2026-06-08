@@ -7,7 +7,7 @@ import type {
   CityDecksByRegion,
   GameState,
   OperatingConfig,
-  Player,
+  PlayerState,
   RouteClaimsByMode,
   ResourceMarket,
   ResourceSupply,
@@ -177,7 +177,11 @@ function shuffleCityDecks(map: GameMap, initialRandomState: number) {
   }
 }
 
-function createPlayer(player: GameSetupPlayer, startingMoney: number): Player {
+function createPlayer(
+  player: GameSetupPlayer,
+  startingMoney: number,
+  phase: "purchase-equipment" | "add-city",
+): PlayerState {
   return {
     id: player.id,
     name: player.name,
@@ -204,6 +208,7 @@ function createPlayer(player: GameSetupPlayer, startingMoney: number): Player {
     weeklyPayout: 0,
     lastPeriodPassengersServed: 0,
     ownedCityCardIds: [],
+    phase,
     periodHistory: [],
   }
 }
@@ -217,7 +222,7 @@ function getSetupPlayers(players?: GameSetupPlayer[]) {
 }
 
 function applyOpeningBusPurchases(
-  players: Player[],
+  players: PlayerState[],
   vehicleCards: VehicleCard[],
 ) {
   const siennaCard = vehicleCards.find(card => card.id === "bus-toyota-sienna") ?? null
@@ -259,8 +264,9 @@ export function createGameState(
   const chanceShuffle = shuffleChanceCards(chanceCards, vehicleShuffle.randomState)
   const startingMoney = options.startingMoney ?? DEFAULT_STARTING_MONEY
   const [activeChanceCard, ...chanceDeck] = chanceShuffle.items
+  const initialPhase = "add-city" as const
   const initialPlayers = getSetupPlayers(options.players).map(player =>
-    createPlayer(player, startingMoney),
+    createPlayer(player, startingMoney, initialPhase),
   )
   const openingSetup = applyOpeningBusPurchases(initialPlayers, vehicleShuffle.cards)
   const players = openingSetup.players
@@ -293,10 +299,8 @@ export function createGameState(
     routeMarketCardIdsByMode: { bus: [], rail: [], air: [] },
     cityDeckCardIdsByRegion: cityDeckShuffle.decks,
     activeCityOffer: null,
-    addCityReadyPlayerIds: [],
-    operationsReadyPlayerIds: [],
     bureaucracyReadyPlayerIds: [],
-    hasPurchasedVehicleThisTurn: false,
+    purchasedVehiclePlayerIds: [],
     hasPurchasedVehicleThisPhase: false,
     purchasedVehicleTypesThisPhase: EMPTY_VEHICLE_PURCHASES_BY_TYPE,
     claimedRoutePlayerIdsThisTurn: [],

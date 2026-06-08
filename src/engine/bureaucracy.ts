@@ -243,9 +243,9 @@ function getVehicleTypeForRouteMode(mode: RouteMode): VehicleType {
 
 function getBureaucracyPlanningPriority(mode: RouteMode) {
   switch (mode) {
-    case "rail":
-      return 0
     case "air":
+      return 0
+    case "rail":
       return 1
     case "bus":
       return 2
@@ -455,13 +455,14 @@ function buildSimplifiedFlowPlan(
     return pathCityIds[0] === originCityId ? pathCityIds : null
   }
 
+  // Process destinations smallest city first, largest last
   const destinationStatuses = [...cityStatusMap.values()].sort((cityA, cityB) => {
-    if (cityB.size !== cityA.size) {
-      return cityB.size - cityA.size
+    if (cityA.size !== cityB.size) {
+      return cityA.size - cityB.size
     }
 
-    if (cityB.inboundCubes !== cityA.inboundCubes) {
-      return cityB.inboundCubes - cityA.inboundCubes
+    if (cityA.inboundCubes !== cityB.inboundCubes) {
+      return cityA.inboundCubes - cityB.inboundCubes
     }
 
     return cityA.cityName.localeCompare(cityB.cityName)
@@ -473,8 +474,29 @@ function buildSimplifiedFlowPlan(
   const ledgerEntries: SimplifiedFlowLedgerEntry[] = []
   let remainingMovableCubes = movedCubes
 
+  // Pre-compute proportional cube allocation per destination based on inbound capacity
+  const totalPodInbound = destinationStatuses.reduce((sum, s) => sum + s.inboundCubes, 0)
+  const proportionalAllocationById = new Map<string, number>()
+  let allocatedSoFar = 0
+  destinationStatuses.forEach((dest, index) => {
+    if (index < destinationStatuses.length - 1) {
+      const alloc = totalPodInbound > 0
+        ? Math.floor(dest.inboundCubes / totalPodInbound * movedCubes)
+        : 0
+      proportionalAllocationById.set(dest.cityId, alloc)
+      allocatedSoFar += alloc
+    } else {
+      // Largest city absorbs any rounding remainder
+      proportionalAllocationById.set(dest.cityId, Math.max(0, movedCubes - allocatedSoFar))
+    }
+  })
+
   for (const destinationStatus of destinationStatuses) {
-    let remainingInbound = destinationStatus.inboundCubes - destinationStatus.filledCubes
+    const proportionalAllocation = proportionalAllocationById.get(destinationStatus.cityId) ?? 0
+    let remainingInbound = Math.min(
+      proportionalAllocation,
+      destinationStatus.inboundCubes - destinationStatus.filledCubes,
+    )
 
     if (remainingInbound <= 0 || remainingMovableCubes <= 0) {
       continue
@@ -1075,6 +1097,14 @@ export function buildPlayerBureaucracySummary(
 
       if (priorityDifference !== 0) {
         return priorityDifference
+      }
+
+      const cityCountDifference =
+        assignmentA.serviceSlot.serviceGroup.cityIds.length -
+        assignmentB.serviceSlot.serviceGroup.cityIds.length
+
+      if (cityCountDifference !== 0) {
+        return cityCountDifference
       }
 
       return assignmentA.originalIndex - assignmentB.originalIndex

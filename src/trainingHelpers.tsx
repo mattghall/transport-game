@@ -415,6 +415,55 @@ export const WEIGHT_LABELS: Record<string, WeightLabelInfo> = {
     lowExplanation: "Revenue improvement alone is not enough to justify removing a city.",
     highExplanation: "Removing cities that cost more to serve than they earn is a strong signal.",
   },
+  drawRegionDeckSizeScore: {
+    label: "Draw region deck-size preference",
+    description: "How much the bot prefers drawing from larger regional decks (more cards = more choice).",
+    group: "City draw",
+    lowExplanation: "Deck size doesn't heavily influence which region to draw from.",
+    highExplanation: "Strongly prefer regions with many cards remaining to maximize future options.",
+  },
+  drawRegionOwnedCityBonus: {
+    label: "Draw region concentration bonus",
+    description: "Bonus for drawing from a region where the bot already owns cities (builds a focused network).",
+    group: "City draw",
+    lowExplanation: "Geographic focus is not a priority; spread freely across regions.",
+    highExplanation: "Double down on regions already in the network to maximize route density.",
+  },
+  drawRegionOpponentCityPenalty: {
+    label: "Draw region opponent-overlap penalty",
+    description: "Penalty for drawing from a region that opponents already dominate.",
+    group: "City draw",
+    lowExplanation: "Competition in a region is not a deterrent.",
+    highExplanation: "Avoid contested regions — seek unclaimed territory instead.",
+  },
+  drawRegionBigCityScarcityBonus: {
+    label: "Draw region big-city scarcity bonus",
+    description: "Bonus for targeting small decks that still contain high-population cities (don't miss the last big city).",
+    group: "City draw",
+    lowExplanation: "Scarcity of big cities in a deck is not a strong signal.",
+    highExplanation: "Prioritize small decks with remaining high-population cities before they're gone.",
+  },
+  keepCityPopulationScore: {
+    label: "Keep city population preference",
+    description: "How much the bot values choosing the highest-population pair from the city offer.",
+    group: "City draw",
+    lowExplanation: "City size is not the dominant factor when choosing which two to keep.",
+    highExplanation: "Always pick the biggest cities available from the offer.",
+  },
+  keepCityNetworkProximityScore: {
+    label: "Keep city network proximity preference",
+    description: "Bonus for choosing cities that are geographically close to the bot's existing network.",
+    group: "City draw",
+    lowExplanation: "Distance from existing cities doesn't heavily influence city selection.",
+    highExplanation: "Strongly prefer cities near the existing network to minimize route-build cost.",
+  },
+  keepCityRegionMatchScore: {
+    label: "Keep city region-match bonus",
+    description: "Bonus per city chosen that falls in the bot's most-owned region.",
+    group: "City draw",
+    lowExplanation: "Region alignment is not a strong factor in city selection.",
+    highExplanation: "Prefer cities that reinforce the dominant regional network.",
+  },
 }
 
 export function formatDuration(ms: number) {
@@ -1027,18 +1076,24 @@ export function AllChampionsLeverChart({
     )
   }
 
-  // Build lookup: key → pc → passengerDrop
+  // Build lookup: key → pc → passengerDrop, and key → representative row metadata
   const dropByKeyAndPc: Record<string, Partial<Record<number, number>>> = {}
+  const metaByKey: Record<string, { lowExplanation: string; highExplanation: string; delta: number }> = {}
   for (const pc of playerCounts) {
     for (const row of rowsByPlayerCount[pc] ?? []) {
       if (row.passengerDrop !== null) {
         if (!dropByKeyAndPc[row.key]) dropByKeyAndPc[row.key] = {}
         dropByKeyAndPc[row.key][pc] = row.passengerDrop
+        // Keep metadata from the row with the largest |passengerDrop| for best direction signal
+        const existing = metaByKey[row.key]
+        if (!existing || Math.abs(row.passengerDrop) > Math.abs(dropByKeyAndPc[row.key][pc] ?? 0)) {
+          metaByKey[row.key] = { lowExplanation: row.lowExplanation, highExplanation: row.highExplanation, delta: row.delta }
+        }
       }
     }
   }
 
-  // Sort levers by max passengerDrop across all champions
+  // Sort levers by max |passengerDrop| across all champions
   const sortedKeys = allKeys.sort((a, b) => {
     const maxA = Math.max(...playerCounts.map(pc => Math.abs(dropByKeyAndPc[a]?.[pc] ?? 0)))
     const maxB = Math.max(...playerCounts.map(pc => Math.abs(dropByKeyAndPc[b]?.[pc] ?? 0)))
@@ -1055,13 +1110,15 @@ export function AllChampionsLeverChart({
   const labelForKey = (key: string) => WEIGHT_LABELS[key]?.label ?? key
   const BAR_HEIGHT = 10
   const BAR_GAP = 3
+  const ROW_PADDING = 5
+  const containerHeight = ROW_PADDING * 2 + playerCounts.length * BAR_HEIGHT + (playerCounts.length - 1) * BAR_GAP
 
   return (
     <div style={{ border: "1px solid #d8dfd5", borderRadius: 12, background: "#ffffff", padding: 14, display: "grid", gap: 12 }}>
       <div style={{ display: "grid", gap: 6 }}>
         <strong>All champions — passenger drop per lever</strong>
         <div style={{ color: "#56635a", lineHeight: 1.45, fontSize: 13 }}>
-          How many passengers each champion loses if a lever is removed. Levers sorted by highest impact across any champion.
+          How many passengers each champion loses if a lever is removed. Bars right of center = lever helps; left = lever hurts.
         </div>
       </div>
 
@@ -1077,49 +1134,82 @@ export function AllChampionsLeverChart({
 
       {/* Chart */}
       <div style={{ overflowX: "auto" }}>
-        <div style={{ minWidth: 600 }}>
-          {sortedKeys.map(key => (
+        <div style={{ minWidth: 700 }}>
+          {sortedKeys.map((key, rowIndex) => {
+            const meta = metaByKey[key]
+            const representativeDrop = Math.max(...playerCounts.map(pc => dropByKeyAndPc[key]?.[pc] ?? 0), 0) ||
+              Math.min(...playerCounts.map(pc => dropByKeyAndPc[key]?.[pc] ?? 0), 0)
+            const helpfulDirectionIsHigh = !meta ? true :
+              representativeDrop === 0 ? meta.delta >= 0 : meta.delta * representativeDrop >= 0
+            const leftExplanation = meta ? (helpfulDirectionIsHigh ? meta.lowExplanation : meta.highExplanation) : ""
+            const rightExplanation = meta ? (helpfulDirectionIsHigh ? meta.highExplanation : meta.lowExplanation) : ""
+            return (
             <div
               key={key}
               style={{
                 display: "grid",
-                gridTemplateColumns: "180px 1fr",
+                gridTemplateColumns: "180px minmax(140px, 1fr) minmax(260px, 1.6fr) minmax(140px, 1fr)",
                 gap: 8,
                 alignItems: "center",
-                marginBottom: 4,
+                padding: "6px 4px",
+                borderRadius: 8,
+                background: rowIndex % 2 === 0 ? "#f8faf8" : "#ffffff",
               }}
             >
               <div style={{ fontSize: 12, color: "#223024", textAlign: "right", paddingRight: 8, lineHeight: 1.3 }}>
                 {labelForKey(key)}
               </div>
-              <div style={{ display: "grid", gap: BAR_GAP + "px" }}>
-                {playerCounts.map(pc => {
+              <div style={{ fontSize: 11, color: "#56635a", lineHeight: 1.35, textAlign: "right" }}>
+                {leftExplanation}
+              </div>
+              <div
+                style={{
+                  position: "relative",
+                  height: containerHeight,
+                  borderRadius: 8,
+                  background: rowIndex % 2 === 0 ? "#eef2ee" : "#f3f6f3",
+                  overflow: "hidden",
+                }}
+              >
+                {/* Center line */}
+                <div
+                  style={{
+                    position: "absolute",
+                    inset: "0 auto 0 50%",
+                    width: 1,
+                    background: "#bcc8bc",
+                  }}
+                />
+                {playerCounts.map((pc, pcIndex) => {
                   const drop = dropByKeyAndPc[key]?.[pc] ?? null
-                  const width = drop !== null ? Math.abs(drop) / maxDrop * 100 : 0
+                  if (drop === null) return null
+                  const barWidth = `${Math.abs(drop) / maxDrop * 50}%`
+                  const isPositive = drop >= 0
                   return (
-                    <div key={pc} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <div
-                        style={{
-                          height: BAR_HEIGHT,
-                          width: `${width}%`,
-                          minWidth: drop !== null && drop !== 0 ? 2 : 0,
-                          background: PLAYER_COUNT_COLORS[pc].bar,
-                          borderRadius: 3,
-                          opacity: drop === null ? 0 : 1,
-                        }}
-                        title={drop !== null ? `${PLAYER_COUNT_COLORS[pc].label}: ${drop.toFixed(0)} passengers` : "no data"}
-                      />
-                      {drop !== null && (
-                        <span style={{ fontSize: 10, color: "#56635a", whiteSpace: "nowrap" }}>
-                          {drop.toFixed(0)}
-                        </span>
-                      )}
-                    </div>
+                    <div
+                      key={pc}
+                      style={{
+                        position: "absolute",
+                        top: ROW_PADDING + pcIndex * (BAR_HEIGHT + BAR_GAP),
+                        height: BAR_HEIGHT,
+                        left: isPositive ? "50%" : `calc(50% - ${barWidth})`,
+                        width: barWidth,
+                        minWidth: drop !== 0 ? 2 : 0,
+                        borderRadius: 999,
+                        background: PLAYER_COUNT_COLORS[pc].bar,
+                        opacity: isPositive ? 1 : 0.6,
+                      }}
+                      title={`${PLAYER_COUNT_COLORS[pc].label}: ${drop.toFixed(0)} passengers`}
+                    />
                   )
                 })}
               </div>
+              <div style={{ fontSize: 11, color: "#56635a", lineHeight: 1.35 }}>
+                {rightExplanation}
+              </div>
             </div>
-          ))}
+            )
+          })}
         </div>
       </div>
     </div>

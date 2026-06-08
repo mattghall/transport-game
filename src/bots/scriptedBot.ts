@@ -61,6 +61,13 @@ export type ScriptedBotWeights = {
   podRemoveCityBaseScore: number
   podRemovePassengersPerDistanceGainScore: number
   podRemoveNetRevenueGainScore: number
+  drawRegionDeckSizeScore: number
+  drawRegionOwnedCityBonus: number
+  drawRegionOpponentCityPenalty: number
+  drawRegionBigCityScarcityBonus: number
+  keepCityPopulationScore: number
+  keepCityNetworkProximityScore: number
+  keepCityRegionMatchScore: number
 }
 
 export const DEFAULT_SCRIPTED_BOT_WEIGHTS: ScriptedBotWeights = {
@@ -115,6 +122,13 @@ export const DEFAULT_SCRIPTED_BOT_WEIGHTS: ScriptedBotWeights = {
   podRemoveCityBaseScore: 0,
   podRemovePassengersPerDistanceGainScore: 20,
   podRemoveNetRevenueGainScore: 15,
+  drawRegionDeckSizeScore: 2,
+  drawRegionOwnedCityBonus: 8,
+  drawRegionOpponentCityPenalty: 3,
+  drawRegionBigCityScarcityBonus: 5,
+  keepCityPopulationScore: 10,
+  keepCityNetworkProximityScore: 6,
+  keepCityRegionMatchScore: 4,
 }
 
 export function mergeScriptedBotWeights(
@@ -335,7 +349,7 @@ function scoreBotAction(
       activePodCount = corridorPlans.filter(p => !p.isDisconnected && p.selectedCityIds.length >= 2).length
     }
 
-    const demandPerMile = distanceMiles > 0 ? podCombinedDemand / distanceMiles : 0
+    const demandPerMile = distanceMiles > 0 ? podCombinedDemand / Math.max(distanceMiles / 100, 1) : 0
 
     return (
       weights.podSplitBaseScore +
@@ -367,6 +381,78 @@ function scoreBotAction(
     // Zero-demand city: removing it reduces route distance/cost with no passenger loss.
     const netRevenuePenalty = sourcePlan.netRevenue < 0 ? -sourcePlan.netRevenue / 1_000_000 : 0
     return weights.podRemoveCityBaseScore + netRevenuePenalty * weights.podRemoveNetRevenueGainScore
+  }
+
+  if (action.type === "draw-city-offer") {
+    const player = getPlayerById(game, playerId)
+    if (!player) return 0
+    const region = action.region as import("../engine/types").CityDeckRegion
+    const deckSize = game.cityDeckCardIdsByRegion[region]?.length ?? 0
+    const ownedInRegion = player.ownedCityCardIds.filter(id => {
+      const city = game.cities.find(c => c.id === id)
+      return city?.region?.includes(region)
+    }).length
+    const opponentCitiesInRegion = game.players
+      .filter(p => p.id !== playerId)
+      .reduce((total, p) => total + p.ownedCityCardIds.filter(id => {
+        const city = game.cities.find(c => c.id === id)
+        return city?.region?.includes(region)
+      }).length, 0)
+    // Big-city scarcity: large cities still in a small deck are valuable targets
+    const remainingCitiesInDeck = (game.cityDeckCardIdsByRegion[region] ?? []).map(
+      id => game.cities.find(c => c.id === id)
+    ).filter(Boolean)
+    const avgPopRemaining = remainingCitiesInDeck.length > 0
+      ? remainingCitiesInDeck.reduce((s, c) => s + (c!.population ?? 0), 0) / remainingCitiesInDeck.length
+      : 0
+    const bigCityScarcitySignal = deckSize > 0 && deckSize <= 6 ? avgPopRemaining / 1_000_000 : 0
+
+    return (
+      deckSize * weights.drawRegionDeckSizeScore +
+      ownedInRegion * weights.drawRegionOwnedCityBonus -
+      opponentCitiesInRegion * weights.drawRegionOpponentCityPenalty +
+      bigCityScarcitySignal * weights.drawRegionBigCityScarcityBonus
+    )
+  }
+
+  if (action.type === "keep-city-offer") {
+    const player = getPlayerById(game, playerId)
+    if (!player) return 0
+    const cityMap = new Map(game.cities.map(c => [c.id, c]))
+    const chosenCities = action.cityIds.map(id => cityMap.get(id)).filter(Boolean) as import("../engine/types").City[]
+    const ownedCities = player.ownedCityCardIds.map(id => cityMap.get(id)).filter(Boolean) as import("../engine/types").City[]
+
+    // Population sum of chosen pair
+    const totalPop = chosenCities.reduce((s, c) => s + (c.population ?? 0), 0)
+
+    // Network proximity: avg min-distance from each chosen city to any owned city
+    let networkProximityScore = 0
+    if (ownedCities.length > 0) {
+      const avgMinDist = chosenCities.reduce((sum, city) => {
+        const minDist = Math.min(...ownedCities.map(owned => calculateDistanceMiles(city, owned)))
+        return sum + minDist
+      }, 0) / chosenCities.length
+      // Closer = higher score: invert distance (cap at 2000 miles)
+      networkProximityScore = Math.max(0, 2000 - avgMinDist) / 100
+    }
+
+    // Region match: how many chosen cities are in the player's most-owned region
+    const regionCounts = new Map<string, number>()
+    for (const id of player.ownedCityCardIds) {
+      for (const r of (cityMap.get(id)?.region ?? [])) {
+        regionCounts.set(r, (regionCounts.get(r) ?? 0) + 1)
+      }
+    }
+    const topRegion = [...regionCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
+    const regionMatchCount = topRegion
+      ? chosenCities.filter(c => c.region?.includes(topRegion)).length
+      : 0
+
+    return (
+      (totalPop / 1_000_000) * weights.keepCityPopulationScore +
+      networkProximityScore * weights.keepCityNetworkProximityScore +
+      regionMatchCount * weights.keepCityRegionMatchScore
+    )
   }
 
   if (action.type !== "buy-vehicle") {

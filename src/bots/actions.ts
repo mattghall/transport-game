@@ -3,6 +3,8 @@ import {
   advanceTurn,
   buyVehicleCard,
   canPlayerEditOperations,
+  canPlayerPickCities,
+  canPlayerStartPhaseByPipeline,
   claimRoute,
   getConnectionOptions,
   getPlayerById,
@@ -10,7 +12,6 @@ import {
   drawCityOffer,
   getVisibleVehicleMarketCardIds,
   hasPlayerCompletedBureaucracy,
-  hasPlayerCompletedOperations,
   hasPlayerCompletedAddCity,
   markBureaucracyReady,
   markOperationsReady,
@@ -22,7 +23,7 @@ import {
   buildDisconnectedServiceSlotId,
   isValidServicePodSelection,
 } from "../engine/bureaucracy"
-import { CITY_DECK_REGIONS, type CityDeckRegion, type GameState } from "../engine/types"
+import { CITY_DECK_REGIONS, type GameState } from "../engine/types"
 import { getOwnedCityPairs } from "./strategy"
 import { getCachedBureaucracySummary } from "./summaryCache"
 import type { BotAction } from "./types"
@@ -36,7 +37,11 @@ const MAX_BOT_OPERATION_POD_REMOVE_ACTIONS_PER_PLAN = 2
 function getAvailableBotVehicleActions(game: GameState, playerId: string): BotAction[] {
   const player = getPlayerById(game, playerId)
 
-  if (!player || game.hasPurchasedVehicleThisTurn) {
+  if (!player || game.purchasedVehiclePlayerIds.includes(player.id)) {
+    return []
+  }
+
+  if (!canPlayerStartPhaseByPipeline(game, playerId, "purchase-equipment")) {
     return []
   }
 
@@ -50,46 +55,20 @@ function getAvailableBotVehicleActions(game: GameState, playerId: string): BotAc
     }))
 }
 
-function getPreferredDrawRegion(game: GameState, playerId: string): CityDeckRegion {
-  const player = getPlayerById(game, playerId)
-  const regionPreferenceCounts = new Map<CityDeckRegion, number>(
-    CITY_DECK_REGIONS.map(region => [region, 0]),
-  )
-
-  for (const cityId of player?.ownedCityCardIds ?? []) {
-    const city = game.cities.find(candidate => candidate.id === cityId)
-    const primaryRegion = city?.region?.[0]
-
-    if (primaryRegion && regionPreferenceCounts.has(primaryRegion as CityDeckRegion)) {
-      regionPreferenceCounts.set(
-        primaryRegion as CityDeckRegion,
-        (regionPreferenceCounts.get(primaryRegion as CityDeckRegion) ?? 0) + 1,
-      )
-    }
+function getAvailableClaimActions(game: GameState, playerId: string): BotAction[] {
+  if (hasPlayerCompletedAddCity(game, playerId)) {
+    return []
   }
 
-  return [...CITY_DECK_REGIONS].sort((regionA, regionB) => {
-    const deckDelta =
-      game.cityDeckCardIdsByRegion[regionB].length - game.cityDeckCardIdsByRegion[regionA].length
-
-    if (deckDelta !== 0) {
-      return deckDelta
-    }
-
-    return (
-      (regionPreferenceCounts.get(regionB) ?? 0) -
-      (regionPreferenceCounts.get(regionA) ?? 0)
-    )
-  })[0]
-}
-
-function getAvailableClaimActions(game: GameState, playerId: string): BotAction[] {
-  if (playerId !== game.currentPlayerId || hasPlayerCompletedAddCity(game, playerId)) {
+  if (!canPlayerPickCities(game, playerId)) {
     return []
   }
 
   if (!game.activeCityOffer) {
-    return [{ type: "draw-city-offer", region: getPreferredDrawRegion(game, playerId) } as BotAction]
+    // Generate one draw action per region so the scorer can pick the best
+    return CITY_DECK_REGIONS
+      .filter(region => (game.cityDeckCardIdsByRegion[region]?.length ?? 0) > 0)
+      .map(region => ({ type: "draw-city-offer" as const, region }))
   }
 
   const keptCityIds = game.activeCityOffer.keptCityIds
@@ -102,21 +81,15 @@ function getAvailableClaimActions(game: GameState, playerId: string): BotAction[
     return [{ type: "end-turn" }]
   }
 
-  return [
-    {
-      type: "keep-city-offer",
-      cityIds: [...game.activeCityOffer.cityIds]
-        .sort((cityIdA, cityIdB) => {
-          const cityA = game.cities.find(city => city.id === cityIdA)
-          const cityB = game.cities.find(city => city.id === cityIdB)
-          return (
-            (cityB?.population ?? cityB?.size ?? 0) -
-            (cityA?.population ?? cityA?.size ?? 0)
-          )
-        })
-        .slice(0, 2),
-    },
-  ]
+  // Generate all C(n,2) combinations from the offer so the scorer picks the best pair
+  const offerCityIds = game.activeCityOffer.cityIds
+  const combos: BotAction[] = []
+  for (let i = 0; i < offerCityIds.length; i++) {
+    for (let j = i + 1; j < offerCityIds.length; j++) {
+      combos.push({ type: "keep-city-offer", cityIds: [offerCityIds[i], offerCityIds[j]] })
+    }
+  }
+  return combos
 }
 
 function getAvailableOperationsActions(game: GameState, playerId: string): BotAction[] {
@@ -357,13 +330,20 @@ function applyCreateServicePodAction(game: GameState, playerId: string, action: 
 }
 
 export function getBotLegalActions(game: GameState, playerId: string): BotAction[] {
-  switch (game.currentPhase) {
+  const player = getPlayerById(game, playerId)
+
+  if (!player) {
+    return []
+  }
+
+  switch (player.phase) {
     case "purchase-equipment":
-      return [...getAvailableBotVehicleActions(game, playerId), { type: "end-turn" }]
+      return canPlayerStartPhaseByPipeline(game, playerId, "purchase-equipment")
+        ? [...getAvailableBotVehicleActions(game, playerId), { type: "end-turn" }]
+        : []
     case "add-city": {
       const claimActions = getAvailableClaimActions(game, playerId)
       if (claimActions.length > 0) return claimActions
-      // After confirming city picks, bots can also edit operations during the add-city phase.
       return getAvailableOperationsActions(game, playerId)
     }
     case "operations":
@@ -376,7 +356,7 @@ export function getBotLegalActions(game: GameState, playerId: string): BotAction
 export function applyBotAction(game: GameState, playerId: string, action: BotAction) {
   switch (action.type) {
     case "buy-vehicle": {
-      const result = buyVehicleCard(game, action.cardId, action.quantity)
+      const result = buyVehicleCard(game, action.cardId, action.quantity, playerId)
       if (!result.ok) {
         throw new Error(result.error)
       }
@@ -400,7 +380,7 @@ export function applyBotAction(game: GameState, playerId: string, action: BotAct
       return result.game
     }
     case "confirm-add-city-picks": {
-      const result = confirmAddCityPicks(game)
+      const result = confirmAddCityPicks(game, playerId)
       if (!result.ok) {
         throw new Error(result.error)
       }
@@ -449,7 +429,7 @@ export function applyBotAction(game: GameState, playerId: string, action: BotAct
       return result.game
     }
     case "end-turn":
-      return advanceTurn(game)
+      return advanceTurn(game, playerId)
   }
 }
 
@@ -465,32 +445,5 @@ export function getPendingBotPlayerId(game: GameState, botPlayerIds: ReadonlySet
     return null
   }
 
-  switch (game.currentPhase) {
-    case "purchase-equipment":
-      return botPlayerIds.has(game.currentPlayerId) ? game.currentPlayerId : null
-    case "add-city":
-      return (
-        // Bot is the active city-picker and hasn't confirmed yet.
-        (botPlayerIds.has(game.currentPlayerId) && !hasPlayerCompletedAddCity(game, game.currentPlayerId)
-          ? game.currentPlayerId
-          : null) ??
-        // Bot has confirmed city picks and can still edit operations during add-city phase.
-        game.players.find(
-          player => botPlayerIds.has(player.id) && canPlayerEditOperations(game, player.id),
-        )?.id ??
-        null
-      )
-    case "operations":
-      return (
-        game.players.find(
-          player => botPlayerIds.has(player.id) && !hasPlayerCompletedOperations(game, player.id),
-        )?.id ?? null
-      )
-    case "bureaucracy":
-      return (
-        game.players.find(
-          player => botPlayerIds.has(player.id) && !hasPlayerCompletedBureaucracy(game, player.id),
-        )?.id ?? null
-      )
-  }
+  return game.players.find(player => botPlayerIds.has(player.id) && getBotLegalActions(game, player.id).length > 0)?.id ?? null
 }

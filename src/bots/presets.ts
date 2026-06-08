@@ -74,6 +74,13 @@ export const BEST_BOT_WEIGHTS: ScriptedBotWeights = {
   podRemoveCityBaseScore: 0,
   podRemovePassengersPerDistanceGainScore: 20,
   podRemoveNetRevenueGainScore: 15,
+  drawRegionDeckSizeScore: 2,
+  drawRegionOwnedCityBonus: 8,
+  drawRegionOpponentCityPenalty: 3,
+  drawRegionBigCityScarcityBonus: 5,
+  keepCityPopulationScore: 10,
+  keepCityNetworkProximityScore: 6,
+  keepCityRegionMatchScore: 4,
 }
 
 export const BOT_PRESETS: ReadonlyArray<{

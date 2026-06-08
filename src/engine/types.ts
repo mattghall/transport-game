@@ -124,7 +124,14 @@ export type PlayerPeriodHistoryEntry = {
   endingCash: number
 }
 
-export type Player = {
+export type RouteMode = "rail" | "air" | "bus"
+export type WeeklyPhase =
+  | "add-city"
+  | "operations"
+  | "purchase-equipment"
+  | "bureaucracy"
+
+export type PlayerState = {
   id: string
   name: string
   color: string
@@ -140,15 +147,11 @@ export type Player = {
   weeklyPayout: number
   lastPeriodPassengersServed: number
   ownedCityCardIds: string[]
+  phase: WeeklyPhase
   periodHistory?: PlayerPeriodHistoryEntry[]
 }
 
-export type RouteMode = "rail" | "air" | "bus"
-export type WeeklyPhase =
-  | "add-city"
-  | "operations"
-  | "purchase-equipment"
-  | "bureaucracy"
+export type Player = PlayerState
 
 export type ResourceMarket = Record<PurchasableResource, number[]>
 export type ResourceSupply = Record<PurchasableResource, number>
@@ -208,10 +211,8 @@ export type GameState = {
   routeMarketCardIdsByMode: RouteMarketByMode
   cityDeckCardIdsByRegion: CityDecksByRegion
   activeCityOffer: ActiveCityOffer | null
-  addCityReadyPlayerIds: string[]
-  operationsReadyPlayerIds: string[]
   bureaucracyReadyPlayerIds: string[]
-  hasPurchasedVehicleThisTurn: boolean
+  purchasedVehiclePlayerIds: string[]
   hasPurchasedVehicleThisPhase: boolean
   purchasedVehicleTypesThisPhase: VehiclePurchasesByType
   claimedRoutePlayerIdsThisTurn: string[]
