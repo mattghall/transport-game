@@ -71,18 +71,19 @@ function getAvailableClaimActions(game: GameState, playerId: string): BotAction[
       .map(region => ({ type: "draw-city-offer" as const, region }))
   }
 
+  // Another player owns this offer — wait for them to finish
+  if (game.activeCityOffer.playerId !== playerId) {
+    return []
+  }
+
   const keptCityIds = game.activeCityOffer.keptCityIds
+  const offerCityIds = game.activeCityOffer.cityIds
 
   if (keptCityIds.length === 2) {
     return [{ type: "confirm-add-city-picks" }]
   }
 
-  if (game.activeCityOffer.cityIds.length < 2) {
-    return [{ type: "end-turn" }]
-  }
-
   // Generate all C(n,2) combinations from the offer so the scorer picks the best pair
-  const offerCityIds = game.activeCityOffer.cityIds
   const combos: BotAction[] = []
   for (let i = 0; i < offerCityIds.length; i++) {
     for (let j = i + 1; j < offerCityIds.length; j++) {

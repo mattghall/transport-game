@@ -1,7 +1,8 @@
-import type { GameState, PlayerState, WeeklyPhase } from "./types"
+import type { ActiveCityOffer, GameState, PlayerState, WeeklyPhase } from "./types"
 
 type LegacyWeeklyPhase = WeeklyPhase | "claim-routes" | "purchase-fuel"
 type LegacyPlayerState = Omit<PlayerState, "phase"> & { phase?: WeeklyPhase }
+type LegacyActiveCityOffer = Omit<ActiveCityOffer, "playerId"> & { playerId?: string }
 
 type LegacyGameState = Omit<
   GameState,
@@ -12,9 +13,11 @@ type LegacyGameState = Omit<
   | "claimedRoutePlayerIdsThisTurn"
   | "claimedRouteCountsByPlayerIdThisTurn"
   | "actionLog"
+  | "activeCityOffer"
 > & {
   currentPhase: LegacyWeeklyPhase
   players: LegacyPlayerState[]
+  activeCityOffer: LegacyActiveCityOffer | null
   bureaucracyReadyPlayerIds?: string[]
   purchasedVehiclePlayerIds?: string[]
   claimedRoutePlayerIdsThisTurn?: string[]
@@ -43,6 +46,9 @@ export function normalizeGameState(game: LegacyGameState): GameState {
       phase: player.phase ?? normalizedPhase,
     })),
     currentPhase: normalizedPhase,
+    activeCityOffer: game.activeCityOffer
+      ? { ...game.activeCityOffer, playerId: game.activeCityOffer.playerId ?? game.currentPlayerId }
+      : null,
     bureaucracyReadyPlayerIds: game.bureaucracyReadyPlayerIds ?? [],
     purchasedVehiclePlayerIds: game.purchasedVehiclePlayerIds ?? [],
     claimedRoutePlayerIdsThisTurn: game.claimedRoutePlayerIdsThisTurn ?? [],

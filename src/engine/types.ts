@@ -83,6 +83,7 @@ export type ActiveCityOffer = {
   region: CityDeckRegion
   cityIds: string[]
   keptCityIds: string[]
+  playerId: string
 }
 
 export type OperatingConfig = {

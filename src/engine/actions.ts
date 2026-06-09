@@ -1452,6 +1452,7 @@ export function drawCityOffer(
         region,
         cityIds,
         keptCityIds: [],
+        playerId,
       },
     },
   }
@@ -1480,6 +1481,13 @@ export function setActiveCityOfferKeptCityIds(
     return {
       ok: false,
       error: "Draw from a region deck first.",
+    }
+  }
+
+  if (game.activeCityOffer.playerId !== playerId) {
+    return {
+      ok: false,
+      error: "Another player is currently drawing city cards.",
     }
   }
 
@@ -1529,6 +1537,13 @@ export function confirmAddCityPicks(
     return {
       ok: false,
       error: "City picks can only be confirmed once your city selection step is active.",
+    }
+  }
+
+  if (game.activeCityOffer && game.activeCityOffer.playerId !== playerId) {
+    return {
+      ok: false,
+      error: "Another player is currently drawing city cards.",
     }
   }
 

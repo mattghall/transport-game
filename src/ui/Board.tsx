@@ -2191,7 +2191,8 @@ export default function Board({
     selectedClaimPreview === null
       ? false
       : selectedClaimPreview.claimCost <= (currentPlayer?.money ?? 0)
-  const canManageCurrentCityOffer = isSelectingCityCards
+  const canManageCurrentCityOffer = isSelectingCityCards &&
+    (!game.activeCityOffer || game.activeCityOffer.playerId === activeViewingPlayerId)
   const canConfirmSelectedClaim =
     Boolean(selectedClaimPreview?.valid) &&
     canAffordSelectedClaim
