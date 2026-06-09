@@ -11,7 +11,7 @@ Developer notes for the current codebase. This README is meant to help you **run
 
 ## Quick start
 
-Install deps and start the app:
+Install deps and start the UI:
 
 ```bash
 npm install
@@ -26,10 +26,46 @@ npm run lint    # ESLint
 npm run preview # Preview the production build
 ```
 
-Main URLs while developing:
+## LAN multiplayer
 
-- `http://localhost:5173/` - main game
-- `http://localhost:5173/compare.html` - map/rail comparison tool
+LAN play requires a local server running alongside the dev server:
+
+```bash
+node server/sessionServer.mjs
+```
+
+The server runs on **port 8787** by default. One player creates a session from the game launcher; other players on the same network join via the URL or session code.
+
+Both the UI dev server (`npm run dev`) and the session server must be running at the same time for LAN play.
+
+## Bot training
+
+The training server is the same `sessionServer.mjs` process — it manages training subprocess lifecycle. Start it with:
+
+```bash
+node server/sessionServer.mjs
+```
+
+Then open the training dashboard to start/monitor runs:
+
+- `http://localhost:5173/training.html` — training dashboard
+- `http://localhost:5173/admin.html` — admin controls (start/stop autotune, manage champions)
+
+To run autotune directly from the terminal (bypasses the UI):
+
+```bash
+npx tsx scripts/autotuneBots.ts
+```
+
+Champion weights are written to `public/training-results/champion-Xp.json` and promoted into `public/training-results/bot-presets.json`, which the game loads at runtime.
+
+## All dev URLs
+
+- `http://localhost:5173/` — main game
+- `http://localhost:5173/training.html` — bot training dashboard
+- `http://localhost:5173/admin.html` — admin / autotune control
+- `http://localhost:5173/compare.html` — map/rail comparison tool
+- `http://localhost:5173/manual-training.html` — manual bot weight editor
 
 ## High-level architecture
 
@@ -161,32 +197,21 @@ The important separation is:
 
 ## Current phase flow
 
-The active weekly phase order is defined in `src/engine/actions.ts`:
+Each player advances through phases **independently** each week — the pipeline allows players to be in different phases simultaneously, gated so player N can only start a phase once player N-1 has moved past it.
 
-1. `purchase-equipment`
-2. `claim-routes`
-3. `operations`
-4. `bureaucracy`
+Phase order per player per week:
 
-Important note: the current codebase uses these phases a little differently than older docs implied.
+1. `purchase-equipment` — buy vehicle cards
+2. `add-city` — draw 4 city cards from a regional deck, keep 2
+3. `operations` — claim rail/air routes; configure service pods and vehicle assignments
+4. `bureaucracy` — review projected revenue/costs; confirm to end your week
 
-- **`purchase-equipment`**
-  - buy vehicle cards
-- **`claim-routes`**
-  - draw and keep city cards
-  - this is more of a city-acquisition step right now
-- **`operations`**
-  - manual route building happens here
-  - rail track building and air route claiming go through `claimRoute`
-  - per-pod vehicle assignment and service splitting also happen here via the bureaucracy-related setters
-- **`bureaucracy`**
-  - read-only results / ledger view in the UI
-  - end-of-phase resolution applies fuel consumption and advances the game economy
+All four phases complete for all players before the week advances. The lead player rotates each week.
 
 If phase behavior feels wrong, start in:
 
-- `src/engine/actions.ts` for turn/phase gating
-- `src/ui/Board.tsx` for what controls are exposed in each phase
+- `src/engine/actions.ts` for turn/phase gating (`canPlayerStartPhaseByPipeline`, `markPurchaseEquipmentReady`, `markOperationsReady`, `markBureaucracyReady`)
+- `src/ui/Board.tsx` for what controls are exposed in each phase (`viewerPhase` drives all UI gating)
 
 ## Debugging guide
 
@@ -251,16 +276,6 @@ Use it when debugging:
 - city adjacency
 - rail-eligible links
 - map geography against OpenRailwayMap
-
-## About `.sim-build/`
-
-`.sim-build/` is **not** part of the Vite app entry path. The main app imports from `src/`.
-
-That directory is a JavaScript-side helper area for simulation/debug scripts like:
-
-- `.sim-build/simulateBalance.js`
-
-If you change core engine behavior in `src/`, treat `.sim-build/` as a separate support path that may also need manual updates if you still rely on those scripts.
 
 ## Current dev reality
 
