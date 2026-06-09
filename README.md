@@ -11,12 +11,26 @@ Developer notes for the current codebase. This README is meant to help you **run
 
 ## Quick start
 
-Install deps and start the UI:
+For local single-player or local vs-bot games, just run the UI:
 
 ```bash
 npm install
 npm run dev
 ```
+
+## LAN multiplayer and training
+
+For LAN multiplayer or the bot training dashboard, you also need the session server running alongside the UI:
+
+```bash
+# Terminal 1
+npm run dev
+
+# Terminal 2
+node server/sessionServer.mjs
+```
+
+The session server runs on **port 8787**. The launcher shows "Session server: offline" and disables the LAN lobby button if it isn't running.
 
 Useful scripts:
 
@@ -25,18 +39,6 @@ npm run build   # TypeScript compile + production bundle
 npm run lint    # ESLint
 npm run preview # Preview the production build
 ```
-
-## LAN multiplayer
-
-LAN play requires a local server running alongside the dev server:
-
-```bash
-node server/sessionServer.mjs
-```
-
-The server runs on **port 8787** by default. One player creates a session from the game launcher; other players on the same network join via the URL or session code.
-
-Both the UI dev server (`npm run dev`) and the session server must be running at the same time for LAN play.
 
 ## Bot training
 
