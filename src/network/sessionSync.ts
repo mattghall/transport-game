@@ -596,11 +596,16 @@ export function subscribeToLanSession(
     onError?: () => void
     onClosed?: (event: LanSessionClosedEvent) => void
   },
+  clientId?: string,
 ) {
   const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
-  const eventSource = new EventSource(
+  const eventsUrl = new URL(
     `${normalizedServerUrl}/sessions/${encodeURIComponent(sessionId)}/events`,
   )
+  if (clientId) {
+    eventsUrl.searchParams.set("clientId", clientId)
+  }
+  const eventSource = new EventSource(eventsUrl.toString())
   let isClosed = false
 
   const handleSnapshot = (event: MessageEvent<string>) => {

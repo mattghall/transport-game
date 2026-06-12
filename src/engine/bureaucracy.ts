@@ -1425,7 +1425,7 @@ export function buildPlayerBureaucracySummary(
       }
     })
     .sort((planA, planB) => planA.originalIndex - planB.originalIndex)
-    .map(({ originalIndex: _originalIndex, ...plan }) => plan)
+    .map(({ originalIndex: _, ...plan }) => plan)
 
   const fuelUsedUnits: Record<PurchasableResource, number> = {
     diesel: 0,

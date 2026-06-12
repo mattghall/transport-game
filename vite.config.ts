@@ -5,6 +5,9 @@ import react from "@vitejs/plugin-react"
 export default defineConfig({
   appType: "spa",
   plugins: [react()],
+  server: {
+    host: true,
+  },
   build: {
     rollupOptions: {
       input: {

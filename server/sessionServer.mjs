@@ -9,6 +9,11 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 const PORT = Number(process.env.PORT ?? 8787)
 const sessions = new Map()
 const sessionStreams = new Map()
+// pending seat-release timeouts keyed by `${sessionId}:${clientId}`
+const pendingSeatReleases = new Map()
+// active SSE connection counts per client, keyed by `${sessionId}:${clientId}`
+const activeConnectionCounts = new Map()
+const SEAT_RELEASE_DELAY_MS = 12000
 let activeSessionId = null
 const BOT_CLAIM_PREFIX = "bot:"
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -1411,7 +1416,7 @@ function broadcastSession(sessionId) {
     return
   }
 
-  for (const stream of streams) {
+  for (const stream of streams.keys()) {
     sendEvent(stream, "snapshot", session)
   }
 }
@@ -1420,7 +1425,7 @@ function closeSession(sessionId, message) {
   const streams = sessionStreams.get(sessionId)
 
   if (streams) {
-    for (const stream of streams) {
+    for (const stream of streams.keys()) {
       sendEvent(stream, "closed", { sessionId, message })
       stream.end()
     }
@@ -1934,9 +1939,23 @@ const server = createServer(async (request, response) => {
     })
     response.write("\n")
 
-    const streams = sessionStreams.get(sessionPath.sessionId) ?? new Set()
-    streams.add(response)
+    const streams = sessionStreams.get(sessionPath.sessionId) ?? new Map()
+    const clientId = url.searchParams.get("clientId") ?? null
+    streams.set(response, clientId)
     sessionStreams.set(sessionPath.sessionId, streams)
+
+    // Track active connections per client; cancel any pending release on reconnect
+    if (clientId) {
+      const releaseKey = `${sessionPath.sessionId}:${clientId}`
+      const count = activeConnectionCounts.get(releaseKey) ?? 0
+      activeConnectionCounts.set(releaseKey, count + 1)
+      const pending = pendingSeatReleases.get(releaseKey)
+      if (pending) {
+        clearTimeout(pending)
+        pendingSeatReleases.delete(releaseKey)
+      }
+    }
+
     sendEvent(response, "snapshot", session)
 
     request.on("close", () => {
@@ -1950,6 +1969,42 @@ const server = createServer(async (request, response) => {
 
       if (nextStreams.size === 0) {
         sessionStreams.delete(sessionPath.sessionId)
+      }
+
+      if (clientId) {
+        const releaseKey = `${sessionPath.sessionId}:${clientId}`
+        const count = (activeConnectionCounts.get(releaseKey) ?? 1) - 1
+
+        if (count <= 0) {
+          // Last connection for this client dropped — start release timer
+          activeConnectionCounts.delete(releaseKey)
+          const timeoutId = setTimeout(() => {
+            pendingSeatReleases.delete(releaseKey)
+            const currentSession = sessions.get(sessionPath.sessionId)
+            if (currentSession?.lobby?.status === "forming") {
+              const hadClaim = currentSession.lobby.players.some(p => p.claimedBy === clientId)
+              if (hadClaim) {
+                const nextLobby = {
+                  ...currentSession.lobby,
+                  players: currentSession.lobby.players.map(p =>
+                    p.claimedBy === clientId ? { ...p, claimedBy: null, isReady: false } : p,
+                  ),
+                }
+                const nextSession = {
+                  ...currentSession,
+                  version: currentSession.version + 1,
+                  updatedAt: new Date().toISOString(),
+                  lobby: nextLobby,
+                }
+                sessions.set(sessionPath.sessionId, nextSession)
+                broadcastSession(sessionPath.sessionId)
+              }
+            }
+          }, SEAT_RELEASE_DELAY_MS)
+          pendingSeatReleases.set(releaseKey, timeoutId)
+        } else {
+          activeConnectionCounts.set(releaseKey, count)
+        }
       }
     })
     return

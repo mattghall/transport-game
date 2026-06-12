@@ -1299,6 +1299,7 @@ export default function Board({
 
   useEffect(() => {
     if (!game.isGameOver) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setIsGameSummaryMinimized(false)
     }
   }, [game.isGameOver])
@@ -2397,17 +2398,18 @@ export default function Board({
       }),
     [bureaucracySummaries, playerSummaries, victoryStandings],
   )
+  const currentPlayerId = currentPlayer?.id
   const otherPlayerNetworkSummaries = useMemo(
     () =>
       playerSummaries
-        .filter(({ player }) => player.id !== currentPlayer?.id)
+        .filter(({ player }) => player.id !== currentPlayerId)
         .map(summary => ({
           ...summary,
           ownedCityCards: (summary.player.ownedCityCardIds ?? [])
             .map(cityId => cityMap[cityId]?.name ?? cityId)
             .sort((cityA, cityB) => cityA.localeCompare(cityB)),
         })),
-    [cityMap, currentPlayer?.id, playerSummaries],
+    [cityMap, currentPlayerId, playerSummaries],
   )
   const displayedMapRoutes = useMemo(
     () => {
@@ -2467,7 +2469,7 @@ export default function Board({
         return result
       }
 
-      if (game.currentPhase === "add-city") {
+      if (viewerPhase === "add-city") {
         for (const player of game.players) {
           const airRouteIdsWithPlane = getAirRouteIdsWithPlane(player)
           const summary = bureaucracySummaries.find(s => s.player.id === player.id)
@@ -2486,11 +2488,9 @@ export default function Board({
         return [...routesByKey.values()]
       }
 
-      if (game.currentPhase === "operations") {
+      if (viewerPhase === "operations") {
         for (const summary of bureaucracySummaries) {
-          if (summary.player.id === currentPlayer.id) {
-            continue
-          }
+          const isCurrentPlayer = summary.player.id === currentPlayer.id
           const airRouteIdsWithPlane = getAirRouteIdsWithPlane(summary.player)
 
           for (const plan of summary.routePlans) {
@@ -2499,7 +2499,8 @@ export default function Board({
             }
             for (const route of plan.routes) {
               if (route.mode === "air" && !airRouteIdsWithPlane.has(route.id)) continue
-              addRoute(`${summary.player.id}:${route.id}`, route, summary.player.color, 0.35)
+              // Show current player's routes at full opacity; others dimmed
+              addRoute(`${summary.player.id}:${route.id}`, route, summary.player.color, isCurrentPlayer ? 1 : 0.35)
             }
           }
         }
@@ -2545,7 +2546,7 @@ export default function Board({
 
       return [...routesByKey.values()]
     },
-    [bureaucracySummaries, currentPlayer.id, game],
+    [bureaucracySummaries, currentPlayer.id, game, viewerPhase],
   )
   const expandedPlayerSummary = playerSummaries.find(
     summary => summary.player.id === expandedPlayerId,
@@ -3263,6 +3264,7 @@ export default function Board({
   }
 
   useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect */
     setSelectedRouteMode(null)
     setSelectedDrawCityIds([])
     setSelectedOwnedCityIds([])
@@ -3270,9 +3272,11 @@ export default function Board({
     setPendingVehiclePurchaseCardId(null)
     setRevealedVehicleFunFactCardId(null)
     setStatusMessage(getPhaseStatusMessage(viewerPhase))
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, [viewerPhase])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSelectedDrawCityIds(game.activeCityOffer?.keptCityIds ?? [])
   }, [game.activeCityOffer?.keptCityIds])
 
@@ -3285,9 +3289,11 @@ export default function Board({
       // Show immediately after player confirms bureaucracy — week hasn't ended yet
       const summaryKey = `bureaucracy-wait:${game.currentWeek}:${activeViewingPlayerId}`
       if (summaryKey !== lastShownPeriodSummaryKey) {
+        /* eslint-disable react-hooks/set-state-in-effect */
         setIsPeriodSummaryOpen(true)
         setIsBureaucracyOpen(false)
         setLastShownPeriodSummaryKey(summaryKey)
+        /* eslint-enable react-hooks/set-state-in-effect */
       }
       return
     }
@@ -3307,12 +3313,14 @@ export default function Board({
   }, [isPeriodSummaryVisible, onPeriodSummaryVisibilityChange])
 
   useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect */
     setIsResourceMarketOpen(false)
     setIsVehicleMarketOpen(viewerPhase === "purchase-equipment")
     setIsBureaucracyOpen(viewerPhase === "bureaucracy" && !game.isGameOver)
     setIsEconomicsOpen(false)
     setIsWikiOpen(false)
     setWikiPreviousPanel(null)
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, [viewerPhase, game.isGameOver])
 
   function restorePhasePanel() {
@@ -4222,14 +4230,14 @@ export default function Board({
                   You have already used your vehicle purchase this turn. Advance to finish purchasing.
                 </div>
               )}
-              {game.currentPhase === "operations" &&
+              {canEditOperations &&
                 currentPlayerOwnedModes.has("bus") &&
                 !currentPlayerOwnedModes.has("rail") && (
                   <div style={{ color: "#56635a", fontSize: 13 }}>
                     Build Track unlocks after you buy a train vehicle card in Purchase Equipment.
                   </div>
                 )}
-              {game.currentPhase === "operations" && currentPlayerOwnedModes.size === 0 && (
+              {canEditOperations && currentPlayerOwnedModes.size === 0 && (
                 <div style={{ color: "#848484", fontSize: 13 }}>
                   You do not own any vehicles that can build city links yet.
                 </div>
@@ -4362,7 +4370,7 @@ export default function Board({
               )
             })}
 
-            {game.currentPhase === "operations" &&
+            {canEditOperations &&
               selectedRouteMode === "rail" &&
               currentPlayerOwnedModes.has("rail") &&
               adjacentRouteSegments.map(segment => {
@@ -4729,7 +4737,7 @@ export default function Board({
                 >
                   {isEconomicsOpen ? "Hide economics" : "Economics"}
                 </button>
-                {(game.currentPhase === "operations" || game.currentPhase === "bureaucracy") && (
+                {(viewerPhase === "operations" || viewerPhase === "bureaucracy") && (
                   <button
                     type="button"
                     onClick={() => {
@@ -4751,10 +4759,10 @@ export default function Board({
                     }}
                   >
                     {isBureaucracyOpen
-                      ? game.currentPhase === "operations"
+                      ? viewerPhase === "operations"
                         ? "Hide operations table"
                         : "Hide bureaucracy ledger"
-                      : game.currentPhase === "operations"
+                      : viewerPhase === "operations"
                         ? "Operations table"
                         : "Bureaucracy ledger"}
                   </button>
@@ -7327,7 +7335,7 @@ export default function Board({
                   </div>
                 </div>
               </>
-          ) : game.currentPhase === "add-city" || game.currentPhase === "operations" || isSelectingCityCards || canEditOperations ? (
+          ) : isSelectingCityCards || canEditOperations ? (
             <div
               style={{
                 flex: 1,
@@ -7338,7 +7346,7 @@ export default function Board({
                 paddingRight: 2,
               }}
             >
-              {(game.currentPhase === "add-city" || isSelectingCityCards) && (
+              {isSelectingCityCards && (
                 <>
                   <div style={{ display: "grid", gap: 8 }}>
                     <div
@@ -7715,7 +7723,7 @@ export default function Board({
           )}
         </div>
         <div style={TABLE_LANE_STYLE}>
-          {game.currentPhase === "add-city" || isSelectingCityCards ? (
+          {isSelectingCityCards ? (
             <>
               <div>
                 <div style={{ color: "#56635a", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em" }}>
@@ -7785,7 +7793,7 @@ export default function Board({
                 <div>Route building happens during Operations.</div>
               </div>
             </>
-          ) : game.currentPhase === "operations" ? (
+          ) : canEditOperations ? (
             <>
               <div>
                 <div style={{ color: "#56635a", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em" }}>

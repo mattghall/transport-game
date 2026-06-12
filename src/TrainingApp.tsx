@@ -735,6 +735,7 @@ export default function TrainingApp() {
 
   const currentRunStartedAt = autotuneStatus?.currentRun?.startedAt ?? null
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (!currentRunStartedAt) { setElapsedSeconds(0); return }
     const update = () => setElapsedSeconds(Math.floor((Date.now() - new Date(currentRunStartedAt).getTime()) / 1000))
     update()
@@ -950,13 +951,15 @@ export default function TrainingApp() {
     [autotuneHistory, autotuneStatus],
   )
   const currentAutotuneCycle = useMemo(() => {
-    const historyCycle = Math.max(
+    // Only use run cycles (not champion promotion cycles) to anchor the window.
+    // Champion promotions can have cycles from a previous autotune session, which
+    // would inflate the window start and exclude all current-session runs.
+    const runCycle = Math.max(
       0,
       ...(effectiveAutotuneHistory?.runs.map(run => run.cycle) ?? []),
-      ...(effectiveAutotuneHistory?.championPromotions.map(run => run.cycle) ?? []),
     )
 
-    return Math.max(autotuneStatus?.cycle ?? 0, historyCycle)
+    return Math.max(autotuneStatus?.cycle ?? 0, runCycle)
   }, [autotuneStatus, effectiveAutotuneHistory])
   const learningWindowStart = Math.max(1, currentAutotuneCycle - 99)
   const autotuneLearningRows = useMemo(

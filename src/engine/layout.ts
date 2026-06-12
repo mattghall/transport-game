@@ -317,7 +317,6 @@ export function computeLabels(cities: City[], zoomScale = 1): Label[] {
       if (penalty === 0) {
         labels.push(label)
         bestLabel = undefined
-        bestPenalty = 0
         break
       }
     }

@@ -856,7 +856,8 @@ export default function App() {
         window.alert(event.message)
         window.location.replace("/")
       },
-    })
+    }, lobbyClientId)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lanSession])
 
   useEffect(() => {
