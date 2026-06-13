@@ -1,5 +1,6 @@
 import { usMap } from "../data/maps/usMap"
 import { normalizeGameState } from "../engine/normalizeGameState"
+import type { GameAction } from "../engine/gameActions"
 import type {
   BotPresetId,
   ManagedBotPresetEntry,
@@ -204,6 +205,11 @@ export function getDefaultSessionServerUrl(href = getBrowserHref()) {
   const protocol = location.protocol === "https:" ? "https:" : "http:"
   const hostname = location.hostname || "localhost"
   return normalizeSessionServerUrl(`${protocol}//${hostname}:${DEFAULT_SESSION_SERVER_PORT}`)
+}
+
+/** Always returns localhost — use for training/admin tools that must run on the same machine as the server. */
+export function getLocalSessionServerUrl() {
+  return normalizeSessionServerUrl(`http://localhost:${DEFAULT_SESSION_SERVER_PORT}`)
 }
 
 function isLoopbackHostname(hostname: string) {
@@ -536,6 +542,24 @@ export async function updateLanLobby(serverUrl: string, sessionId: string, reque
   )
 }
 
+export async function toggleLanLobbyBotSeat(
+  serverUrl: string,
+  sessionId: string,
+  clientId: string,
+  playerId: string,
+  isBot: boolean,
+) {
+  const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
+  return requestSessionJson<LanSessionSnapshot>(
+    `${normalizedServerUrl}/sessions/${encodeURIComponent(sessionId)}/lobby`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clientId, setSeatBot: { playerId, isBot } }),
+    },
+  )
+}
+
 export async function pushLanSessionGame(
   serverUrl: string,
   sessionId: string,
@@ -586,6 +610,37 @@ export async function pushLanSessionGame(
   }
 
   return (await response.json()) as LanSessionSnapshot
+}
+
+export async function postLanSessionAction(
+  serverUrl: string,
+  sessionId: string,
+  playerId: string,
+  action: GameAction,
+): Promise<void> {
+  const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
+  const response = await fetch(
+    `${normalizedServerUrl}/sessions/${encodeURIComponent(sessionId)}/action`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ playerId, action }),
+    },
+  )
+
+  if (!response.ok) {
+    const responseText = await response.text()
+    let message = `Action failed with status ${response.status}.`
+    if (responseText) {
+      try {
+        const parsed = JSON.parse(responseText) as { error?: unknown }
+        if (typeof parsed.error === "string") message = parsed.error
+      } catch {
+        // ignore parse errors
+      }
+    }
+    throw new Error(message)
+  }
 }
 
 export function subscribeToLanSession(

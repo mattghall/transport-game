@@ -10,7 +10,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "preview:lan": "vite preview --host",
-    "session-server": "node server/sessionServer.mjs",
+    "session-server": "node --import tsx/esm server/sessionServer.mjs",
     "simulate:bots": "tsx scripts/runBotSimulation.ts",
     "train:bots": "tsx scripts/trainBotWeights.ts",
     "autotune:bots": "tsx scripts/autotuneBots.ts"

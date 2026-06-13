@@ -9,7 +9,7 @@ import {
   forceStopAutotune,
   fetchTrainingImportance,
   fetchTrainingPresets,
-  getDefaultSessionServerUrl,
+  getLocalSessionServerUrl,
   promoteAutotuneRunToStickbug,
   resetAutotuneData,
   startAutotune,
@@ -717,7 +717,7 @@ function CombinedAutotuneLearningChart({
 }
 
 export default function TrainingApp() {
-  const defaultServerUrl = getDefaultSessionServerUrl()
+  const defaultServerUrl = getLocalSessionServerUrl()
   const [error, setError] = useState<string | null>(null)
   const [refreshNonce, setRefreshNonce] = useState(0)
   const [autotuneControlStatus, setAutotuneControlStatus] = useState<AutotuneControlStatus | null>(null)
@@ -1184,27 +1184,29 @@ export default function TrainingApp() {
               </span>
             ) : null}
           </div>
+          {options?.showPromotionAction && canPromoteStickbug ? (
+            <div style={{ display: "flex", alignItems: "center" }}>
+              <button
+                type="button"
+                onClick={() => void handlePromoteAutotuneRun({ playerCount: run.playerCount, generatedAt: run.generatedAt })}
+                disabled={isAlreadyPromoted || isSubmitting || !!promotingAutotuneRunKey}
+                style={{
+                  borderRadius: 999,
+                  border: "1px solid #24527a",
+                  background: isAlreadyPromoted || isSubmitting || !!promotingAutotuneRunKey ? "#d9e3ee" : "#24527a",
+                  color: "#ffffff",
+                  padding: "4px 12px",
+                  fontWeight: 700,
+                  fontSize: 12,
+                  cursor: isAlreadyPromoted || isSubmitting || !!promotingAutotuneRunKey ? "not-allowed" : "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {isAlreadyPromoted ? "Promoted" : isPromotingThisRun ? "Promoting…" : "Promote Stickbug"}
+              </button>
+            </div>
+          ) : null}
         </div>
-        {options?.showPromotionAction && canPromoteStickbug ? (
-          <div>
-            <button
-              type="button"
-              onClick={() => void handlePromoteAutotuneRun({ playerCount: run.playerCount, generatedAt: run.generatedAt })}
-              disabled={isAlreadyPromoted || isSubmitting || !!promotingAutotuneRunKey}
-              style={{
-                borderRadius: 999,
-                border: "1px solid #24527a",
-                background: isAlreadyPromoted || isSubmitting || !!promotingAutotuneRunKey ? "#d9e3ee" : "#24527a",
-                color: "#ffffff",
-                padding: "8px 14px",
-                fontWeight: 700,
-                cursor: isAlreadyPromoted || isSubmitting || !!promotingAutotuneRunKey ? "not-allowed" : "pointer",
-              }}
-            >
-              {isAlreadyPromoted ? "Promoted" : isPromotingThisRun ? "Promoting…" : "Promote Stickbug"}
-            </button>
-          </div>
-        ) : null}
       </div>
     )
   }
@@ -1295,27 +1297,29 @@ export default function TrainingApp() {
             ) : null}
           </div>
           <div>Samples: <strong>{formatWholeNumber(entry.champion.benchmark.sampleCount)}</strong></div>
+          {canPromoteStickbug ? (
+            <div style={{ display: "flex", alignItems: "center" }}>
+              <button
+                type="button"
+                onClick={() => void handlePromoteAutotuneRun({ playerCount: entry.playerCount, generatedAt })}
+                disabled={isAlreadyPromoted || isSubmitting || !!promotingAutotuneRunKey}
+                style={{
+                  borderRadius: 999,
+                  border: "1px solid #24527a",
+                  background: isAlreadyPromoted || isSubmitting || !!promotingAutotuneRunKey ? "#d9e3ee" : "#24527a",
+                  color: "#ffffff",
+                  padding: "4px 12px",
+                  fontWeight: 700,
+                  fontSize: 12,
+                  cursor: isAlreadyPromoted || isSubmitting || !!promotingAutotuneRunKey ? "not-allowed" : "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {isAlreadyPromoted ? "Promoted" : isPromotingThisRun ? "Promoting…" : "Promote Stickbug"}
+              </button>
+            </div>
+          ) : null}
         </div>
-        {canPromoteStickbug ? (
-          <div>
-            <button
-              type="button"
-              onClick={() => void handlePromoteAutotuneRun({ playerCount: entry.playerCount, generatedAt })}
-              disabled={isAlreadyPromoted || isSubmitting || !!promotingAutotuneRunKey}
-              style={{
-                borderRadius: 999,
-                border: "1px solid #24527a",
-                background: isAlreadyPromoted || isSubmitting || !!promotingAutotuneRunKey ? "#d9e3ee" : "#24527a",
-                color: "#ffffff",
-                padding: "8px 14px",
-                fontWeight: 700,
-                cursor: isAlreadyPromoted || isSubmitting || !!promotingAutotuneRunKey ? "not-allowed" : "pointer",
-              }}
-            >
-              {isAlreadyPromoted ? "Promoted" : isPromotingThisRun ? "Promoting…" : "Promote Stickbug"}
-            </button>
-          </div>
-        ) : null}
       </div>
     )
   }
@@ -1971,7 +1975,7 @@ export default function TrainingApp() {
           </details>
 
           <details style={{ display: "grid", gap: 8 }}>
-            <summary style={{ cursor: "pointer", color: "#56635a", fontSize: 12, fontWeight: 700, listStylePosition: "inside" }}>
+            <summary style={{ cursor: "pointer", fontWeight: 700, color: "#223024", listStylePosition: "inside" }}>
               Recent autotune runs
             </summary>
             <div style={{ color: "#56635a", fontSize: 12 }}>

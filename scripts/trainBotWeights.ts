@@ -1,12 +1,11 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { cpus } from "node:os"
 import { dirname, resolve } from "node:path"
 import {
   DEFAULT_SCRIPTED_BOT_WEIGHTS,
   type ScriptedBotWeights,
 } from "../src/bots/scriptedBot.ts"
-import {
-  runScriptedBotTraining,
-} from "../src/bots/training.ts"
+import { SimWorkerPool, runScriptedBotTrainingParallel } from "./parallelTraining.ts"
 
 const iterations = Number.parseInt(process.argv[2] ?? "12", 10)
 const gamesPerCandidate = Number.parseInt(process.argv[3] ?? "8", 10)
@@ -58,84 +57,95 @@ function readWarmStartWeights(path: string | undefined) {
   throw new Error(`Warm-start file ${path} does not contain bot weights.`)
 }
 
-const trainingResults = runScriptedBotTraining({
-  iterations,
-  gamesPerCandidate,
-  playerCount,
-  baseSeed,
-  candidatesPerIteration,
-  mutationSeed,
-  maxSteps,
-  outputPath,
-  initialWeights: readWarmStartWeights(warmStartPath),
-  frozenWeights: readWarmStartWeights(warmStartPath),
-  onIterationComplete: progress => {
-    console.log(
-      JSON.stringify({
-        stage: "iteration-progress",
-        iteration: progress.iteration,
-        totalIterations: progress.totalIterations,
-        temperature: Number(progress.temperature.toFixed(3)),
-        bestScore: Number(progress.best.score.toFixed(3)),
-        candidateScore: Number((progress.candidate?.score ?? Number.NEGATIVE_INFINITY).toFixed(3)),
-        bestWinRate: Number(progress.best.winRate.toFixed(3)),
-        bestAveragePassengers: Number(progress.best.averagePassengers.toFixed(3)),
-        bestAveragePassengerMargin: Number(progress.best.averagePassengerMargin.toFixed(3)),
-        bestAverageRank: Number(progress.best.averageRank.toFixed(3)),
+async function main() {
+  const pool = new SimWorkerPool(Math.max(1, cpus().length - 1))
+  try {
+    const trainingResults = await runScriptedBotTrainingParallel(
+      {
+        iterations,
+        gamesPerCandidate,
+        playerCount,
+        baseSeed,
+        candidatesPerIteration,
+        mutationSeed,
         maxSteps,
-      }),
+        outputPath,
+        initialWeights: readWarmStartWeights(warmStartPath),
+        frozenWeights: readWarmStartWeights(warmStartPath),
+        onIterationComplete: progress => {
+          console.log(
+            JSON.stringify({
+              stage: "iteration-progress",
+              iteration: progress.iteration,
+              totalIterations: progress.totalIterations,
+              temperature: Number(progress.temperature.toFixed(3)),
+              bestScore: Number(progress.best.score.toFixed(3)),
+              candidateScore: Number((progress.candidate?.score ?? Number.NEGATIVE_INFINITY).toFixed(3)),
+              bestWinRate: Number(progress.best.winRate.toFixed(3)),
+              bestAveragePassengers: Number(progress.best.averagePassengers.toFixed(3)),
+              bestAveragePassengerMargin: Number(progress.best.averagePassengerMargin.toFixed(3)),
+              bestAverageRank: Number(progress.best.averageRank.toFixed(3)),
+              maxSteps,
+            }),
+          )
+        },
+      },
+      pool,
     )
-  },
-})
 
-function writeTrainingResults() {
-  mkdirSync(dirname(outputPath), { recursive: true })
-  for (const path of [outputPath, modeOutputPath]) {
-    const tempOutputPath = `${path}.tmp`
-    writeFileSync(tempOutputPath, JSON.stringify(trainingResults, null, 2))
-    renameSync(tempOutputPath, path)
+    mkdirSync(dirname(outputPath), { recursive: true })
+    for (const path of [outputPath, modeOutputPath]) {
+      const tempOutputPath = `${path}.tmp`
+      writeFileSync(tempOutputPath, JSON.stringify(trainingResults, null, 2))
+      renameSync(tempOutputPath, path)
+    }
+
+    console.log(
+      JSON.stringify(
+        {
+          stage: "baseline",
+          score: Number(trainingResults.baseline.score.toFixed(3)),
+          winRate: Number(trainingResults.baseline.winRate.toFixed(3)),
+          averageRank: Number(trainingResults.baseline.averageRank.toFixed(3)),
+          averagePassengers: Number(trainingResults.baseline.averagePassengers.toFixed(3)),
+          averagePassengerMargin: Number(trainingResults.baseline.averagePassengerMargin.toFixed(3)),
+          averageConnectedCities: Number(trainingResults.baseline.averageConnectedCities.toFixed(3)),
+          timeoutRate: Number(trainingResults.baseline.timeoutRate.toFixed(3)),
+          maxSteps,
+          weights: roundWeights(trainingResults.baseline.weights),
+        },
+        null,
+        2,
+      ),
+    )
+
+    console.log(
+      JSON.stringify(
+        {
+          stage: "final",
+          score: Number(trainingResults.final.score.toFixed(3)),
+          winRate: Number(trainingResults.final.winRate.toFixed(3)),
+          averageRank: Number(trainingResults.final.averageRank.toFixed(3)),
+          averagePassengers: Number(trainingResults.final.averagePassengers.toFixed(3)),
+          averagePassengerMargin: Number(trainingResults.final.averagePassengerMargin.toFixed(3)),
+          averageConnectedCities: Number(trainingResults.final.averageConnectedCities.toFixed(3)),
+          averageMoney: Number(trainingResults.final.averageMoney.toFixed(3)),
+          timeoutRate: Number(trainingResults.final.timeoutRate.toFixed(3)),
+          sampleCount: trainingResults.final.sampleCount,
+          maxSteps,
+          outputPath,
+          weights: roundWeights(trainingResults.final.weights),
+        },
+        null,
+        2,
+      ),
+    )
+  } finally {
+    await pool.terminate()
   }
 }
 
-writeTrainingResults()
-
-console.log(
-  JSON.stringify(
-    {
-      stage: "baseline",
-      score: Number(trainingResults.baseline.score.toFixed(3)),
-      winRate: Number(trainingResults.baseline.winRate.toFixed(3)),
-      averageRank: Number(trainingResults.baseline.averageRank.toFixed(3)),
-      averagePassengers: Number(trainingResults.baseline.averagePassengers.toFixed(3)),
-      averagePassengerMargin: Number(trainingResults.baseline.averagePassengerMargin.toFixed(3)),
-      averageConnectedCities: Number(trainingResults.baseline.averageConnectedCities.toFixed(3)),
-      timeoutRate: Number(trainingResults.baseline.timeoutRate.toFixed(3)),
-      maxSteps,
-      weights: roundWeights(trainingResults.baseline.weights),
-    },
-    null,
-    2,
-  ),
-)
-
-console.log(
-  JSON.stringify(
-    {
-      stage: "final",
-      score: Number(trainingResults.final.score.toFixed(3)),
-      winRate: Number(trainingResults.final.winRate.toFixed(3)),
-      averageRank: Number(trainingResults.final.averageRank.toFixed(3)),
-      averagePassengers: Number(trainingResults.final.averagePassengers.toFixed(3)),
-      averagePassengerMargin: Number(trainingResults.final.averagePassengerMargin.toFixed(3)),
-      averageConnectedCities: Number(trainingResults.final.averageConnectedCities.toFixed(3)),
-      averageMoney: Number(trainingResults.final.averageMoney.toFixed(3)),
-      timeoutRate: Number(trainingResults.final.timeoutRate.toFixed(3)),
-      sampleCount: trainingResults.final.sampleCount,
-      maxSteps,
-      outputPath,
-      weights: roundWeights(trainingResults.final.weights),
-    },
-    null,
-    2,
-  ),
-)
+main().catch(err => {
+  console.error(JSON.stringify({ stage: "fatal", error: String(err) }))
+  process.exit(1)
+})

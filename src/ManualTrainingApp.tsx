@@ -4,7 +4,7 @@ import {
   fetchTrainingImportance,
   fetchTrainingPresets,
   fetchTrainingStatus,
-  getDefaultSessionServerUrl,
+  getLocalSessionServerUrl,
   startTraining,
   startTrainingImportance,
   stopTraining,
@@ -100,7 +100,7 @@ function IterationProgressBar({
 }
 
 export default function ManualTrainingApp() {
-  const serverUrl = getDefaultSessionServerUrl()
+  const serverUrl = getLocalSessionServerUrl()
   const [results, setResults] = useState<ScriptedBotTrainingResults | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [refreshNonce, setRefreshNonce] = useState(0)

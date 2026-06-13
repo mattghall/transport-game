@@ -7,7 +7,6 @@ document.documentElement.style.width = '100%'
 document.body.style.margin = '0'
 document.body.style.width = '100%'
 document.body.style.height = '100%'
-document.body.style.overflow = 'hidden'
 
 const rootElement = document.getElementById('root')!
 rootElement.style.width = '100%'

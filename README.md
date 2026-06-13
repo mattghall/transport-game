@@ -11,26 +11,18 @@ Developer notes for the current codebase. This README is meant to help you **run
 
 ## Quick start
 
-For local single-player or local vs-bot games, just run the UI:
+The session server is required for all gameplay. You need two terminals:
 
 ```bash
+# Terminal 1 — UI dev server
 npm install
 npm run dev
+
+# Terminal 2 — session server (game logic, bot runner)
+npm run session-server
 ```
 
-## LAN multiplayer and training
-
-For LAN multiplayer or the bot training dashboard, you also need the session server running alongside the UI:
-
-```bash
-# Terminal 1
-npm run dev
-
-# Terminal 2
-node server/sessionServer.mjs
-```
-
-The session server runs on **port 8787**. The launcher shows "Session server: offline" and disables the LAN lobby button if it isn't running.
+The session server runs on **port 8787**. The launcher shows "Session server: offline" and disables the lobby button if it isn't running.
 
 Useful scripts:
 
@@ -42,13 +34,7 @@ npm run preview # Preview the production build
 
 ## Bot training
 
-The training server is the same `sessionServer.mjs` process — it manages training subprocess lifecycle. Start it with:
-
-```bash
-node server/sessionServer.mjs
-```
-
-Then open the training dashboard to start/monitor runs:
+The session server (`npm run session-server`) also manages training subprocess lifecycle. With it running, open the training dashboard:
 
 - `http://localhost:5173/training.html` — training dashboard
 - `http://localhost:5173/admin.html` — admin controls (start/stop autotune, manage champions)
@@ -56,7 +42,7 @@ Then open the training dashboard to start/monitor runs:
 To run autotune directly from the terminal (bypasses the UI):
 
 ```bash
-npx tsx scripts/autotuneBots.ts
+npm run autotune:bots
 ```
 
 Champion weights are written to `public/training-results/champion-Xp.json` and promoted into `public/training-results/bot-presets.json`, which the game loads at runtime.
@@ -91,18 +77,23 @@ The important separation is:
 ### App shell and state wiring
 
 - **`src/App.tsx`**
-  - Holds the main `game` state with `useState`
-  - Owns undo history
-  - Wires UI callbacks to engine actions like:
-    - `buyVehicleCard`
-    - `drawCityOffer`
-    - `claimRoute`
-    - `upgradeRailRoute`
-    - `setBureaucracyRouteVehicleCard`
-    - `setBureaucracyServiceCities`
-    - `addBureaucracyServiceSplit`
-    - `advanceTurn`
-  - Adds action-log messages around engine results
+  - Holds the local `game` state (updated via SSE from the session server)
+  - Owns undo history (local games only)
+  - Wires UI callbacks to engine actions — each callback sends a `GameAction` descriptor to the session server via `POST /sessions/:id/action`
+  - The server applies the action, runs any bot turns, and broadcasts the updated state to all clients via SSE
+
+### Server-authoritative model
+
+- **`server/sessionServer.mjs`**
+  - Single source of truth for game state
+  - Receives `GameAction` descriptors from clients, applies them via the engine, and SSE-broadcasts the result
+  - Runs bot turns server-side after each human action
+  - Validates turn ownership (`canPlayerAct`) — returns 403 if it's not the player's turn
+- **`src/engine/gameActions.ts`**
+  - Defines the `GameAction` union (16 action types) — the wire protocol for `POST /sessions/:id/action`
+- **`src/network/sessionSync.ts`**
+  - Client↔server HTTP + SSE communication
+  - `postLanSessionAction()` — sends a `GameAction` to the server
 
 ### Initial game setup
 

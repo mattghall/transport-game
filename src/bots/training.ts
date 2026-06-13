@@ -90,6 +90,8 @@ export type ScriptedBotTrainingRunOptions = {
   mutationSeed: number
   maxSteps: number
   outputPath: string
+  /** Starting temperature for annealing schedule. Defaults to 1.0. Values > 1 keep exploration high longer. */
+  initialTemperature?: number
   initialWeights?: Partial<ScriptedBotWeights>
   opponentWeights?: Partial<ScriptedBotWeights>
   opponentPoolWeights?: Partial<ScriptedBotWeights>[]
@@ -132,7 +134,7 @@ export type ScriptedBotLeverImportanceResults = {
   }
 }
 
-function createTrainingPlayers(playerCount = 4): GameSetupPlayer[] {
+export function createTrainingPlayers(playerCount = 4): GameSetupPlayer[] {
   return PLAYER_SETUP_PRESETS.slice(0, playerCount).map((player, index) => ({
     ...player,
     name: `Bot ${index + 1}`,
@@ -381,7 +383,8 @@ export function runScriptedBotTraining(options: ScriptedBotTrainingRunOptions): 
   const history: ScriptedBotTrainingHistoryEntry[] = []
 
   for (let iteration = 0; iteration < options.iterations; iteration += 1) {
-    const temperature = Math.max(0.2, 1 - iteration / Math.max(options.iterations, 1))
+    const initialTemp = options.initialTemperature ?? 1
+    const temperature = Math.max(0.2, initialTemp * (1 - iteration / Math.max(options.iterations, 1)))
     const candidates = Array.from(
       { length: Math.max(options.candidatesPerIteration, 1) },
       (_, candidateIndex) => {

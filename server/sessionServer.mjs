@@ -5,6 +5,29 @@ import { spawn, spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { dirname, resolve } from "node:path"
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
+import { usMap } from '../src/data/maps/usMap.ts'
+import { normalizeGameState } from '../src/engine/normalizeGameState.ts'
+import { applyBotAction, getBotLegalActions, getPendingBotPlayerId } from '../src/bots/actions.ts'
+import { createPresetBotController } from '../src/bots/presets.ts'
+import {
+  buyVehicleCard,
+  advanceTurn,
+  drawCityOffer,
+  setActiveCityOfferKeptCityIds,
+  confirmAddCityPicks,
+  claimRoute,
+  markOperationsReady,
+  markBureaucracyReady,
+  setBureaucracyRouteVehicleCard,
+  addBureaucracyServiceSplit,
+  deleteBureaucracyServicePod,
+  moveBureaucracyServiceCity,
+  upgradeRailRoute,
+  canPlayerPickCities,
+  canPlayerEditOperations,
+  canPlayerStartPhaseByPipeline,
+  hasPlayerCompletedBureaucracy,
+} from '../src/engine/actions.ts'
 
 const PORT = Number(process.env.PORT ?? 8787)
 const sessions = new Map()
@@ -27,6 +50,7 @@ const TRAINING_IMPORTANCE_RESULTS_PATH = resolve(PROJECT_ROOT, "public/training-
 const MANAGED_BOT_PRESETS_PATH = resolve(PROJECT_ROOT, "public/training-results/bot-presets.json")
 const AUTOTUNE_STATUS_PATH = resolve(PROJECT_ROOT, "public/training-results/autotune-status.json")
 const AUTOTUNE_HISTORY_PATH = resolve(PROJECT_ROOT, "public/training-results/autotune-history.json")
+const AUTOTUNE_STOP_SIGNAL_PATH = resolve(PROJECT_ROOT, "public/training-results/autotune-stop-requested")
 const TRAINING_LOG_LIMIT = 400
 const MANAGED_BOT_PRESET_STORAGE_IDS = ["bot-avg", "bot-best-1p", "bot-best-2p", "bot-best-3p", "bot-best-4p"]
 const TRAINED_WEIGHT_KEYS = [
@@ -100,6 +124,154 @@ let autotuneControlStatus = {
   logs: [],
   progress: null,
 }
+
+// --- Engine helpers ---
+
+function hydrateServerGame(session) {
+  const map = session.staticData.mapId === 'us' ? usMap : null
+  if (!map) throw new Error(`Unsupported map: ${session.staticData.mapId}`)
+  return normalizeGameState({
+    map,
+    cities: session.staticData.cities,
+    operatingConfig: session.staticData.operatingConfig,
+    chanceCatalog: session.staticData.chanceCatalog,
+    vehicleCatalog: session.staticData.vehicleCatalog,
+    routeCatalog: session.staticData.routeCatalog,
+    ...session.game,
+  })
+}
+
+function runServerBotTurns(game, session) {
+  const botPlayerIds = new Set(
+    session.lobby.players.filter(p => p.isBot).map(p => p.playerId),
+  )
+  if (botPlayerIds.size === 0) return game
+
+  let nextGame = game
+  let safetyLimit = 500
+
+  while (safetyLimit-- > 0) {
+    const pendingBotId = getPendingBotPlayerId(nextGame, botPlayerIds)
+    if (!pendingBotId) break
+
+    const legalActions = getBotLegalActions(nextGame, pendingBotId)
+    if (legalActions.length === 0) break
+
+    const player = nextGame.players.find(p => p.id === pendingBotId)
+    const bot = createPresetBotController(
+      pendingBotId,
+      player?.botPreset,
+      nextGame.botPresetWeightsById,
+    )
+    const phase = player?.phase ?? nextGame.currentPhase
+    const action = bot.pickAction({ game: nextGame, playerId: pendingBotId, legalActions, phase })
+    nextGame = applyBotAction(nextGame, pendingBotId, action)
+  }
+
+  return nextGame
+}
+
+function dehydrateGame(game) {
+  const { map: _map, cities: _cities, operatingConfig: _oc, chanceCatalog: _cc, vehicleCatalog: _vc, routeCatalog: _rc, ...mutableGame } = game
+  return mutableGame
+}
+
+function canPlayerAct(game, playerId, session) {
+  if (!playerId) return false
+
+  // Reject bot impersonation — bots are run server-side only
+  const lobbyPlayer = session.lobby.players.find(p => p.playerId === playerId)
+  if (!lobbyPlayer || lobbyPlayer.isBot) return false
+
+  const player = game.players.find(p => p.id === playerId)
+  if (!player) return false
+
+  switch (player.phase) {
+    case 'purchase-equipment':
+      return canPlayerStartPhaseByPipeline(game, playerId, 'purchase-equipment')
+    case 'add-city':
+      return canPlayerPickCities(game, playerId) || canPlayerEditOperations(game, playerId)
+    case 'operations':
+      return canPlayerEditOperations(game, playerId)
+    case 'bureaucracy':
+      return !hasPlayerCompletedBureaucracy(game, playerId)
+    default:
+      return false
+  }
+}
+
+function applyGameAction(game, playerId, action) {
+  switch (action.type) {
+    case 'advance-turn': {
+      let g = game
+      // Apply pending city selection sent by client (kept local on client, synced only on confirm)
+      if (action.keptCityIds && g.activeCityOffer && g.activeCityOffer.playerId === playerId) {
+        const keptResult = setActiveCityOfferKeptCityIds(g, action.keptCityIds, playerId)
+        if (!keptResult.ok) throw new Error(keptResult.error)
+        g = keptResult.game
+      }
+      if (canPlayerPickCities(g, playerId)) {
+        const result = confirmAddCityPicks(g, playerId)
+        if (!result.ok) throw new Error(result.error)
+        return result.game
+      }
+      if (canPlayerEditOperations(g, playerId)) {
+        const result = markOperationsReady(g, playerId)
+        if (!result.ok) throw new Error(result.error)
+        return result.game
+      }
+      if (!hasPlayerCompletedBureaucracy(g, playerId)) {
+        const result = markBureaucracyReady(g, playerId)
+        if (!result.ok) throw new Error(result.error)
+        return result.game
+      }
+      return advanceTurn(g, playerId)
+    }
+    case 'buy-vehicle': {
+      // Human buy-vehicle also auto-advances turn (bot buy-vehicle does not)
+      const result = buyVehicleCard(game, action.cardId, action.quantity, playerId)
+      if (!result.ok) throw new Error(result.error)
+      return advanceTurn(result.game, playerId)
+    }
+    case 'set-route-vehicle': {
+      const result = setBureaucracyRouteVehicleCard(game, action.routeId, action.vehicleCardId, playerId)
+      if (!result.ok) throw new Error(result.error)
+      return result.game
+    }
+    case 'add-service-split': {
+      const result = addBureaucracyServiceSplit(game, action.corridorId, playerId)
+      if (!result.ok) throw new Error(result.error)
+      return result.game
+    }
+    case 'move-service-city': {
+      const result = moveBureaucracyServiceCity(game, action.corridorId, action.cityId, action.routeId, action.sourceRouteId, playerId)
+      if (!result.ok) throw new Error(result.error)
+      return result.game
+    }
+    case 'delete-service-pod': {
+      const result = deleteBureaucracyServicePod(game, action.corridorId, action.routeId, playerId)
+      if (!result.ok) throw new Error(result.error)
+      return result.game
+    }
+    case 'upgrade-rail': {
+      const result = upgradeRailRoute(game, action.routeId, playerId)
+      if (!result.ok) throw new Error(result.error)
+      return result.game
+    }
+    default:
+      // claim-route: handle explicitly to support bus mode and segmentPairs (not in BotAction)
+      if (action.type === 'claim-route') {
+        const result = claimRoute(game, { mode: action.mode, cityIds: action.cityIds, segmentPairs: action.segmentPairs }, playerId)
+        if (!result.ok) throw new Error(result.error)
+        return result.game
+      }
+      // All remaining BotAction types (draw-city-offer, keep-city-offer, confirm-add-city-picks,
+      // create-service-pod, remove-pod-city, ready-operations, ready-bureaucracy, end-turn)
+      return applyBotAction(game, playerId, action)
+  }
+}
+
+// ---
 
 function isLoopbackRemoteAddress(address) {
   return (
@@ -346,7 +518,12 @@ function reconcileAutotuneRunState() {
   return { hasExternalRun: false, recoveredStaleRun: true }
 }
 
+function tryDeleteStopSignalFile() {
+  try { unlinkSync(AUTOTUNE_STOP_SIGNAL_PATH) } catch { /* already gone */ }
+}
+
 function forceStopAutotuneProcess() {
+  tryDeleteStopSignalFile()
   const detachedPid = activeAutotuneProcess === null ? findDetachedAutotuneProcess() : null
 
   if (activeAutotuneProcess) {
@@ -1181,7 +1358,14 @@ function stopAutotuneProcess() {
     progress: autotuneControlStatus.progress,
   }
   appendAutotuneLog("Stop requested. The autotune loop will exit after the current cycle finishes.")
-  activeAutotuneProcess.kill("SIGINT")
+  // Write a stop-signal file. The autotune loop polls this file between cycles
+  // and exits cleanly after the current cycle finishes.
+  // We do NOT send SIGINT — on Windows that kills the process immediately.
+  try {
+    writeFileSync(AUTOTUNE_STOP_SIGNAL_PATH, new Date().toISOString())
+  } catch {
+    // non-fatal
+  }
 }
 
 function getLanAddresses() {
@@ -1513,12 +1697,18 @@ function isValidLobbyUpdate(value) {
     (value.playerId === undefined || typeof value.playerId === "string") &&
     (value.isReady === undefined || typeof value.isReady === "boolean") &&
     (value.playerName === undefined || typeof value.playerName === "string") &&
-    (value.startGame === undefined || typeof value.startGame === "boolean")
+    (value.startGame === undefined || typeof value.startGame === "boolean") &&
+    (value.setSeatBot === undefined || (
+      typeof value.setSeatBot === "object" &&
+      value.setSeatBot !== null &&
+      typeof value.setSeatBot.playerId === "string" &&
+      typeof value.setSeatBot.isBot === "boolean"
+    ))
   )
 }
 
 function getSessionIdFromPath(pathname) {
-  const match = pathname.match(/^\/sessions\/([A-Z0-9]{6})(?:\/(events|game|lobby))?$/)
+  const match = pathname.match(/^\/sessions\/([A-Z0-9]{6})(?:\/(events|game|lobby|action))?$/)
 
   if (!match) {
     return null
@@ -1778,7 +1968,7 @@ const server = createServer(async (request, response) => {
 
       const sessionId = createSessionId()
       const now = new Date().toISOString()
-      const session = {
+      const initialSession = {
         sessionId,
         sessionName: body.sessionName.trim() || `Transport Game ${sessionId}`,
         version: 1,
@@ -1787,6 +1977,14 @@ const server = createServer(async (request, response) => {
         lobby: createLobby(body.game.players),
         staticData: body.staticData,
         game: body.game,
+      }
+
+      // Run any bot-only opening turns immediately (e.g., all-bot games)
+      const hydratedGame = hydrateServerGame(initialSession)
+      const gameAfterBots = runServerBotTurns(hydratedGame, initialSession)
+      const session = {
+        ...initialSession,
+        game: dehydrateGame(gameAfterBots),
       }
 
       sessions.set(sessionId, session)
@@ -1876,11 +2074,17 @@ const server = createServer(async (request, response) => {
         return
       }
 
+      // Run any pending bot turns server-side before saving
+      const incomingSession = { ...session, game: body.game }
+      const hydratedGame = hydrateServerGame(incomingSession)
+      const gameAfterBots = runServerBotTurns(hydratedGame, session)
+      const mutableGame = dehydrateGame(gameAfterBots)
+
       const nextSession = {
         ...session,
         version: session.version + 1,
         updatedAt: new Date().toISOString(),
-        game: body.game,
+        game: mutableGame,
       }
 
       sessions.set(sessionPath.sessionId, nextSession)
@@ -1895,24 +2099,125 @@ const server = createServer(async (request, response) => {
     }
   }
 
+  if (request.method === "POST" && sessionPath.resource === "action") {
+    try {
+      const body = await readJsonBody(request)
+
+      if (
+        typeof body !== "object" ||
+        body === null ||
+        typeof body.playerId !== "string" ||
+        typeof body.action !== "object" ||
+        body.action === null ||
+        typeof body.action.type !== "string"
+      ) {
+        sendJson(response, 400, { error: "Action requests must include playerId and action with a type." })
+        return
+      }
+
+      const hydratedGame = hydrateServerGame(session)
+
+      if (!canPlayerAct(hydratedGame, body.playerId, session)) {
+        sendJson(response, 403, { error: "It is not your turn to act." })
+        return
+      }
+
+      const gameAfterAction = applyGameAction(hydratedGame, body.playerId, body.action)
+      const gameAfterBots = runServerBotTurns(gameAfterAction, session)
+      const mutableGame = dehydrateGame(gameAfterBots)
+
+      const nextSession = {
+        ...session,
+        version: session.version + 1,
+        updatedAt: new Date().toISOString(),
+        game: mutableGame,
+      }
+
+      sessions.set(sessionPath.sessionId, nextSession)
+      sendJson(response, 200, { ok: true })
+      broadcastSession(sessionPath.sessionId)
+      return
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : "Could not apply action.",
+      })
+      return
+    }
+  }
+
    if (request.method === "PUT" && sessionPath.resource === "lobby") {
     try {
       const body = await readJsonBody(request)
 
       if (!isValidLobbyUpdate(body)) {
         sendJson(response, 400, {
-          error: "Lobby updates must include clientId and may include playerId, isReady, playerName, and startGame.",
+          error: "Lobby updates must include clientId and may include playerId, isReady, playerName, startGame, and setSeatBot.",
         })
+        return
+      }
+
+      // Bot-seat toggle — host can flip any unclaimed seat to/from bot before game starts
+      if (body.setSeatBot !== undefined) {
+        const { playerId, isBot } = body.setSeatBot
+        const lobbyPlayer = session.lobby.players.find(p => p.playerId === playerId)
+        if (!lobbyPlayer) {
+          sendJson(response, 404, { error: `Seat ${playerId} was not found.` })
+          return
+        }
+        if (lobbyPlayer.claimedBy && !lobbyPlayer.isBot) {
+          sendJson(response, 409, { error: `Seat ${playerId} is already claimed by a human player.` })
+          return
+        }
+        const nextLobby = {
+          ...session.lobby,
+          players: session.lobby.players.map(p =>
+            p.playerId !== playerId ? p : {
+              ...p,
+              isBot,
+              claimedBy: isBot ? `${BOT_CLAIM_PREFIX}${playerId}` : null,
+              isReady: isBot,
+            }
+          ),
+        }
+        const nextGame = {
+          ...session.game,
+          players: session.game.players.map(p =>
+            p.id !== playerId ? p : { ...p, isBot }
+          ),
+        }
+        const nextSession = {
+          ...session,
+          version: session.version + 1,
+          updatedAt: new Date().toISOString(),
+          game: nextGame,
+          lobby: nextLobby,
+        }
+        sessions.set(sessionPath.sessionId, nextSession)
+        sendJson(response, 200, nextSession)
+        broadcastSession(sessionPath.sessionId)
         return
       }
 
       const { game, lobby } = getNextLobbySession(session, body)
 
+      // Run any pending bot turns server-side (important when lobby starts and bots move first)
+      let finalGame = game
+      if (body.startGame && lobby.status === "started") {
+        try {
+          const startedSession = { ...session, game, lobby }
+          const hydratedGame = hydrateServerGame(startedSession)
+          const gameAfterBots = runServerBotTurns(hydratedGame, startedSession)
+          finalGame = dehydrateGame(gameAfterBots)
+        } catch {
+          finalGame = game
+        }
+      }
+
       const nextSession = {
         ...session,
         version: session.version + 1,
         updatedAt: new Date().toISOString(),
-        game,
+        game: finalGame,
         lobby,
       }
 

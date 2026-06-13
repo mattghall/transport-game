@@ -25,7 +25,7 @@ import {
   getDefaultJoinAppUrl,
   fetchSessionServerHealth,
   hydrateLanSessionGame,
-  getDefaultSessionServerUrl,
+  getLocalSessionServerUrl,
   getSuggestedJoinAppUrl,
   isLocalJoinAppUrl,
   normalizeJoinAppUrl,
@@ -69,7 +69,7 @@ export default function AdminApp() {
   const [moneyAmount, setMoneyAmount] = useState(100000)
   const [statusMessage, setStatusMessage] = useState("")
   const [statusTone, setStatusTone] = useState<"neutral" | "error">("neutral")
-  const [serverUrl, setServerUrl] = useState(() => getDefaultSessionServerUrl())
+  const [serverUrl, setServerUrl] = useState(() => getLocalSessionServerUrl())
   const [joinAppUrl, setJoinAppUrl] = useState(() => loadJoinAppUrl() ?? getDefaultJoinAppUrl())
   const [serverHealth, setServerHealth] = useState<SessionServerHealth | null>(null)
   const [serverHealthTone, setServerHealthTone] = useState<"neutral" | "error">("neutral")

@@ -1,36 +1,36 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
+import { cpus } from "node:os"
 import { resolve } from "node:path"
 import {
   DEFAULT_SCRIPTED_BOT_WEIGHTS,
-  mergeScriptedBotWeights,
   type ScriptedBotWeights,
 } from "../src/bots/scriptedBot.ts"
 import {
-  FROZEN_SCRIPTED_BOT_WEIGHT_KEYS,
-  MUTABLE_SCRIPTED_BOT_WEIGHT_KEYS,
   applyFrozenScriptedBotWeights,
 } from "../src/bots/leverMetadata.ts"
 import {
-  analyzeScriptedBotLeverImportance,
-  createTrainingSeeds,
-  evaluateScriptedBotWeights,
-  runScriptedBotTraining,
-  summarizeScriptedBotWeightEvaluation,
   type ScriptedBotLeverImportanceResults,
   type ScriptedBotTrainingResults,
 } from "../src/bots/training.ts"
+import {
+  SimWorkerPool,
+  parallelBuildImportanceResults,
+  parallelEvaluateChampionBenchmark,
+  runScriptedBotTrainingParallel,
+} from "./parallelTraining.ts"
 
 const TRAINING_RESULTS_DIR = resolve(process.cwd(), "public/training-results")
 const LATEST_RESULTS_PATH = resolve(TRAINING_RESULTS_DIR, "latest.json")
 const LATEST_IMPORTANCE_RESULTS_PATH = resolve(TRAINING_RESULTS_DIR, "latest-importance.json")
 const AUTOTUNE_STATUS_PATH = resolve(TRAINING_RESULTS_DIR, "autotune-status.json")
 const AUTOTUNE_HISTORY_PATH = resolve(TRAINING_RESULTS_DIR, "autotune-history.json")
+const AUTOTUNE_STOP_SIGNAL_PATH = resolve(TRAINING_RESULTS_DIR, "autotune-stop-requested")
 const PLAYER_COUNTS = [4, 3, 2, 1] as const
 const MAX_CYCLES = Number.parseInt(process.argv[2] ?? "", 10)
 const SHOULD_STOP_AFTER_MAX_CYCLES = Number.isFinite(MAX_CYCLES) && MAX_CYCLES > 0
 
 type PlayerCount = (typeof PLAYER_COUNTS)[number]
-type RunProfile = "refine" | "explore" | "deep"
+type RunProfile = "refine" | "explore" | "deep" | "escape"
 type ChampionRecord = {
   version: 1
   updatedAt: string
@@ -248,36 +248,53 @@ function writeImportanceResults(
 function getBenchmarkGameCount(playerCount: PlayerCount) {
   switch (playerCount) {
     case 1:
-      return 20
+      return 40
     case 2:
-      return 16
+      return 32
     case 3:
-      return 12
+      return 24
     case 4:
-      return 10
+      return 20
   }
 }
 
-function getTrainingProfile(playerCount: PlayerCount, modeCycle: number, startedFromScratch: boolean) {
+/** Cycles since last promotion for a given player count, capped at a useful max. */
+function getCyclesSincePromotion(status: AutotuneStatus, playerCount: PlayerCount): number {
+  const championCycle = status.champions[modeKey(playerCount)]?.cycle ?? 0
+  return status.cycle - championCycle
+}
+
+function getTrainingProfile(playerCount: PlayerCount, modeCycle: number, startedFromScratch: boolean, cyclesSincePromotion: number) {
+  // If we've been stuck for >40 cycles, use an escape run every 3rd mode cycle
+  const isEscape = !startedFromScratch && cyclesSincePromotion > 40 && modeCycle % 3 === 0
   const profile: RunProfile =
-    startedFromScratch || modeCycle % 5 === 0 ? "deep" : modeCycle % 2 === 0 ? "explore" : "refine"
+    isEscape ? "escape"
+    : startedFromScratch || modeCycle % 5 === 0 ? "deep"
+    : modeCycle % 2 === 0 ? "explore"
+    : "refine"
+
   const gamesPerCandidate =
-    profile === "deep"
+    profile === "escape"
       ? getBenchmarkGameCount(playerCount)
-      : playerCount === 1
-        ? 14
-      : playerCount === 2
-        ? 12
-        : playerCount === 3
-          ? 10
-          : 8
+      : profile === "deep"
+        ? Math.ceil(getBenchmarkGameCount(playerCount) / 2)
+        : playerCount === 1
+          ? 14
+          : playerCount === 2
+            ? 12
+            : playerCount === 3
+              ? 10
+              : 8
 
   return {
     profile,
-    iterations: profile === "deep" ? 22 : profile === "explore" ? 16 : 10,
+    // Escape: many iterations with high starting temperature to break out of local optima
+    iterations: profile === "escape" ? 40 : profile === "deep" ? 28 : profile === "explore" ? 18 : 10,
     gamesPerCandidate,
-    candidatesPerIteration: profile === "refine" ? 5 : 7,
-    maxSteps: profile === "deep" ? 2400 : 2000,
+    candidatesPerIteration: profile === "escape" ? 12 : profile === "refine" ? 5 : 8,
+    maxSteps: profile === "deep" || profile === "escape" ? 1600 : 1400,
+    // Escape runs start at temperature 2.0 — mutations are 2x larger and stay large longer
+    initialTemperature: profile === "escape" ? 2.0 : 1.0,
   }
 }
 
@@ -396,49 +413,6 @@ function createChampionRecord(
   }
 }
 
-function evaluateChampionBenchmark(playerCount: PlayerCount, weights: Partial<ScriptedBotWeights>) {
-  return summarizeScriptedBotWeightEvaluation(
-    evaluateScriptedBotWeights({
-      seeds: createTrainingSeeds(9000 + playerCount * 100, getBenchmarkGameCount(playerCount)),
-      candidateWeights: mergeScriptedBotWeights(weights),
-      opponentWeights: DEFAULT_SCRIPTED_BOT_WEIGHTS,
-      playerCount,
-      maxSteps: 2500,
-    }),
-  )
-}
-
-function buildImportanceResults(
-  results: ScriptedBotTrainingResults,
-  opponentPoolWeights?: Partial<ScriptedBotWeights>[],
-): ScriptedBotLeverImportanceResults {
-  const { reference, rows } = analyzeScriptedBotLeverImportance({
-    seeds: createTrainingSeeds(results.config.baseSeed, results.config.gamesPerCandidate),
-    finalWeights: results.final.weights,
-    baselineWeights: results.baseline.weights,
-    opponentWeights: results.baseline.weights,
-    opponentPoolWeights,
-    playerCount: results.config.playerCount,
-    maxSteps: results.config.maxSteps,
-  })
-
-  return {
-    generatedAt: new Date().toISOString(),
-    sourceTrainingGeneratedAt: results.generatedAt,
-    reference,
-    rows,
-    config: {
-      gamesPerCandidate: results.config.gamesPerCandidate,
-      playerCount: results.config.playerCount,
-      baseSeed: results.config.baseSeed,
-      maxSteps: results.config.maxSteps,
-      outputPath: LATEST_IMPORTANCE_RESULTS_PATH,
-      mutableLeverKeys: MUTABLE_SCRIPTED_BOT_WEIGHT_KEYS,
-      frozenLeverKeys: [...FROZEN_SCRIPTED_BOT_WEIGHT_KEYS],
-    },
-  }
-}
-
 function buildOpponentPlan(
   playerCount: PlayerCount,
   champions: AutotuneStatus["champions"],
@@ -530,6 +504,15 @@ function logRunFinish(
 }
 
 let shouldStop = false
+
+function checkStopSignal() {
+  if (existsSync(AUTOTUNE_STOP_SIGNAL_PATH)) {
+    shouldStop = true
+    try { unlinkSync(AUTOTUNE_STOP_SIGNAL_PATH) } catch { /* already gone */ }
+    console.log(JSON.stringify({ stage: "signal", signal: "stop-file", message: "Stopping after current cycle." }))
+  }
+}
+
 process.on("SIGINT", () => {
   shouldStop = true
   console.log(JSON.stringify({ stage: "signal", signal: "SIGINT", message: "Stopping after current cycle." }))
@@ -539,119 +522,153 @@ process.on("SIGTERM", () => {
   console.log(JSON.stringify({ stage: "signal", signal: "SIGTERM", message: "Stopping after current cycle." }))
 })
 
-const champions = loadChampions()
-const status = loadStatus(champions)
-const history = loadHistory(status)
-writeStatus(status)
-writeHistory(history)
+async function main() {
+  // Clear any leftover stop file from a previous interrupted run
+  try { unlinkSync(AUTOTUNE_STOP_SIGNAL_PATH) } catch { /* none present */ }
 
-while (!shouldStop) {
-  const cycle = status.cycle + 1
-  const playerCount = PLAYER_COUNTS[(cycle - 1) % PLAYER_COUNTS.length]
-  const playerModeKey = modeKey(playerCount)
-  const modeCycle = status.modeCycles[playerModeKey] + 1
-  const champion = status.champions[playerModeKey]
-  const startedFromScratch = !champion || modeCycle % 5 === 0
-  const profileConfig = getTrainingProfile(playerCount, modeCycle, startedFromScratch)
-  const opponentPlan = buildOpponentPlan(playerCount, status.champions)
-  const opponent = opponentPlan.label
-  const baseSeed = 10_000 + cycle * 500
-  const mutationSeed = 100_000 + cycle * 977
-  const outputPath = createModeResultsPath(playerCount)
-  const frozenWeights = champion?.training.final.weights
+  const workerCount = Math.max(1, cpus().length - 1)
+  console.log(JSON.stringify({ stage: "startup", workerCount, cpus: cpus().length }))
+  const pool = new SimWorkerPool(workerCount)
 
-  status.currentRun = {
-    cycle,
-    playerCount,
-    modeCycle,
-    profile: profileConfig.profile,
-    startedFromScratch,
-    opponent,
-    startedAt: new Date().toISOString(),
-  }
-  status.updatedAt = new Date().toISOString()
-  writeStatus(status)
+  try {
+    const champions = loadChampions()
+    const status = loadStatus(champions)
+    const history = loadHistory(status)
+    writeStatus(status)
+    writeHistory(history)
 
-  logRunStart(cycle, playerCount, modeCycle, profileConfig.profile, startedFromScratch, opponent, profileConfig.iterations)
+    while (!shouldStop) {
+      checkStopSignal()
+      if (shouldStop) break
+      const cycle = status.cycle + 1
+      const playerCount = PLAYER_COUNTS[(cycle - 1) % PLAYER_COUNTS.length]
+      const playerModeKey = modeKey(playerCount)
+      const modeCycle = status.modeCycles[playerModeKey] + 1
+      const champion = status.champions[playerModeKey]
+      const cyclesSincePromotion = getCyclesSincePromotion(status, playerCount)
+      const startedFromScratch = !champion || modeCycle % 5 === 0
+      const profileConfig = getTrainingProfile(playerCount, modeCycle, startedFromScratch, cyclesSincePromotion)
+      const opponentPlan = buildOpponentPlan(playerCount, status.champions)
+      const opponent = opponentPlan.label
+      const baseSeed = 10_000 + cycle * 500
+      const mutationSeed = 100_000 + cycle * 977
+      const outputPath = createModeResultsPath(playerCount)
+      const frozenWeights = champion?.training.final.weights
 
-  const cycleStartMs = Date.now()
-  const results = runScriptedBotTraining({
-    iterations: profileConfig.iterations,
-    gamesPerCandidate: profileConfig.gamesPerCandidate,
-    playerCount,
-    baseSeed,
-    candidatesPerIteration: profileConfig.candidatesPerIteration,
-    mutationSeed,
-    maxSteps: profileConfig.maxSteps,
-    outputPath,
-    initialWeights: startedFromScratch
-      ? applyFrozenScriptedBotWeights(DEFAULT_SCRIPTED_BOT_WEIGHTS, frozenWeights)
-      : champion?.training.final.weights,
-    opponentPoolWeights: opponentPlan.pool,
-    frozenWeights,
-    onIterationComplete: progress => {
-      console.log(
-        JSON.stringify({
-          stage: "iteration-progress",
-          cycle,
+      status.currentRun = {
+        cycle,
+        playerCount,
+        modeCycle,
+        profile: profileConfig.profile,
+        startedFromScratch,
+        opponent,
+        startedAt: new Date().toISOString(),
+      }
+      status.updatedAt = new Date().toISOString()
+      writeStatus(status)
+
+      logRunStart(cycle, playerCount, modeCycle, profileConfig.profile, startedFromScratch, opponent, profileConfig.iterations)
+
+      const cycleStartMs = Date.now()
+      const results = await runScriptedBotTrainingParallel(
+        {
+          iterations: profileConfig.iterations,
+          gamesPerCandidate: profileConfig.gamesPerCandidate,
           playerCount,
-          modeCycle,
-          iteration: progress.iteration,
-          totalIterations: progress.totalIterations,
-          temperature: Number(progress.temperature.toFixed(3)),
-          bestScore: Number(progress.best.score.toFixed(3)),
-          candidateScore: Number((progress.candidate?.score ?? Number.NEGATIVE_INFINITY).toFixed(3)),
-        }),
+          baseSeed,
+          candidatesPerIteration: profileConfig.candidatesPerIteration,
+          mutationSeed,
+          maxSteps: profileConfig.maxSteps,
+          initialTemperature: profileConfig.initialTemperature,
+          outputPath,
+          initialWeights: startedFromScratch
+            ? applyFrozenScriptedBotWeights(DEFAULT_SCRIPTED_BOT_WEIGHTS, frozenWeights)
+            : champion?.training.final.weights,
+          opponentPoolWeights: opponentPlan.pool,
+          frozenWeights,
+          onIterationComplete: progress => {
+            console.log(
+              JSON.stringify({
+                stage: "iteration-progress",
+                cycle,
+                playerCount,
+                modeCycle,
+                iteration: progress.iteration,
+                totalIterations: progress.totalIterations,
+                temperature: Number(progress.temperature.toFixed(3)),
+                bestScore: Number(progress.best.score.toFixed(3)),
+                candidateScore: Number((progress.candidate?.score ?? Number.NEGATIVE_INFINITY).toFixed(3)),
+              }),
+            )
+          },
+        },
+        pool,
       )
-    },
-  })
-  writeTrainingResults(results)
+      writeTrainingResults(results)
 
-  const benchmark = evaluateChampionBenchmark(playerCount, results.final.weights)
-  const promoted = !champion || benchmark.score > champion.benchmark.score
-  const runRecord = summarizeRunRecord(
-    cycle,
-    playerCount,
-    modeCycle,
-    profileConfig.profile,
-    startedFromScratch,
-    opponent,
-    promoted,
-    benchmark.score,
-    Date.now() - cycleStartMs,
-    results,
-  )
+      const benchmark = await parallelEvaluateChampionBenchmark(
+        playerCount,
+        results.final.weights,
+        getBenchmarkGameCount(playerCount),
+        pool,
+      )
+      const promoted = !champion || benchmark.score > champion.benchmark.score
+      const runRecord = summarizeRunRecord(
+        cycle,
+        playerCount,
+        modeCycle,
+        profileConfig.profile,
+        startedFromScratch,
+        opponent,
+        promoted,
+        benchmark.score,
+        Date.now() - cycleStartMs,
+        results,
+      )
 
-  if (promoted) {
-    const nextChampion = createChampionRecord(playerCount, cycle, results, benchmark)
-    status.champions[playerModeKey] = nextChampion
-    writeJsonFile(createChampionPath(playerCount), nextChampion)
-    writeImportanceResults(playerCount, results, buildImportanceResults(results, opponentPlan.pool))
-    history.championPromotions = dedupePromotions([
-      ...history.championPromotions,
-      summarizeChampionPromotion(nextChampion),
-    ])
-  }
+      if (promoted) {
+        const nextChampion = createChampionRecord(playerCount, cycle, results, benchmark)
+        status.champions[playerModeKey] = nextChampion
+        writeJsonFile(createChampionPath(playerCount), nextChampion)
+        writeImportanceResults(playerCount, results, await parallelBuildImportanceResults(results, pool, opponentPlan.pool))
+        history.championPromotions = dedupePromotions([
+          ...history.championPromotions,
+          summarizeChampionPromotion(nextChampion),
+        ])
+      }
 
-  status.cycle = cycle
-  status.modeCycles[playerModeKey] = modeCycle
-  status.currentRun = null
-  status.updatedAt = new Date().toISOString()
-  status.recentRuns = [runRecord, ...status.recentRuns].slice(0, 18)
-  history.updatedAt = new Date().toISOString()
-  history.runs = dedupeRuns([...history.runs, runRecord])
-  writeStatus(status)
-  writeHistory(history)
+      status.cycle = cycle
+      status.modeCycles[playerModeKey] = modeCycle
+      status.currentRun = null
+      status.updatedAt = new Date().toISOString()
+      status.recentRuns = [runRecord, ...status.recentRuns].slice(0, 18)
+      history.updatedAt = new Date().toISOString()
+      history.runs = dedupeRuns([...history.runs, runRecord])
+      writeStatus(status)
+      writeHistory(history)
 
-  logRunFinish(cycle, playerCount, promoted, benchmark.score, results)
+      logRunFinish(cycle, playerCount, promoted, benchmark.score, results)
 
-  if (SHOULD_STOP_AFTER_MAX_CYCLES && cycle >= MAX_CYCLES) {
-    break
+      // Check stop signal after completing a full cycle
+      checkStopSignal()
+
+      if (SHOULD_STOP_AFTER_MAX_CYCLES && cycle >= MAX_CYCLES) {
+        break
+      }
+    }
+
+    status.currentRun = null
+    status.updatedAt = new Date().toISOString()
+    writeStatus(status)
+    history.updatedAt = new Date().toISOString()
+    writeHistory(history)
+  } finally {
+    try { unlinkSync(AUTOTUNE_STOP_SIGNAL_PATH) } catch { /* already gone */ }
+    await pool.terminate()
   }
 }
 
-status.currentRun = null
-status.updatedAt = new Date().toISOString()
-writeStatus(status)
-history.updatedAt = new Date().toISOString()
-writeHistory(history)
+main().catch(err => {
+  console.error(JSON.stringify({ stage: "fatal", error: String(err) }))
+  process.exit(1)
+})
