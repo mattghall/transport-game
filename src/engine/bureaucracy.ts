@@ -1,5 +1,4 @@
 import {
-  getAffordableFleetSize,
   getBalanceAdjustmentPerTrip,
   getCityDemandAbsorptionSize,
   getCityDemandSize,
@@ -10,6 +9,7 @@ import {
 import { getImplicitBusRoutes } from "./playerNetwork"
 import { getOwnedVehicleCountForCard } from "./playerVehicles"
 import {
+  calculateFuelUnitsFromReal,
   calculateRealFuelFromUnits,
   calculateRouteDistanceMiles,
   calculateRouteTripsPerWeek,
@@ -88,13 +88,6 @@ export type BureaucracyRoutePlan = {
   netRevenue: number
 }
 
-type CityCubeDemand = {
-  cityId: string
-  cityName: string
-  outboundCubes: number
-  inboundCubes: number
-}
-
 type SimplifiedFlowCityStatus = {
   cityId: string
   cityName: string
@@ -111,26 +104,14 @@ type SimplifiedFlowLedgerEntry = {
   destinationCityId: string
   destinationCityName: string
   cubeCount: number
+  finalDestinationCubeCount: number
   passengers: number
   payoutMultiplier: number
   farePerPassenger: number
   payout: number
   pathCityIds: string[]
   pathLabels: string[]
-}
-
-type SimplifiedFlowPlan = {
-  cityStatuses: SimplifiedFlowCityStatus[]
-  ledgerEntries: SimplifiedFlowLedgerEntry[]
-  totalPayoutMultiplier: number
-  totalPayout: number
-}
-
-type CubeTransferDemand = {
-  cityCubeDemands: CityCubeDemand[]
-  totalOutboundCubes: number
-  totalInboundCubes: number
-  movableDemandCubes: number
+  mode: RouteMode
 }
 
 type ServiceGroup = {
@@ -228,6 +209,16 @@ export type PlayerBureaucracySummary = {
   totalRevenue: number
   totalOperatingCost: number
   netRevenue: number
+  stuckCubesByCity: Array<{
+    cityId: string
+    cityName: string
+    stuckCubeCount: number
+    wantedDestinations: Array<{ destCityId: string; destCityName: string; cubeCount: number }>
+  }>
+  outboundIntentByCity: Array<{
+    cityId: string
+    destinations: Array<{ destCityId: string; destCityName: string; cubeCount: number }>
+  }>
 }
 
 function getVehicleTypeForRouteMode(mode: RouteMode): VehicleType {
@@ -263,54 +254,292 @@ function getOwnedVehicleCards(game: GameState, player: Player) {
     .sort((cardA, cardB) => cardA.number - cardB.number)
 }
 
-function buildCubeTransferDemand(
-  game: GameState,
-  cityIds: string[],
-  sharedDemandState?: {
-    outboundCubesByCityId: Map<string, number>
-    inboundCubesByCityId: Map<string, number>
-  },
-): CubeTransferDemand {
-  const cityCubeDemands = [...new Set(cityIds)].map(cityId => {
-    const city = game.cities.find(candidate => candidate.id === cityId)
-    const outboundCubes =
-      sharedDemandState?.outboundCubesByCityId.get(cityId) ??
-      (city ? Math.max(0, getCityDemandSize(game, city)) : 0)
-    const inboundCubes =
-      sharedDemandState?.inboundCubesByCityId.get(cityId) ??
-      (city ? getCityDemandAbsorptionSize(game, city) : 1)
 
-    return {
-      cityId,
-      cityName: getCityName(game, cityId),
-      outboundCubes,
-      inboundCubes,
-    }
-  })
-  const totalOutboundCubes = cityCubeDemands.reduce(
-    (total, cityDemand) => total + cityDemand.outboundCubes,
-    0,
-  )
-  const totalInboundCubes = cityCubeDemands.reduce(
-    (total, cityDemand) => total + cityDemand.inboundCubes,
-    0,
-  )
-  const movableDemandCubes = cityCubeDemands.reduce((bestTotal, cityDemand) => {
-    const availableOtherInbound = totalInboundCubes - cityDemand.inboundCubes
-    const blockedOutbound = Math.max(
-      0,
-      cityDemand.outboundCubes - availableOtherInbound,
-    )
+// ========================
+// NEW BUREAUCRACY ENGINE
+// ========================
 
-    return Math.min(bestTotal, totalOutboundCubes - blockedOutbound)
-  }, Math.min(totalOutboundCubes, totalInboundCubes))
+const WORKING_HOURS_PER_WEEK_BY_TYPE: Record<VehicleType, number> = {
+  bus: 60,
+  train: 80,
+  air: 70,
+}
 
-  return {
-    cityCubeDemands,
-    totalOutboundCubes,
-    totalInboundCubes,
-    movableDemandCubes: Math.max(0, movableDemandCubes),
+const BASE_FUEL_BURN_PER_HOUR_LOCAL: Record<VehicleType, number> = {
+  air: 6000,
+  train: 100,
+  bus: 10,
+}
+
+const FUEL_RESOURCE_BY_TYPE_LOCAL: Record<VehicleType, PurchasableResource> = {
+  air: "jetFuel",
+  train: "diesel",
+  bus: "diesel",
+}
+
+const FUEL_BURN_UNIT_BY_TYPE_LOCAL: Record<VehicleType, FuelBurnUnit> = {
+  air: "pounds",
+  train: "gallons",
+  bus: "gallons",
+}
+
+type NetworkGraph = Map<string, Set<string>>
+type NextHopTable = Map<string, Map<string, string | null>>
+// cityId -> destCityId -> cubeCount (cubes at cityId wanting to go to destCityId)
+type CubeState = Map<string, Map<string, number>>
+
+type SegmentWeekResult = {
+  cityAId: string
+  cityBId: string
+  distanceMiles: number
+  cubesAtoB: number
+  cubesBtoA: number
+  cubesAtoBFinal: number
+  cubesBtoAFinal: number
+  tripsRun: number
+}
+
+type PodWeekResult = {
+  serviceSlotId: string
+  mode: RouteMode
+  segments: SegmentWeekResult[]
+}
+
+type PodSimInput = {
+  serviceSlotId: string
+  vehicleCard: VehicleCard
+  mode: RouteMode
+  fleetSize: number
+  activeSegments: Array<{ cityA: string; cityB: string; distanceMiles: number }>
+}
+
+function buildPlayerNetworkGraph(game: GameState, player: Player): NetworkGraph {
+  const graph: NetworkGraph = new Map()
+  const addEdge = (a: string, b: string) => {
+    if (!graph.has(a)) graph.set(a, new Set())
+    if (!graph.has(b)) graph.set(b, new Set())
+    graph.get(a)!.add(b)
+    graph.get(b)!.add(a)
   }
+  for (const route of [
+    ...game.routes.filter(r => r.ownerId === player.id),
+    ...getImplicitBusRoutes(game, player),
+  ]) {
+    addEdge(route.cityA, route.cityB)
+  }
+  return graph
+}
+
+function getNetworkComponents(graph: NetworkGraph): string[][] {
+  const visited = new Set<string>()
+  const components: string[][] = []
+  for (const cityId of graph.keys()) {
+    if (visited.has(cityId)) continue
+    const component: string[] = []
+    const queue = [cityId]
+    while (queue.length > 0) {
+      const cur = queue.shift()!
+      if (visited.has(cur)) continue
+      visited.add(cur)
+      component.push(cur)
+      for (const nb of graph.get(cur) ?? []) {
+        if (!visited.has(nb)) queue.push(nb)
+      }
+    }
+    components.push(component)
+  }
+  return components
+}
+
+function buildNextHopTable(graph: NetworkGraph, cityIds: string[]): NextHopTable {
+  const table: NextHopTable = new Map()
+  for (const start of cityIds) {
+    const hopMap = new Map<string, string | null>()
+    const visited = new Set([start])
+    const queue: Array<{ city: string; firstHop: string }> = []
+    for (const nb of graph.get(start) ?? []) {
+      if (!visited.has(nb)) {
+        visited.add(nb)
+        queue.push({ city: nb, firstHop: nb })
+      }
+    }
+    while (queue.length > 0) {
+      const { city, firstHop } = queue.shift()!
+      hopMap.set(city, firstHop)
+      for (const nb of graph.get(city) ?? []) {
+        if (!visited.has(nb)) {
+          visited.add(nb)
+          queue.push({ city: nb, firstHop })
+        }
+      }
+    }
+    table.set(start, hopMap)
+  }
+  return table
+}
+
+function buildInitialCubeState(game: GameState, componentCityIds: string[]): CubeState {
+  const state: CubeState = new Map()
+  for (const srcId of componentCityIds) {
+    const srcCity = game.cities.find(c => c.id === srcId)
+    if (!srcCity) continue
+    const demand = Math.max(0, getCityDemandSize(game, srcCity))
+    if (demand <= 0) continue
+    const others = componentCityIds.filter(id => id !== srcId)
+    const totalPull = others.reduce((s, id) => {
+      const city = game.cities.find(c => c.id === id)
+      return s + (city?.size ?? 0)
+    }, 0)
+    if (totalPull <= 0) continue
+    const destMap = new Map<string, number>()
+    let allocated = 0
+    others.forEach((destId, i) => {
+      const destCity = game.cities.find(c => c.id === destId)
+      const destSize = destCity?.size ?? 0
+      const cubes =
+        i < others.length - 1
+          ? Math.floor((demand * destSize) / totalPull)
+          : Math.max(0, demand - allocated)
+      if (cubes > 0) destMap.set(destId, cubes)
+      allocated += cubes
+    })
+    if (destMap.size > 0) state.set(srcId, destMap)
+  }
+  return state
+}
+
+function countCubesWantingSegment(
+  cubeState: CubeState,
+  nextHopTable: NextHopTable,
+  fromCity: string,
+  toCity: string,
+): number {
+  const dests = cubeState.get(fromCity)
+  if (!dests) return 0
+  const hops = nextHopTable.get(fromCity)
+  if (!hops) return 0
+  let count = 0
+  for (const [destId, n] of dests) {
+    if (hops.get(destId) === toCity) count += n
+  }
+  return count
+}
+
+function executeMoveCubesOnSegment(
+  cubeState: CubeState,
+  nextHopTable: NextHopTable,
+  fromCity: string,
+  toCity: string,
+  max: number,
+): { total: number; final: number } {
+  const dests = cubeState.get(fromCity)
+  if (!dests || max <= 0) return { total: 0, final: 0 }
+  const hops = nextHopTable.get(fromCity)
+  if (!hops) return { total: 0, final: 0 }
+  let moved = 0
+  let movedFinal = 0
+  for (const [destId, n] of [...dests.entries()]) {
+    if (moved >= max) break
+    if (hops.get(destId) !== toCity) continue
+    const take = Math.min(n, max - moved)
+    const left = n - take
+    if (left <= 0) dests.delete(destId)
+    else dests.set(destId, left)
+    if (destId !== toCity) {
+      // En route — deposit at intermediate city
+      if (!cubeState.has(toCity)) cubeState.set(toCity, new Map())
+      const arriving = cubeState.get(toCity)!
+      arriving.set(destId, (arriving.get(destId) ?? 0) + take)
+    } else {
+      movedFinal += take
+    }
+    moved += take
+  }
+  return { total: moved, final: movedFinal }
+}
+
+function runNetworkSimulation(
+  game: GameState,
+  cubeState: CubeState,
+  nextHopTable: NextHopTable,
+  sortedPods: PodSimInput[],
+): PodWeekResult[][] {
+  const weeklyResults: PodWeekResult[][] = []
+
+  for (let week = 0; week < 4; week++) {
+    const weekResults: PodWeekResult[] = []
+
+    for (const pod of sortedPods) {
+      const { vehicleCard, fleetSize, activeSegments, serviceSlotId, mode } = pod
+      if (activeSegments.length === 0) {
+        weekResults.push({ serviceSlotId, mode, segments: [] })
+        continue
+      }
+
+      const totalWeeklyMiles =
+        vehicleCard.speed * WORKING_HOURS_PER_WEEK_BY_TYPE[vehicleCard.type] * fleetSize
+      const cubesPerTrip =
+        Math.max(
+          1,
+          Math.ceil(
+            vehicleCard.totalPassengerCapacity /
+              Math.max(game.operatingConfig.passengersPerDemandPoint, 1),
+          ),
+        ) * fleetSize
+
+      let remainingMiles = totalWeeklyMiles
+      const segResults: SegmentWeekResult[] = []
+
+      const segsWithDemand = activeSegments
+        .map(seg => ({
+          ...seg,
+          demandAtoB: countCubesWantingSegment(cubeState, nextHopTable, seg.cityA, seg.cityB),
+          demandBtoA: countCubesWantingSegment(cubeState, nextHopTable, seg.cityB, seg.cityA),
+        }))
+        .sort((a, b) => b.demandAtoB + b.demandBtoA - (a.demandAtoB + a.demandBtoA))
+
+      for (const seg of segsWithDemand) {
+        const totalDemand = seg.demandAtoB + seg.demandBtoA
+        if (totalDemand <= 0 || seg.distanceMiles <= 0 || remainingMiles < seg.distanceMiles) {
+          continue
+        }
+        const maxTripsFromBudget = Math.floor(remainingMiles / seg.distanceMiles)
+        const tripsNeeded = Math.ceil(totalDemand / cubesPerTrip)
+        const tripsRun = Math.min(maxTripsFromBudget, tripsNeeded)
+        if (tripsRun <= 0) continue
+
+        const totalMovable = Math.min(totalDemand, tripsRun * cubesPerTrip)
+        const cubesAtoBTarget =
+          totalDemand > 0 ? Math.round((seg.demandAtoB / totalDemand) * totalMovable) : 0
+        const cubesBtoATarget = totalMovable - cubesAtoBTarget
+
+        const resultAtoB = executeMoveCubesOnSegment(
+          cubeState, nextHopTable, seg.cityA, seg.cityB, cubesAtoBTarget,
+        )
+        const resultBtoA = executeMoveCubesOnSegment(
+          cubeState, nextHopTable, seg.cityB, seg.cityA, cubesBtoATarget,
+        )
+
+        remainingMiles -= tripsRun * seg.distanceMiles
+        segResults.push({
+          cityAId: seg.cityA,
+          cityBId: seg.cityB,
+          distanceMiles: seg.distanceMiles,
+          cubesAtoB: resultAtoB.total,
+          cubesBtoA: resultBtoA.total,
+          cubesAtoBFinal: resultAtoB.final,
+          cubesBtoAFinal: resultBtoA.final,
+          tripsRun,
+        })
+      }
+
+      weekResults.push({ serviceSlotId, mode, segments: segResults })
+    }
+
+    weeklyResults.push(weekResults)
+  }
+
+  return weeklyResults
 }
 
 function getRouteDistanceMilesFromMap(
@@ -359,247 +588,6 @@ export function getPayoutFarePerPassengerForDistance(distanceMiles: number) {
   return getPayoutMultiplierForDistance(distanceMiles) * PAYOUT_DOLLARS_PER_WEIGHT
 }
 
-function buildSimplifiedFlowPlan(
-  game: GameState,
-  cityIds: string[],
-  routes: Route[],
-  cityCubeDemands: CityCubeDemand[],
-  movedCubes: number,
-  passengersServed: number,
-): SimplifiedFlowPlan {
-  const cityStatusMap = new Map<string, SimplifiedFlowCityStatus>()
-
-  for (const cityDemand of cityCubeDemands) {
-    const city = game.cities.find(candidate => candidate.id === cityDemand.cityId)
-
-    cityStatusMap.set(cityDemand.cityId, {
-      cityId: cityDemand.cityId,
-      cityName: cityDemand.cityName,
-      size: city?.size ?? 0,
-      outboundCubes: cityDemand.outboundCubes,
-      inboundCubes: cityDemand.inboundCubes,
-      filledCubes: 0,
-    })
-  }
-
-  const adjacency = new Map<string, Array<{ cityId: string; distanceMiles: number }>>()
-
-  for (const route of routes) {
-    const distanceMiles = getRouteDistanceMilesFromMap(game, route.cityA, route.cityB)
-
-    adjacency.set(route.cityA, [...(adjacency.get(route.cityA) ?? []), { cityId: route.cityB, distanceMiles }])
-    adjacency.set(route.cityB, [...(adjacency.get(route.cityB) ?? []), { cityId: route.cityA, distanceMiles }])
-  }
-
-  const findShortestPath = (originCityId: string, destinationCityId: string) => {
-    if (originCityId === destinationCityId) {
-      return [originCityId]
-    }
-
-    const distances = new Map<string, number>(cityIds.map(cityId => [cityId, Number.POSITIVE_INFINITY]))
-    const previous = new Map<string, string | null>(cityIds.map(cityId => [cityId, null]))
-    const remaining = new Set(cityIds)
-
-    distances.set(originCityId, 0)
-
-    while (remaining.size > 0) {
-      const currentCityId = [...remaining].sort((cityAId, cityBId) => {
-        const distanceDifference =
-          (distances.get(cityAId) ?? Number.POSITIVE_INFINITY) -
-          (distances.get(cityBId) ?? Number.POSITIVE_INFINITY)
-
-        if (distanceDifference !== 0) {
-          return distanceDifference
-        }
-
-        return cityAId.localeCompare(cityBId)
-      })[0]
-
-      remaining.delete(currentCityId)
-
-      if (currentCityId === destinationCityId) {
-        break
-      }
-
-      for (const neighbor of adjacency.get(currentCityId) ?? []) {
-        if (!remaining.has(neighbor.cityId)) {
-          continue
-        }
-
-        const nextDistance =
-          (distances.get(currentCityId) ?? Number.POSITIVE_INFINITY) +
-          neighbor.distanceMiles
-
-        if (nextDistance < (distances.get(neighbor.cityId) ?? Number.POSITIVE_INFINITY)) {
-          distances.set(neighbor.cityId, nextDistance)
-          previous.set(neighbor.cityId, currentCityId)
-        }
-      }
-    }
-
-    if (
-      (distances.get(destinationCityId) ?? Number.POSITIVE_INFINITY) ===
-      Number.POSITIVE_INFINITY
-    ) {
-      return null
-    }
-
-    const pathCityIds: string[] = []
-    let currentCityId: string | null = destinationCityId
-
-    while (currentCityId) {
-      pathCityIds.unshift(currentCityId)
-      currentCityId = previous.get(currentCityId) ?? null
-    }
-
-    return pathCityIds[0] === originCityId ? pathCityIds : null
-  }
-
-  // Process destinations smallest city first, largest last
-  const destinationStatuses = [...cityStatusMap.values()].sort((cityA, cityB) => {
-    if (cityA.size !== cityB.size) {
-      return cityA.size - cityB.size
-    }
-
-    if (cityA.inboundCubes !== cityB.inboundCubes) {
-      return cityA.inboundCubes - cityB.inboundCubes
-    }
-
-    return cityA.cityName.localeCompare(cityB.cityName)
-  })
-  const remainingOutboundByCityId = Object.fromEntries(
-    [...cityStatusMap.values()].map(cityStatus => [cityStatus.cityId, cityStatus.outboundCubes]),
-  )
-  const passengersPerCube = movedCubes > 0 ? passengersServed / movedCubes : 0
-  const ledgerEntries: SimplifiedFlowLedgerEntry[] = []
-  let remainingMovableCubes = movedCubes
-
-  // Pre-compute proportional cube allocation per destination based on inbound capacity
-  const totalPodInbound = destinationStatuses.reduce((sum, s) => sum + s.inboundCubes, 0)
-  const proportionalAllocationById = new Map<string, number>()
-  let allocatedSoFar = 0
-  destinationStatuses.forEach((dest, index) => {
-    if (index < destinationStatuses.length - 1) {
-      const alloc = totalPodInbound > 0
-        ? Math.floor(dest.inboundCubes / totalPodInbound * movedCubes)
-        : 0
-      proportionalAllocationById.set(dest.cityId, alloc)
-      allocatedSoFar += alloc
-    } else {
-      // Largest city absorbs any rounding remainder
-      proportionalAllocationById.set(dest.cityId, Math.max(0, movedCubes - allocatedSoFar))
-    }
-  })
-
-  for (const destinationStatus of destinationStatuses) {
-    const proportionalAllocation = proportionalAllocationById.get(destinationStatus.cityId) ?? 0
-    let remainingInbound = Math.min(
-      proportionalAllocation,
-      destinationStatus.inboundCubes - destinationStatus.filledCubes,
-    )
-
-    if (remainingInbound <= 0 || remainingMovableCubes <= 0) {
-      continue
-    }
-
-    const originStatuses = [...cityStatusMap.values()].sort((cityA, cityB) => {
-      if (cityB.outboundCubes !== cityA.outboundCubes) {
-        return cityB.outboundCubes - cityA.outboundCubes
-      }
-
-      if (cityB.size !== cityA.size) {
-        return cityB.size - cityA.size
-      }
-
-      return cityA.cityName.localeCompare(cityB.cityName)
-    })
-
-    for (const originStatus of originStatuses) {
-      if (originStatus.cityId === destinationStatus.cityId) {
-        continue
-      }
-
-      const remainingOriginOutbound = remainingOutboundByCityId[originStatus.cityId] ?? 0
-
-      if (remainingOriginOutbound <= 0 || remainingInbound <= 0 || remainingMovableCubes <= 0) {
-        continue
-      }
-
-      const pathCityIds = findShortestPath(originStatus.cityId, destinationStatus.cityId)
-
-      if (!pathCityIds || pathCityIds.length < 2) {
-        continue
-      }
-
-      const cubeCount = Math.min(
-        remainingOriginOutbound,
-        remainingInbound,
-        remainingMovableCubes,
-      )
-
-      if (cubeCount <= 0) {
-        continue
-      }
-
-      const pathLabels: string[] = []
-      let payoutMultiplier = 0
-      let farePerPassenger = 0
-
-      for (let index = 0; index < pathCityIds.length - 1; index += 1) {
-        const startCityId = pathCityIds[index]
-        const endCityId = pathCityIds[index + 1]
-        const distanceMiles = getRouteDistanceMilesFromMap(game, startCityId, endCityId)
-        const segmentMultiplier = getPayoutMultiplierForDistance(distanceMiles)
-        const segmentFarePerPassenger = getPayoutFarePerPassengerForDistance(distanceMiles)
-        const startCityName =
-          cityStatusMap.get(startCityId)?.cityName ?? getCityName(game, startCityId)
-        const endCityName =
-          cityStatusMap.get(endCityId)?.cityName ?? getCityName(game, endCityId)
-
-        payoutMultiplier += segmentMultiplier
-        farePerPassenger += segmentFarePerPassenger
-        pathLabels.push(
-          `${startCityName} -> ${endCityName} (${distanceMiles}mi x${segmentMultiplier} = $${segmentFarePerPassenger.toFixed(0)})`,
-        )
-      }
-
-      const passengers = cubeCount * passengersPerCube
-      const payout = passengers * farePerPassenger
-
-      ledgerEntries.push({
-        id: `${originStatus.cityId}:${destinationStatus.cityId}:${ledgerEntries.length}`,
-        originCityId: originStatus.cityId,
-        originCityName: originStatus.cityName,
-        destinationCityId: destinationStatus.cityId,
-        destinationCityName: destinationStatus.cityName,
-        cubeCount,
-        passengers,
-        payoutMultiplier,
-        farePerPassenger,
-        payout,
-        pathCityIds,
-        pathLabels,
-      })
-
-      remainingOutboundByCityId[originStatus.cityId] = remainingOriginOutbound - cubeCount
-      destinationStatus.filledCubes += cubeCount
-      remainingInbound -= cubeCount
-      remainingMovableCubes -= cubeCount
-    }
-  }
-
-  return {
-    cityStatuses: cityIds
-      .map(cityId => cityStatusMap.get(cityId) ?? null)
-      .filter((cityStatus): cityStatus is SimplifiedFlowCityStatus => cityStatus !== null),
-    ledgerEntries,
-    totalPayoutMultiplier: ledgerEntries.reduce(
-      (total, entry) => total + entry.payoutMultiplier * entry.cubeCount,
-      0,
-    ),
-    totalPayout: ledgerEntries.reduce((total, entry) => total + entry.payout, 0),
-  }
-}
 
 function getCubeCapacityPerTrip(
   game: Pick<GameState, "operatingConfig">,
@@ -951,15 +939,22 @@ export function migrateBureaucracyServiceState(
           continue
         }
 
-        const firstLegalSlot =
-          migratedSlots.find(slot =>
+        // Fill any pod that has fewer than 2 cities first (a pod needs ≥2 cities to be active).
+        // Only send new cities to disconnected once all existing pods are already valid.
+        const underflowSlot = migratedSlots.find(
+          slot =>
+            slot.selectedCityIds.length < 2 &&
             isValidServicePodSelection(
               [...slot.selectedCityIds, cityId],
               corridorSegmentPairs,
             ),
-          ) ?? migratedSlots[0]
+        )
 
-        firstLegalSlot.selectedCityIds = [...firstLegalSlot.selectedCityIds, cityId]
+        if (underflowSlot) {
+          underflowSlot.selectedCityIds = [...underflowSlot.selectedCityIds, cityId]
+        } else {
+          migratedDisconnectedCityIds.push(cityId)
+        }
         assignedCityIds.add(cityId)
       }
 
@@ -1056,58 +1051,123 @@ export function buildPlayerBureaucracySummary(
   playerId: string,
 ): PlayerBureaucracySummary | null {
   const player = game.players.find(candidate => candidate.id === playerId)
-
-  if (!player) {
-    return null
-  }
+  if (!player) return null
 
   const ownedCards = getOwnedVehicleCards(game, player)
-  let remainingBudget = player.money
-  const remainingOutboundCubesByCityId = new Map<string, number>()
-  const remainingInboundCubesByCityId = new Map<string, number>()
-  const ensureCityDemandState = (cityId: string) => {
-    if (
-      remainingOutboundCubesByCityId.has(cityId) &&
-      remainingInboundCubesByCityId.has(cityId)
-    ) {
-      return
+
+  // Build assignments (vehicle cards → service slots)
+  const assignments = assignVehicleCardsToServiceGroups(game, player, ownedCards).map(
+    (assignment, originalIndex) => ({ ...assignment, originalIndex }),
+  )
+
+  // Build player-wide network graph and connected components
+  const networkGraph = buildPlayerNetworkGraph(game, player)
+  const components = getNetworkComponents(networkGraph)
+
+  // Build shared cube state (passenger demand) and next-hop routing table
+  const cubeState: CubeState = new Map()
+  const nextHopTable: NextHopTable = new Map()
+  for (const component of components) {
+    for (const [cityId, destMap] of buildInitialCubeState(game, component)) {
+      cubeState.set(cityId, destMap)
     }
-
-    const city = game.cities.find(candidate => candidate.id === cityId)
-
-    remainingOutboundCubesByCityId.set(
-      cityId,
-      city ? Math.max(0, getCityDemandSize(game, city)) : 0,
-    )
-    remainingInboundCubesByCityId.set(
-      cityId,
-      city ? getCityDemandAbsorptionSize(game, city) : 1,
-    )
+    for (const [cityId, hopMap] of buildNextHopTable(networkGraph, component)) {
+      nextHopTable.set(cityId, hopMap)
+    }
   }
 
-  const routePlans = assignVehicleCardsToServiceGroups(game, player, ownedCards)
-    .map((assignment, originalIndex) => ({
-      ...assignment,
-      originalIndex,
-    }))
-    .sort((assignmentA, assignmentB) => {
-      const priorityDifference =
-        getBureaucracyPlanningPriority(assignmentA.serviceSlot.serviceGroup.mode) -
-        getBureaucracyPlanningPriority(assignmentB.serviceSlot.serviceGroup.mode)
+  // Snapshot initial demand per city before simulation runs (city → final-dest → cubes)
+  const initialCubesByCity = new Map<string, number>()
+  const initialDestsByCityId = new Map<string, Map<string, number>>()
+  for (const [cityId, dests] of cubeState) {
+    const total = [...dests.values()].reduce((s, n) => s + n, 0)
+    if (total > 0) {
+      initialCubesByCity.set(cityId, total)
+      initialDestsByCityId.set(cityId, new Map(dests))
+    }
+  }
 
-      if (priorityDifference !== 0) {
-        return priorityDifference
+  // Sort assignments for simulation priority (air first, then rail, then bus)
+  const sortedAssignments = [...assignments].sort((a, b) => {
+    const pa = getBureaucracyPlanningPriority(a.serviceSlot.serviceGroup.mode)
+    const pb = getBureaucracyPlanningPriority(b.serviceSlot.serviceGroup.mode)
+    if (pa !== pb) return pa - pb
+    const ca = a.serviceSlot.serviceGroup.cityIds.length
+    const cb = b.serviceSlot.serviceGroup.cityIds.length
+    if (ca !== cb) return ca - cb
+    return a.originalIndex - b.originalIndex
+  })
+
+  // Build simulation inputs (active pods with vehicles and ≥2 selected cities)
+  const podSimInputs: PodSimInput[] = []
+  for (const { serviceSlot, vehicleCard } of sortedAssignments) {
+    if (serviceSlot.isDisconnected || vehicleCard === null) continue
+    const { serviceGroup } = serviceSlot
+    const defaultSelectedCityIds = serviceSlot.slotIndex === 0 ? serviceGroup.cityIds : []
+    const selectedCityIds = normalizeSelectedCityIds(
+      serviceGroup.cityIds,
+      game.bureaucracyServiceCityIdsByRouteId[serviceSlot.id] ?? defaultSelectedCityIds,
+    )
+    if (selectedCityIds.length < 2) continue
+    const activeRoutes = serviceGroup.routes.filter(
+      r => selectedCityIds.includes(r.cityA) && selectedCityIds.includes(r.cityB),
+    )
+    if (activeRoutes.length === 0) continue
+    const fleetSize = getOwnedVehicleCountForCard(player, vehicleCard.id)
+    if (fleetSize <= 0) continue
+    podSimInputs.push({
+      serviceSlotId: serviceSlot.id,
+      vehicleCard,
+      mode: serviceGroup.mode,
+      fleetSize,
+      activeSegments: activeRoutes.map(route => ({
+        cityA: route.cityA,
+        cityB: route.cityB,
+        distanceMiles: getRouteDistanceMilesFromMap(game, route.cityA, route.cityB),
+      })),
+    })
+  }
+
+  // Run 4-week network simulation (mutates cubeState in place)
+  const weeklyResults = runNetworkSimulation(game, cubeState, nextHopTable, podSimInputs)
+
+  // Aggregate segment results across 4 weeks, keyed by serviceSlotId
+  type AggSegKey = string
+  type AggSegResult = SegmentWeekResult & { key: AggSegKey }
+  const aggregatedByPod = new Map<string, Map<AggSegKey, AggSegResult>>()
+  for (const weekPodResults of weeklyResults) {
+    for (const podResult of weekPodResults) {
+      if (!aggregatedByPod.has(podResult.serviceSlotId)) {
+        aggregatedByPod.set(podResult.serviceSlotId, new Map())
       }
-
-      const cityCountDifference =
-        assignmentA.serviceSlot.serviceGroup.cityIds.length -
-        assignmentB.serviceSlot.serviceGroup.cityIds.length
-
-      if (cityCountDifference !== 0) {
-        return cityCountDifference
+      const segMap = aggregatedByPod.get(podResult.serviceSlotId)!
+      for (const seg of podResult.segments) {
+        const key = `${seg.cityAId}:${seg.cityBId}`
+        const existing = segMap.get(key)
+        if (existing) {
+          existing.cubesAtoB += seg.cubesAtoB
+          existing.cubesBtoA += seg.cubesBtoA
+          existing.cubesAtoBFinal += seg.cubesAtoBFinal
+          existing.cubesBtoAFinal += seg.cubesBtoAFinal
+          existing.tripsRun += seg.tripsRun
+        } else {
+          segMap.set(key, { ...seg, key })
+        }
       }
+    }
+  }
 
-      return assignmentA.originalIndex - assignmentB.originalIndex
+  const passengersPerDemandPoint = game.operatingConfig.passengersPerDemandPoint
+
+  const routePlans = assignments
+    .sort((a, b) => {
+      const pa = getBureaucracyPlanningPriority(a.serviceSlot.serviceGroup.mode)
+      const pb = getBureaucracyPlanningPriority(b.serviceSlot.serviceGroup.mode)
+      if (pa !== pb) return pa - pb
+      const ca = a.serviceSlot.serviceGroup.cityIds.length
+      const cb = b.serviceSlot.serviceGroup.cityIds.length
+      if (ca !== cb) return ca - cb
+      return a.originalIndex - b.originalIndex
     })
     .map(({ serviceSlot, vehicleCard, originalIndex }) => {
       const { serviceGroup } = serviceSlot
@@ -1121,225 +1181,202 @@ export function buildPlayerBureaucracySummary(
       const activeRoutes =
         !serviceSlot.isDisconnected && selectedCityIds.length >= 2
           ? serviceGroup.routes.filter(
-              candidate =>
-                selectedCityIds.includes(candidate.cityA) &&
-                selectedCityIds.includes(candidate.cityB),
+              r => selectedCityIds.includes(r.cityA) && selectedCityIds.includes(r.cityB),
             )
           : []
+
+      const statsVehicleCard =
+        vehicleCard ??
+        ownedCards.find(card => card.type === getVehicleTypeForRouteMode(route.mode)) ??
+        null
       const activeServiceGroup: ServiceGroup = {
         ...serviceGroup,
         routes: activeRoutes,
         cityIds: selectedCityIds,
       }
-      selectedCityIds.forEach(ensureCityDemandState)
-      const statsVehicleCard =
-        vehicleCard ??
-        ownedCards.find(card => card.type === getVehicleTypeForRouteMode(route.mode)) ??
-        null
-      const requestedFuelUnitsOverride = game.bureaucracyFuelUnitsByRouteId[serviceSlot.id]
-      const routeTripSummary =
-        serviceSlot.isDisconnected || vehicleCard === null || activeRoutes.length === 0
-          ? null
-          : calculateServiceGroupTripSummary(game, activeServiceGroup, vehicleCard)
       const statsRouteTripSummary =
         serviceSlot.isDisconnected || statsVehicleCard === null || activeRoutes.length === 0
           ? null
           : calculateServiceGroupTripSummary(game, activeServiceGroup, statsVehicleCard)
-      const cubeTransferDemand = buildCubeTransferDemand(game, selectedCityIds, {
-        outboundCubesByCityId: remainingOutboundCubesByCityId,
-        inboundCubesByCityId: remainingInboundCubesByCityId,
-      })
-      const routeDemandCubes = cubeTransferDemand.movableDemandCubes
-      const statsCubeCapacityPerTrip = getCubeCapacityPerTrip(game, statsVehicleCard)
-      const vehicleCubeCapacityPerTrip = getCubeCapacityPerTrip(game, vehicleCard)
-      const fuelCostPerTrip =
-        routeTripSummary?.fuelResource === null || routeTripSummary === null
-          ? 0
-          : routeTripSummary.tripFuelBurn *
-            getFuelCostPerRealUnit(game, routeTripSummary.fuelResource)
-      const balanceAdjustmentPerTrip =
-        vehicleCard === null ? 0 : getBalanceAdjustmentPerTrip(game, route)
-      const maxTripsPerVehicle = routeTripSummary?.tripsPerWeek ?? 0
-      const demandFleetSize =
-        vehicleCard === null ||
-        routeDemandCubes <= 0 ||
-        vehicleCubeCapacityPerTrip <= 0 ||
-        maxTripsPerVehicle <= 0
-          ? 0
-          : Math.max(
-              1,
-              Math.ceil(
-                routeDemandCubes /
-                  Math.max(vehicleCubeCapacityPerTrip * maxTripsPerVehicle, 1),
-              ),
-            )
+
       const ownedFleetSize =
         vehicleCard === null ? 0 : getOwnedVehicleCountForCard(player, vehicleCard.id)
-      const weeklyMaintenanceCostPerVehicle =
-        vehicleCard === null ? 0 : getWeeklyMaintenanceCostForCard(game, vehicleCard, 1)
-      const crewCostPerTrip =
-        vehicleCard === null || routeTripSummary === null
-          ? 0
-          : getCrewCostForTrips(game, vehicleCard.type, routeTripSummary.tripDurationHours, 1)
-      const fixedWeeklyCostPerVehicle = weeklyMaintenanceCostPerVehicle
-      const variableTripCost = balanceAdjustmentPerTrip + fuelCostPerTrip + crewCostPerTrip
-      const selectedFleetSize =
-        vehicleCard === null || routeDemandCubes <= 0
-          ? 0
-          : getAffordableFleetSize({
-              targetFleetSize: Math.min(demandFleetSize, ownedFleetSize),
-              availableBudget: remainingBudget,
-              fixedCostPerVehicle: fixedWeeklyCostPerVehicle,
-              variableTripCost,
-              maxTrips: maxTripsPerVehicle,
-            })
-      const maxUsefulTripsByDemand =
-        selectedFleetSize <= 0 || vehicleCubeCapacityPerTrip <= 0
-          ? 0
-          : Math.ceil(
-              routeDemandCubes /
-                Math.max(vehicleCubeCapacityPerTrip, 1),
-            )
-      const maxTripsByTime =
-        selectedFleetSize <= 0 ? 0 : maxTripsPerVehicle * selectedFleetSize
-      const defaultFuelUnits =
-        routeTripSummary?.fuelResource === null || routeTripSummary === null
-          ? 0
-          : Math.ceil(
-              routeTripSummary.tripFuelUnits *
-                Math.min(maxTripsByTime, maxUsefulTripsByDemand),
-            )
-      const maxFuelUnitsByTime =
-        routeTripSummary?.fuelResource === null || routeTripSummary === null
-          ? 0
-          : Math.ceil(
-              routeTripSummary.tripFuelUnits *
-                Math.min(maxTripsByTime, maxUsefulTripsByDemand),
-            )
-      const cappedFuelUnits =
-        routeTripSummary === null || routeTripSummary.fuelResource === null
-          ? 0
-          : Math.min(
-              Math.max(
-                0,
-                requestedFuelUnitsOverride === undefined
-                  ? defaultFuelUnits
-                  : requestedFuelUnitsOverride,
-              ),
-              maxFuelUnitsByTime,
-            )
-      const weeklyMaintenanceCost =
-        vehicleCard === null
-          ? 0
-          : getWeeklyMaintenanceCostForCard(game, vehicleCard, selectedFleetSize)
-      const fixedWeeklyCost = weeklyMaintenanceCost
-      const maxTripsByBudget =
-        routeTripSummary === null || selectedFleetSize === 0
-          ? 0
-          : variableTripCost <= 0
-            ? remainingBudget >= fixedWeeklyCost
-              ? maxTripsByTime
-              : 0
-            : Math.max(
-                0,
-                Math.floor(
-                  (remainingBudget - fixedWeeklyCost + 1e-9) /
-                    Math.max(variableTripCost, 0.000001),
-                ),
-              )
-      const selectedTrips =
-        routeTripSummary === null
-          ? 0
-          : routeTripSummary.fuelResource === null
-            ? Math.min(maxTripsByTime, maxTripsByBudget, maxUsefulTripsByDemand)
-            : Math.min(
-                maxTripsByTime,
-                maxTripsByBudget,
-                maxUsefulTripsByDemand,
-                Math.floor(
-                  (cappedFuelUnits + 1e-9) /
-                    Math.max(routeTripSummary.tripFuelUnits, 0.000001),
-                ),
-              )
-      const selectedFuelUnits =
-        routeTripSummary?.fuelResource === null || routeTripSummary === null
-          ? 0
-          : Math.ceil(routeTripSummary.tripFuelUnits * selectedTrips)
-      const movedCubes =
-        selectedFleetSize <= 0 || vehicleCubeCapacityPerTrip <= 0
-          ? 0
-          : Math.min(routeDemandCubes, selectedTrips * vehicleCubeCapacityPerTrip)
-      const passengersPerTrip =
-        statsVehicleCard === null
-          ? 0
-          : statsVehicleCard.totalPassengerCapacity *
-            Math.max(selectedFleetSize, vehicleCard ? 1 : Math.min(demandFleetSize, 1))
-      const passengersServed =
-        vehicleCard === null || selectedFleetSize === 0
-          ? 0
-          : Math.min(
-              selectedTrips * vehicleCard.totalPassengerCapacity,
-              movedCubes * game.operatingConfig.passengersPerDemandPoint,
-            )
-      const simplifiedFlowPlan = buildSimplifiedFlowPlan(
-        game,
-        selectedCityIds,
-        activeRoutes,
-        cubeTransferDemand.cityCubeDemands,
-        movedCubes,
-        passengersServed,
+      const aggSegs = [...(aggregatedByPod.get(serviceSlot.id)?.values() ?? [])]
+      const totalTripsRun = aggSegs.reduce((s, seg) => s + seg.tripsRun, 0)
+      const totalCubeMoves = aggSegs.reduce(
+        (s, seg) => s + seg.cubesAtoB + seg.cubesBtoA, 0,
       )
-      const movedOutboundByCityId = simplifiedFlowPlan.ledgerEntries.reduce(
-        (totals, entry) => {
-          totals.set(
-            entry.originCityId,
-            (totals.get(entry.originCityId) ?? 0) + entry.cubeCount,
-          )
-          return totals
-        },
-        new Map<string, number>(),
-      )
+      const passengersServed = totalCubeMoves * passengersPerDemandPoint
 
-      simplifiedFlowPlan.cityStatuses.forEach(cityStatus => {
-        ensureCityDemandState(cityStatus.cityId)
-        remainingOutboundCubesByCityId.set(
-          cityStatus.cityId,
-          Math.max(
-            0,
-            (remainingOutboundCubesByCityId.get(cityStatus.cityId) ?? 0) -
-              (movedOutboundByCityId.get(cityStatus.cityId) ?? 0),
-          ),
+      // Per-city departure counts (for city status fill display)
+      const departedByCityId = new Map<string, number>()
+      for (const seg of aggSegs) {
+        departedByCityId.set(
+          seg.cityAId,
+          (departedByCityId.get(seg.cityAId) ?? 0) + seg.cubesAtoB,
         )
-        remainingInboundCubesByCityId.set(
-          cityStatus.cityId,
-          Math.max(
-            0,
-            (remainingInboundCubesByCityId.get(cityStatus.cityId) ?? 0) -
-              cityStatus.filledCubes,
-          ),
+        departedByCityId.set(
+          seg.cityBId,
+          (departedByCityId.get(seg.cityBId) ?? 0) + seg.cubesBtoA,
         )
+      }
+
+      const cityCubeDemands = selectedCityIds.map(cityId => {
+        const city = game.cities.find(c => c.id === cityId)
+        return {
+          cityId,
+          cityName: getCityName(game, cityId),
+          outboundCubes:
+            initialCubesByCity.get(cityId) ??
+            (city ? Math.max(0, getCityDemandSize(game, city)) : 0),
+          inboundCubes: city ? getCityDemandAbsorptionSize(game, city) : 1,
+        }
       })
-      const revenue = simplifiedFlowPlan.totalPayout
-      const totalFuelBurnReal = routeTripSummary?.fuelResource
-        ? routeTripSummary.tripFuelBurn * selectedTrips
-        : 0
-      const crewCost =
-        vehicleCard === null || selectedTrips <= 0 || routeTripSummary === null
+
+      // Build ledger entries: one per segment direction (A→B and B→A)
+      const simplifiedLedgerEntries: SimplifiedFlowLedgerEntry[] = []
+      for (const seg of aggSegs) {
+        const distMiles = seg.distanceMiles
+        const multiplier = getPayoutMultiplierForDistance(distMiles)
+        const farePerPassenger = getPayoutFarePerPassengerForDistance(distMiles)
+        const cityAName = getCityName(game, seg.cityAId)
+        const cityBName = getCityName(game, seg.cityBId)
+
+        if (seg.cubesAtoB > 0) {
+          const passengers = seg.cubesAtoB * passengersPerDemandPoint
+          simplifiedLedgerEntries.push({
+            id: `${serviceSlot.id}:${seg.cityAId}:${seg.cityBId}`,
+            originCityId: seg.cityAId,
+            originCityName: cityAName,
+            destinationCityId: seg.cityBId,
+            destinationCityName: cityBName,
+            cubeCount: seg.cubesAtoB,
+            finalDestinationCubeCount: seg.cubesAtoBFinal,
+            passengers,
+            payoutMultiplier: multiplier,
+            farePerPassenger,
+            payout: passengers * farePerPassenger,
+            pathCityIds: [seg.cityAId, seg.cityBId],
+            pathLabels: [
+              `${cityAName} -> ${cityBName} (${Math.round(distMiles)}mi x${multiplier} = $${farePerPassenger.toFixed(0)})`,
+            ],
+            mode: serviceSlot.serviceGroup.mode,
+          })
+        }
+        if (seg.cubesBtoA > 0) {
+          const passengers = seg.cubesBtoA * passengersPerDemandPoint
+          simplifiedLedgerEntries.push({
+            id: `${serviceSlot.id}:${seg.cityBId}:${seg.cityAId}`,
+            originCityId: seg.cityBId,
+            originCityName: cityBName,
+            destinationCityId: seg.cityAId,
+            destinationCityName: cityAName,
+            cubeCount: seg.cubesBtoA,
+            finalDestinationCubeCount: seg.cubesBtoAFinal,
+            passengers,
+            payoutMultiplier: multiplier,
+            farePerPassenger,
+            payout: passengers * farePerPassenger,
+            pathCityIds: [seg.cityBId, seg.cityAId],
+            pathLabels: [
+              `${cityBName} -> ${cityAName} (${Math.round(distMiles)}mi x${multiplier} = $${farePerPassenger.toFixed(0)})`,
+            ],
+            mode: serviceSlot.serviceGroup.mode,
+          })
+        }
+      }
+
+      const simplifiedCityStatuses: SimplifiedFlowCityStatus[] = selectedCityIds.map(cityId => {
+        const city = game.cities.find(c => c.id === cityId)
+        return {
+          cityId,
+          cityName: getCityName(game, cityId),
+          size: city?.size ?? 0,
+          outboundCubes:
+            initialCubesByCity.get(cityId) ??
+            (city ? Math.max(0, getCityDemandSize(game, city)) : 0),
+          inboundCubes: city ? getCityDemandAbsorptionSize(game, city) : 1,
+          filledCubes: departedByCityId.get(cityId) ?? 0,
+        }
+      })
+
+      const revenue = simplifiedLedgerEntries.reduce((s, e) => s + e.payout, 0)
+
+      const isElectricRail =
+        vehicleCard?.type === "train" && serviceGroup.railTraction === "electric"
+
+      const fuelResource =
+        vehicleCard === null || isElectricRail
+          ? null
+          : vehicleCard.fuelResource === undefined
+            ? FUEL_RESOURCE_BY_TYPE_LOCAL[vehicleCard.type]
+            : vehicleCard.fuelResource
+
+      const fuelBurnUnit =
+        fuelResource === null || vehicleCard === null
+          ? null
+          : FUEL_BURN_UNIT_BY_TYPE_LOCAL[vehicleCard.type]
+
+      let crewCost = 0
+      let fuelBurnReal = 0
+      const balanceAdjustmentPerTrip =
+        vehicleCard === null ? 0 : getBalanceAdjustmentPerTrip(game, route)
+      let balanceAdjustmentCost = 0
+
+      if (vehicleCard !== null && totalTripsRun > 0) {
+        for (const seg of aggSegs) {
+          if (seg.tripsRun <= 0) continue
+          const tripDurationHours =
+            seg.distanceMiles / vehicleCard.speed +
+            game.operatingConfig.loadingHours[vehicleCard.type]
+          crewCost += getCrewCostForTrips(
+            game, vehicleCard.type, tripDurationHours, seg.tripsRun,
+          )
+          if (fuelResource !== null) {
+            fuelBurnReal +=
+              tripDurationHours *
+              BASE_FUEL_BURN_PER_HOUR_LOCAL[vehicleCard.type] *
+              vehicleCard.operatingCostMultiplier *
+              seg.tripsRun
+          }
+          balanceAdjustmentCost += balanceAdjustmentPerTrip * seg.tripsRun
+        }
+      }
+
+      const maintenanceCost =
+        vehicleCard === null || totalTripsRun <= 0
           ? 0
-          : getCrewCostForTrips(
-              game,
-              vehicleCard.type,
-              routeTripSummary.tripDurationHours,
-              selectedTrips,
-            )
-      const maintenanceCost = selectedTrips > 0 ? weeklyMaintenanceCost : 0
-      const balanceAdjustmentCost = selectedTrips * balanceAdjustmentPerTrip
-      const fuelCost = totalFuelBurnReal
-        ? totalFuelBurnReal * getFuelCostPerRealUnit(game, routeTripSummary!.fuelResource!)
-        : 0
+          : getWeeklyMaintenanceCostForCard(game, vehicleCard, ownedFleetSize)
+
+      const fuelCost =
+        fuelResource !== null && fuelBurnReal > 0
+          ? fuelBurnReal * getFuelCostPerRealUnit(game, fuelResource)
+          : 0
+
+      const totalFuelBurnUnits =
+        fuelResource !== null && fuelBurnReal > 0
+          ? calculateFuelUnitsFromReal(fuelBurnReal, fuelResource, game)
+          : 0
+
       const baseOperatingCost = crewCost + maintenanceCost + balanceAdjustmentCost
       const operatingCost = baseOperatingCost + fuelCost
-      remainingBudget = Math.max(0, remainingBudget - operatingCost)
+
+      const statsFuelResource = statsRouteTripSummary?.fuelResource ?? null
+      const statsFuelBurnUnit = statsRouteTripSummary?.fuelBurnUnit ?? null
+      const singleTripFuelBurn = statsRouteTripSummary?.tripFuelBurn ?? 0
+      const singleTripFuelUnits = statsRouteTripSummary?.tripFuelUnits ?? 0
+      const maxFuelUnitsByTime =
+        statsFuelResource !== null ? Math.ceil(singleTripFuelUnits * totalTripsRun) : 0
+      const selectedFuelUnits = maxFuelUnitsByTime
+
+      const combinedDemand = selectedCityIds.reduce((s, cityId) => {
+        const city = game.cities.find(c => c.id === cityId)
+        return s + (city ? Math.max(0, getCityDemandSize(game, city)) : 0)
+      }, 0)
+      const totalInboundCubes = selectedCityIds.reduce((s, cityId) => {
+        const city = game.cities.find(c => c.id === cityId)
+        return s + (city ? getCityDemandAbsorptionSize(game, city) : 1)
+      }, 0)
 
       return {
         originalIndex,
@@ -1348,23 +1385,25 @@ export function buildPlayerBureaucracySummary(
         slotIndex: serviceSlot.slotIndex,
         isDisconnected: serviceSlot.isDisconnected,
         routes: activeRoutes,
-        corridorSegmentPairs: serviceGroup.routes.map(route => [route.cityA, route.cityB] as [string, string]),
+        corridorSegmentPairs: serviceGroup.routes.map(
+          r => [r.cityA, r.cityB] as [string, string],
+        ),
         route,
         serviceLabel:
           serviceSlot.isDisconnected
             ? "Disconnected route"
             : selectedCityIds.length >= 2
-            ? selectedCityIds.map(cityId => getCityName(game, cityId)).join(" - ")
-            : `${serviceGroup.cityIds.map(cityId => getCityName(game, cityId)).join(" - ")} (select cities)`,
+              ? selectedCityIds.map(cityId => getCityName(game, cityId)).join(" - ")
+              : `${serviceGroup.cityIds.map(cityId => getCityName(game, cityId)).join(" - ")} (select cities)`,
         cityAName: getCityName(game, route.cityA),
         cityBName: getCityName(game, route.cityB),
         cityIds: selectedCityIds,
         availableCityIds: serviceGroup.cityIds,
         selectedCityIds,
-        cityCubeDemands: cubeTransferDemand.cityCubeDemands,
+        cityCubeDemands,
         segmentCount: activeRoutes.length,
         canAddSplitService: serviceSlot.canAddSplitService,
-        combinedDemand: routeDemandCubes,
+        combinedDemand,
         populationPerMile: (() => {
           const dist = statsRouteTripSummary?.distanceMiles ?? null
           if (!dist || dist <= 0 || selectedCityIds.length < 2) return null
@@ -1374,46 +1413,57 @@ export function buildPlayerBureaucracySummary(
           }, 0)
           return totalPop / dist
         })(),
-        totalOutboundCubes: cubeTransferDemand.totalOutboundCubes,
-        totalInboundCubes: cubeTransferDemand.totalInboundCubes,
-        cubeCapacityPerTrip: statsCubeCapacityPerTrip,
-        movableDemandCubes: routeDemandCubes,
-        movedCubes,
+        totalOutboundCubes: combinedDemand,
+        totalInboundCubes,
+        cubeCapacityPerTrip: getCubeCapacityPerTrip(game, statsVehicleCard),
+        movableDemandCubes: totalCubeMoves,
+        movedCubes: totalCubeMoves,
         vehicleCard,
-        demandFleetSize,
-        selectedFleetSize,
-        statsFuelResource: statsRouteTripSummary?.fuelResource ?? null,
-        statsFuelBurnUnit: statsRouteTripSummary?.fuelBurnUnit ?? null,
+        demandFleetSize: (() => {
+          const cubesPerTrip = getCubeCapacityPerTrip(game, statsVehicleCard)
+          const tripsPerPeriod = statsRouteTripSummary?.tripsPerWeek ?? 0
+          // Each end-to-end trip serves cubes across all segments simultaneously,
+          // so effective throughput scales with segment count
+          const numSegments = Math.max(1, selectedCityIds.length - 1)
+          const cubesPerVehiclePerPeriod = cubesPerTrip * tripsPerPeriod * numSegments
+          if (cubesPerVehiclePerPeriod <= 0) return ownedFleetSize
+          return Math.max(1, Math.ceil(combinedDemand / cubesPerVehiclePerPeriod))
+        })(),
+        selectedFleetSize: ownedFleetSize,
+        statsFuelResource,
+        statsFuelBurnUnit,
         distanceMiles: statsRouteTripSummary?.distanceMiles ?? null,
-        maxTripsByTime: Math.min(
-          (statsRouteTripSummary?.tripsPerWeek ?? 0) *
-            Math.max(selectedFleetSize, vehicleCard ? 1 : Math.min(demandFleetSize, 1)),
-          statsCubeCapacityPerTrip <= 0 || routeDemandCubes <= 0
-            ? 0
-            : Math.ceil(routeDemandCubes / statsCubeCapacityPerTrip),
-        ),
+        maxTripsByTime: statsRouteTripSummary
+          ? (statsRouteTripSummary.tripsPerWeek ?? 0) * ownedFleetSize
+          : 0,
         maxFuelUnitsByTime,
-        weeklyFuelBurnReal: (statsRouteTripSummary?.weeklyFuelBurn ?? 0) * selectedFleetSize,
-        weeklyFuelBurnUnits: statsRouteTripSummary?.fuelResource
+        weeklyFuelBurnReal: (statsRouteTripSummary?.weeklyFuelBurn ?? 0) * ownedFleetSize,
+        weeklyFuelBurnUnits: statsFuelResource
           ? Math.ceil(
-              statsRouteTripSummary.tripFuelUnits *
-                statsRouteTripSummary.tripsPerWeek *
-                selectedFleetSize,
+              (statsRouteTripSummary?.tripFuelUnits ?? 0) *
+                (statsRouteTripSummary?.tripsPerWeek ?? 0) *
+                ownedFleetSize,
             )
           : 0,
         selectedFuelUnits,
-        selectedTrips,
-        passengersPerTrip,
+        selectedTrips: totalTripsRun,
+        passengersPerTrip:
+          statsVehicleCard === null
+            ? 0
+            : statsVehicleCard.totalPassengerCapacity * ownedFleetSize,
         passengersServed,
-        simplifiedPayoutMultiplier: simplifiedFlowPlan.totalPayoutMultiplier,
-        simplifiedCityStatuses: simplifiedFlowPlan.cityStatuses,
-        simplifiedLedgerEntries: simplifiedFlowPlan.ledgerEntries,
-        fuelResource: routeTripSummary?.fuelResource ?? null,
-        fuelBurnUnit: routeTripSummary?.fuelBurnUnit ?? null,
-        tripFuelBurnReal: routeTripSummary?.tripFuelBurn ?? 0,
-        tripFuelBurnUnits: routeTripSummary?.tripFuelUnits ?? 0,
-        totalFuelBurnReal,
-        totalFuelBurnUnits: selectedFuelUnits,
+        simplifiedPayoutMultiplier: simplifiedLedgerEntries.reduce(
+          (s, e) => s + e.payoutMultiplier * e.cubeCount,
+          0,
+        ),
+        simplifiedCityStatuses,
+        simplifiedLedgerEntries,
+        fuelResource,
+        fuelBurnUnit,
+        tripFuelBurnReal: singleTripFuelBurn,
+        tripFuelBurnUnits: singleTripFuelUnits,
+        totalFuelBurnReal: fuelBurnReal,
+        totalFuelBurnUnits,
         crewCost,
         maintenanceCost,
         balanceAdjustmentCost,
@@ -1425,47 +1475,53 @@ export function buildPlayerBureaucracySummary(
       }
     })
     .sort((planA, planB) => planA.originalIndex - planB.originalIndex)
-    .map(({ originalIndex: _, ...plan }) => plan)
+    .map(({ originalIndex: _idx, ...plan }) => plan)
 
-  const fuelUsedUnits: Record<PurchasableResource, number> = {
-    diesel: 0,
-    jetFuel: 0,
+  // Stuck cubes: any cubes remaining in cubeState after all 4 simulation weeks
+  const stuckCubesByCity: PlayerBureaucracySummary["stuckCubesByCity"] = []
+  for (const [cityId, destMap] of cubeState) {
+    if (destMap.size === 0) continue
+    const stuckCubeCount = [...destMap.values()].reduce((s, n) => s + n, 0)
+    if (stuckCubeCount <= 0) continue
+    stuckCubesByCity.push({
+      cityId,
+      cityName: getCityName(game, cityId),
+      stuckCubeCount,
+      wantedDestinations: [...destMap.entries()].map(([destId, count]) => ({
+        destCityId: destId,
+        destCityName: getCityName(game, destId),
+        cubeCount: count,
+      })),
+    })
   }
 
+  const fuelUsedUnits: Record<PurchasableResource, number> = { diesel: 0, jetFuel: 0 }
   for (const plan of routePlans) {
     if (plan.fuelResource) {
       fuelUsedUnits[plan.fuelResource] += plan.totalFuelBurnUnits
     }
   }
-
   const fuelUsedReal: Record<PurchasableResource, number> = {
     diesel: calculateRealFuelFromUnits(fuelUsedUnits.diesel, "diesel", game),
     jetFuel: calculateRealFuelFromUnits(fuelUsedUnits.jetFuel, "jetFuel", game),
   }
-  const passengersServedByMode = createEmptyRouteModeBreakdown()
-  const podCountByMode = createEmptyRouteModeBreakdown()
-
-  const fuelRemainingUnits: Record<PurchasableResource, number> = {
-    diesel: 0,
-    jetFuel: 0,
-  }
-
+  const fuelRemainingUnits: Record<PurchasableResource, number> = { diesel: 0, jetFuel: 0 }
   const fuelRemainingReal: Record<PurchasableResource, number> = {
     diesel: calculateRealFuelFromUnits(fuelRemainingUnits.diesel, "diesel", game),
     jetFuel: calculateRealFuelFromUnits(fuelRemainingUnits.jetFuel, "jetFuel", game),
   }
 
+  const passengersServedByMode = createEmptyRouteModeBreakdown()
+  const podCountByMode = createEmptyRouteModeBreakdown()
   for (const plan of routePlans) {
-    const mode = plan.route.mode
-    passengersServedByMode[mode] += plan.passengersServed
-
+    passengersServedByMode[plan.route.mode] += plan.passengersServed
     if (
       !plan.isDisconnected &&
       plan.vehicleCard !== null &&
       plan.selectedCityIds.length >= 2 &&
       plan.routes.length > 0
     ) {
-      podCountByMode[mode] += 1
+      podCountByMode[plan.route.mode] += 1
     }
   }
 
@@ -1481,20 +1537,24 @@ export function buildPlayerBureaucracySummary(
     totalCrewCost: routePlans.reduce((total, plan) => total + plan.crewCost, 0),
     totalMaintenanceCost: routePlans.reduce((total, plan) => total + plan.maintenanceCost, 0),
     totalBalanceAdjustmentCost: routePlans.reduce(
-      (total, plan) => total + plan.balanceAdjustmentCost,
-      0,
+      (total, plan) => total + plan.balanceAdjustmentCost, 0,
     ),
     totalFuelCost: routePlans.reduce((total, plan) => total + plan.fuelCost, 0),
-    totalPassengersServed: routePlans.reduce(
-      (total, plan) => total + plan.passengersServed,
-      0,
-    ),
+    totalPassengersServed: routePlans.reduce((total, plan) => total + plan.passengersServed, 0),
     totalRevenue: routePlans.reduce((total, plan) => total + plan.revenue, 0),
-    totalOperatingCost: routePlans.reduce(
-      (total, plan) => total + plan.operatingCost,
-      0,
-    ),
+    totalOperatingCost: routePlans.reduce((total, plan) => total + plan.operatingCost, 0),
     netRevenue: routePlans.reduce((total, plan) => total + plan.netRevenue, 0),
+    stuckCubesByCity,
+    outboundIntentByCity: [...initialDestsByCityId.entries()].map(([cityId, destMap]) => ({
+      cityId,
+      destinations: [...destMap.entries()]
+        .map(([destCityId, cubeCount]) => ({
+          destCityId,
+          destCityName: getCityName(game, destCityId),
+          cubeCount,
+        }))
+        .sort((a, b) => b.cubeCount - a.cubeCount),
+    })),
   }
 }
 

@@ -27,6 +27,7 @@ import {
   canPlayerEditOperations,
   canPlayerStartPhaseByPipeline,
   hasPlayerCompletedBureaucracy,
+  hasPlayerCompletedOperations,
 } from '../src/engine/actions.ts'
 
 const PORT = Number(process.env.PORT ?? 8787)
@@ -51,6 +52,7 @@ const MANAGED_BOT_PRESETS_PATH = resolve(PROJECT_ROOT, "public/training-results/
 const AUTOTUNE_STATUS_PATH = resolve(PROJECT_ROOT, "public/training-results/autotune-status.json")
 const AUTOTUNE_HISTORY_PATH = resolve(PROJECT_ROOT, "public/training-results/autotune-history.json")
 const AUTOTUNE_STOP_SIGNAL_PATH = resolve(PROJECT_ROOT, "public/training-results/autotune-stop-requested")
+const TRAINING_CHRONICLE_PATH = resolve(PROJECT_ROOT, "public/training-results/training-chronicle.json")
 const TRAINING_LOG_LIMIT = 400
 const MANAGED_BOT_PRESET_STORAGE_IDS = ["bot-avg", "bot-best-1p", "bot-best-2p", "bot-best-3p", "bot-best-4p"]
 const TRAINED_WEIGHT_KEYS = [
@@ -220,7 +222,10 @@ function applyGameAction(game, playerId, action) {
         if (!result.ok) throw new Error(result.error)
         return result.game
       }
-      if (!hasPlayerCompletedBureaucracy(g, playerId)) {
+      if (
+        (g.currentPhase === 'bureaucracy' || hasPlayerCompletedOperations(g, playerId)) &&
+        !hasPlayerCompletedBureaucracy(g, playerId)
+      ) {
         const result = markBureaucracyReady(g, playerId)
         if (!result.ok) throw new Error(result.error)
         return result.game
@@ -437,6 +442,32 @@ function readAutotuneStatusFile() {
   } catch {
     return null
   }
+}
+
+function readChronicle() {
+  if (!existsSync(TRAINING_CHRONICLE_PATH)) {
+    return { version: 1, ruleChanges: [], pastChampions: [] }
+  }
+  try {
+    const parsed = JSON.parse(readFileSync(TRAINING_CHRONICLE_PATH, "utf8"))
+    if (!isRecord(parsed) || parsed.version !== 1) {
+      return { version: 1, ruleChanges: [], pastChampions: [] }
+    }
+    return {
+      version: 1,
+      ruleChanges: Array.isArray(parsed.ruleChanges) ? parsed.ruleChanges : [],
+      pastChampions: Array.isArray(parsed.pastChampions) ? parsed.pastChampions : [],
+    }
+  } catch {
+    return { version: 1, ruleChanges: [], pastChampions: [] }
+  }
+}
+
+function writeChronicle(chronicle) {
+  mkdirSync(dirname(TRAINING_CHRONICLE_PATH), { recursive: true })
+  const tmp = `${TRAINING_CHRONICLE_PATH}.tmp`
+  writeFileSync(tmp, JSON.stringify(chronicle, null, 2))
+  renameSync(tmp, TRAINING_CHRONICLE_PATH)
 }
 
 function writeAutotuneStatusFile(status) {
@@ -1702,7 +1733,9 @@ function isValidLobbyUpdate(value) {
       typeof value.setSeatBot === "object" &&
       value.setSeatBot !== null &&
       typeof value.setSeatBot.playerId === "string" &&
-      typeof value.setSeatBot.isBot === "boolean"
+      typeof value.setSeatBot.isBot === "boolean" &&
+      (value.setSeatBot.botPreset === undefined || value.setSeatBot.botPreset === null || typeof value.setSeatBot.botPreset === "string") &&
+      (value.setSeatBot.botName === undefined || typeof value.setSeatBot.botName === "string")
     ))
   )
 }
@@ -1914,6 +1947,32 @@ const server = createServer(async (request, response) => {
           error.statusCode = 409
           throw error
         }
+        // Archive current champions to the chronicle before deleting them
+        const currentStatus = readAutotuneStatusFile()
+        const currentCycle = isRecord(currentStatus) && isFiniteNumber(currentStatus?.cycle) ? currentStatus.cycle : 0
+        const chronicle = readChronicle()
+        for (const playerCount of [1, 2, 3, 4]) {
+          const championPath = resolve(PROJECT_ROOT, `public/training-results/champion-${playerCount}p.json`)
+          if (existsSync(championPath)) {
+            try {
+              const champion = JSON.parse(readFileSync(championPath, "utf8"))
+              if (isRecord(champion) && isRecord(champion.benchmark)) {
+                chronicle.pastChampions = chronicle.pastChampions.filter(pc => pc.playerCount !== playerCount)
+                chronicle.pastChampions.push({
+                  playerCount,
+                  fromCycle: isFiniteNumber(champion.cycle) ? champion.cycle : currentCycle,
+                  sessionEndCycle: currentCycle,
+                  benchmarkScore: isFiniteNumber(champion.benchmark?.score) ? champion.benchmark.score : 0,
+                  averagePassengers: isFiniteNumber(champion.benchmark?.averagePassengers) ? champion.benchmark.averagePassengers : 0,
+                  averagePassengerMargin: isFiniteNumber(champion.benchmark?.averagePassengerMargin) ? champion.benchmark.averagePassengerMargin : 0,
+                  winRate: isFiniteNumber(champion.benchmark?.winRate) ? champion.benchmark.winRate : 0,
+                })
+              }
+            } catch { /* ignore unreadable champion files */ }
+          }
+        }
+        writeChronicle(chronicle)
+
         const filesToDelete = [
           resolve(PROJECT_ROOT, "public/training-results/autotune-status.json"),
           resolve(PROJECT_ROOT, "public/training-results/autotune-history.json"),
@@ -1949,6 +2008,26 @@ const server = createServer(async (request, response) => {
         sendJson(response, error?.statusCode ?? 500, {
           error: error instanceof Error ? error.message : "Could not reset autotune data.",
         })
+        return
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/training/chronicle/rule-change") {
+      try {
+        const body = await readJsonBody(request)
+        if (!isRecord(body) || typeof body.label !== "string" || !body.label.trim()) {
+          sendJson(response, 400, { error: "Rule change requires a non-empty label." })
+          return
+        }
+        const currentStatus = readAutotuneStatusFile()
+        const cycle = isRecord(currentStatus) && isFiniteNumber(currentStatus?.cycle) ? currentStatus.cycle : 0
+        const chronicle = readChronicle()
+        chronicle.ruleChanges.push({ cycle, label: body.label.trim(), date: new Date().toISOString() })
+        writeChronicle(chronicle)
+        sendJson(response, 200, chronicle)
+        return
+      } catch (error) {
+        sendJson(response, 500, { error: error instanceof Error ? error.message : "Could not add rule change." })
         return
       }
     }
@@ -2158,7 +2237,7 @@ const server = createServer(async (request, response) => {
 
       // Bot-seat toggle — host can flip any unclaimed seat to/from bot before game starts
       if (body.setSeatBot !== undefined) {
-        const { playerId, isBot } = body.setSeatBot
+        const { playerId, isBot, botPreset, botName } = body.setSeatBot
         const lobbyPlayer = session.lobby.players.find(p => p.playerId === playerId)
         if (!lobbyPlayer) {
           sendJson(response, 404, { error: `Seat ${playerId} was not found.` })
@@ -2168,12 +2247,15 @@ const server = createServer(async (request, response) => {
           sendJson(response, 409, { error: `Seat ${playerId} is already claimed by a human player.` })
           return
         }
+        const resolvedBotPreset = isBot ? (botPreset ?? lobbyPlayer.botPreset ?? "bot-best") : null
+        const trimmedBotName = typeof botName === "string" ? botName.trim() : null
         const nextLobby = {
           ...session.lobby,
           players: session.lobby.players.map(p =>
             p.playerId !== playerId ? p : {
               ...p,
               isBot,
+              botPreset: resolvedBotPreset,
               claimedBy: isBot ? `${BOT_CLAIM_PREFIX}${playerId}` : null,
               isReady: isBot,
             }
@@ -2181,9 +2263,12 @@ const server = createServer(async (request, response) => {
         }
         const nextGame = {
           ...session.game,
-          players: session.game.players.map(p =>
-            p.id !== playerId ? p : { ...p, isBot }
-          ),
+          players: session.game.players.map(p => {
+            if (p.id !== playerId) return p
+            const next = { ...p, isBot, botPreset: resolvedBotPreset }
+            if (isBot && trimmedBotName) next.name = trimmedBotName
+            return next
+          }),
         }
         const nextSession = {
           ...session,

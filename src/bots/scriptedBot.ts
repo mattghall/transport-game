@@ -4,7 +4,7 @@ import { getConnectedCityIds } from "../engine/economy"
 import { getPlayerOwnedNetworkRoutes } from "../engine/playerNetwork"
 import { CITY_DECK_REGIONS, type City, type CityDeckRegion, type VehicleType } from "../engine/types"
 import { calculateDistanceMiles } from "../engine/trips"
-import { getBotLegalActions } from "./actions"
+import { getBotLegalActions, applyBotAction } from "./actions"
 import { getBotGameStage, getOwnedCityPairs, type BotGameStage } from "./strategy"
 import { getCachedBureaucracySummary } from "./summaryCache"
 import type { BotAction, BotController } from "./types"
@@ -67,7 +67,15 @@ export type ScriptedBotWeights = {
   drawRegionBigCityScarcityBonus: number
   keepCityPopulationScore: number
   keepCityNetworkProximityScore: number
+  keepCityPairCohesionScore: number
   keepCityRegionMatchScore: number
+  keepCityAdjacencyPotentialScore: number
+  // Reward claiming routes that extend or bridge existing owned corridors.
+  // +N per owned route that shares a city endpoint with the claimed route.
+  claimAdjacentNetworkBonus: number
+  // Penalty per opponent route that already touches either endpoint of the claimed route.
+  // Discourages claiming into heavily contested areas.
+  claimOpponentBlockPenalty: number
 }
 
 export const DEFAULT_SCRIPTED_BOT_WEIGHTS: ScriptedBotWeights = {
@@ -128,7 +136,11 @@ export const DEFAULT_SCRIPTED_BOT_WEIGHTS: ScriptedBotWeights = {
   drawRegionBigCityScarcityBonus: 5,
   keepCityPopulationScore: 10,
   keepCityNetworkProximityScore: 6,
+  keepCityPairCohesionScore: 0,
   keepCityRegionMatchScore: 4,
+  keepCityAdjacencyPotentialScore: 5,
+  claimAdjacentNetworkBonus: 8,
+  claimOpponentBlockPenalty: 4,
 }
 
 export function mergeScriptedBotWeights(
@@ -280,6 +292,19 @@ function scoreClaimRouteAction(
   const distancePreferenceScore =
     getPayoutMultiplierForDistance(totalDistanceMiles) * weights.claimLongDistancePreference
 
+  // Count player's existing routes that share a city endpoint with this candidate route.
+  // An extension (+1 shared endpoint) gets one bonus; a bridging route (+2 shared endpoints) gets two.
+  const candidateCityIdSet = new Set(action.cityIds)
+  const allPlayerRoutes = getPlayerOwnedNetworkRoutes(game, playerId)
+  const adjacentNetworkCount = allPlayerRoutes.filter(
+    r => candidateCityIdSet.has(r.cityA) || candidateCityIdSet.has(r.cityB),
+  ).length
+
+  // Count opponent routes touching the same endpoints — indicates a contested / blocked area.
+  const opponentBlockCount = game.routes.filter(
+    r => r.ownerId && r.ownerId !== playerId && (candidateCityIdSet.has(r.cityA) || candidateCityIdSet.has(r.cityB)),
+  ).length
+
   return (
     (action.mode === "rail" ? weights.claimRailBaseScore : weights.claimAirBaseScore) +
     (totalPopulation / 1_000_000) *
@@ -294,7 +319,9 @@ function scoreClaimRouteAction(
     regionPreferenceScore +
     sameRegionLinkBonus +
     distancePreferenceScore +
-    newRegionCount * weights.claimNewRegionBonus * getStageWeight(stage, weights, "ExpansionMultiplier") -
+    newRegionCount * weights.claimNewRegionBonus * getStageWeight(stage, weights, "ExpansionMultiplier") +
+    adjacentNetworkCount * weights.claimAdjacentNetworkBonus -
+    opponentBlockCount * weights.claimOpponentBlockPenalty -
     (cost / 1_000_000) * weights.claimRailCostPenaltyPerMillion
   )
 }
@@ -425,6 +452,18 @@ function scoreBotAction(
     // Population sum of chosen pair
     const totalPop = chosenCities.reduce((s, c) => s + (c.population ?? 0), 0)
 
+    // Pair cohesion: removed (pair distance doesn't matter enough to weight)
+    const pairCohesionScore = 0
+
+    // Adjacency potential: unclaimed adjacent routes = future connection opportunity;
+    // opponent-claimed adjacent routes = blocked potential (penalize)
+    const adjacencyPotential = chosenCities.reduce((sum, city) => {
+      const adjacentRoutes = game.routes.filter(r => r.cityA === city.id || r.cityB === city.id)
+      const unclaimed = adjacentRoutes.filter(r => !r.ownerId).length
+      const opponentOwned = adjacentRoutes.filter(r => r.ownerId && r.ownerId !== playerId).length
+      return sum + unclaimed - opponentOwned * 2
+    }, 0)
+
     // Network proximity: avg min-distance from each chosen city to any owned city
     let networkProximityScore = 0
     if (ownedCities.length > 0) {
@@ -450,8 +489,10 @@ function scoreBotAction(
 
     return (
       (totalPop / 1_000_000) * weights.keepCityPopulationScore +
+      pairCohesionScore * weights.keepCityPairCohesionScore +
       networkProximityScore * weights.keepCityNetworkProximityScore +
-      regionMatchCount * weights.keepCityRegionMatchScore
+      regionMatchCount * weights.keepCityRegionMatchScore +
+      adjacencyPotential * weights.keepCityAdjacencyPotentialScore
     )
   }
 
@@ -551,4 +592,493 @@ export function createScriptedBot(id: string, weights: Partial<ScriptedBotWeight
       return bestAction?.action ?? { type: "end-turn" }
     },
   }
+}
+
+// ── Coaching support: score breakdown and ranked candidates ──────────────────
+
+export type ClaimRouteScoreBreakdown = {
+  total: number
+  modeBase: number
+  populationScore: number
+  newCityBonus: number
+  firstModeBonus: number
+  regionPreference: number
+  sameRegionLinkBonus: number
+  longDistancePreference: number
+  newRegionBonus: number
+  adjacentNetworkCount: number
+  adjacentNetworkBonus: number
+  opponentBlockCount: number
+  opponentBlockPenalty: number
+  costPenalty: number
+}
+
+export type KeepCityScoreBreakdown = {
+  kind: "keep-city"
+  totalPopulation: number
+  populationScore: number
+  populationWeight: number
+  avgDistanceMiles: number | null   // null when no owned cities yet
+  networkProximityScore: number
+  networkProximityWeight: number
+  regionMatchCount: number
+  regionMatchScore: number
+  regionMatchWeight: number
+  topRegion: string | null
+  adjacencyPotential: number        // net unclaimed - 2×opponent-claimed adjacent routes
+  adjacencyPotentialScore: number
+  adjacencyPotentialWeight: number
+}
+
+export type DrawCityScoreBreakdown = {
+  kind: "draw-city"
+  region: string
+  deckSize: number
+  deckSizeScore: number
+  ownedInRegion: number
+  ownedInRegionScore: number
+  opponentCitiesInRegion: number
+  opponentPenalty: number
+  bigCityScarcitySignal: number
+  bigCityScarcityScore: number
+}
+
+export type BuyVehicleScoreBreakdown = {
+  kind: "buy-vehicle"
+  cardNumber: number
+  cardName: string
+  vehicleType: string
+  typePriority: number
+  totalPassengerCapacity: number
+  speed: number
+  operatingCostMultiplier: number
+  purchasePriceM: number      // price in millions
+  pricePenalty: number
+  cityBonus: number
+  cityBonusReason: string
+  duplicatePenalty: number
+  duplicateCount: number
+  firstOfTypeBonus: number
+}
+
+export type ScoredBotCandidate = {
+  action: BotAction
+  score: number
+  label: string
+  breakdown: ClaimRouteScoreBreakdown | KeepCityScoreBreakdown | BuyVehicleScoreBreakdown | DrawCityScoreBreakdown | null
+}
+
+function getClaimRouteBreakdown(
+  action: Extract<BotAction, { type: "claim-route" }>,
+  game: Parameters<BotController["pickAction"]>[0]["game"],
+  playerId: string,
+  weights: ScriptedBotWeights,
+): ClaimRouteScoreBreakdown {
+  const stage = getBotGameStage(game)
+  const cityMap = new Map(game.cities.map(city => [city.id, city]))
+  const connectedCityIdSet = new Set(getConnectedCityIds(game, playerId))
+  const existingRoutesOfMode = getPlayerOwnedNetworkRoutes(game, playerId).filter(
+    route => route.mode === action.mode,
+  )
+  const totalPopulation = action.cityIds.reduce(
+    (total, cityId) => total + (cityMap.get(cityId)?.population ?? cityMap.get(cityId)?.size ?? 0),
+    0,
+  )
+  const newCityCount = action.cityIds.filter(cityId => !connectedCityIdSet.has(cityId)).length
+  const candidateRegions = action.cityIds
+    .map(cityId => getPrimaryRegion(cityMap.get(cityId)))
+    .filter((region): region is CityDeckRegion => region !== null)
+  const connectedRegions = new Set(
+    [...connectedCityIdSet]
+      .map(cityId => getPrimaryRegion(cityMap.get(cityId)))
+      .filter((region): region is CityDeckRegion => region !== null),
+  )
+  const newRegionCount = [...new Set(candidateRegions)].filter(region => !connectedRegions.has(region)).length
+  const cost = calculateClaimRouteCost(game, { mode: action.mode, cityIds: action.cityIds })
+  const regionPreferenceScore = candidateRegions.reduce(
+    (total, region) => total + getRegionPreference(region, weights),
+    0,
+  )
+  const sameRegionLinkBonus =
+    action.cityIds.length >= 2 &&
+    candidateRegions.length === action.cityIds.length &&
+    new Set(candidateRegions).size === 1
+      ? weights.claimSameRegionLinkBonus
+      : 0
+  const resolvedSelection = resolveRouteSelection(game, action.cityIds, action.mode)
+  const totalDistanceMiles =
+    resolvedSelection.ok
+      ? resolvedSelection.segmentPairs.reduce((total, [cityAId, cityBId]) => {
+          const cityA = cityMap.get(cityAId)
+          const cityB = cityMap.get(cityBId)
+          return cityA && cityB ? total + calculateDistanceMiles(cityA, cityB) : total
+        }, 0)
+      : 0
+
+  const modeBase = action.mode === "rail" ? weights.claimRailBaseScore : weights.claimAirBaseScore
+  const populationScore =
+    (totalPopulation / 1_000_000) * weights.claimPopulationPerMillionScore *
+    getStageWeight(stage, weights, "PopulationMultiplier")
+  const newCityBonus =
+    newCityCount * weights.claimNewCityBonus * getStageWeight(stage, weights, "ExpansionMultiplier")
+  const firstModeBonus =
+    existingRoutesOfMode.length === 0
+      ? weights.claimFirstModeBonus * getStageWeight(stage, weights, "ExpansionMultiplier")
+      : 0
+  const longDistancePreference =
+    getPayoutMultiplierForDistance(totalDistanceMiles) * weights.claimLongDistancePreference
+  const newRegionBonus =
+    newRegionCount * weights.claimNewRegionBonus * getStageWeight(stage, weights, "ExpansionMultiplier")
+  const costPenalty = (cost / 1_000_000) * weights.claimRailCostPenaltyPerMillion
+
+  const candidateCityIdSetBreakdown = new Set(action.cityIds)
+  const allPlayerRoutesBreakdown = getPlayerOwnedNetworkRoutes(game, playerId)
+  const adjacentNetworkCount = allPlayerRoutesBreakdown.filter(
+    r => candidateCityIdSetBreakdown.has(r.cityA) || candidateCityIdSetBreakdown.has(r.cityB),
+  ).length
+  const adjacentNetworkBonus = adjacentNetworkCount * weights.claimAdjacentNetworkBonus
+  const opponentBlockCount = game.routes.filter(
+    r => r.ownerId && r.ownerId !== playerId &&
+      (candidateCityIdSetBreakdown.has(r.cityA) || candidateCityIdSetBreakdown.has(r.cityB)),
+  ).length
+  const opponentBlockPenalty = opponentBlockCount * weights.claimOpponentBlockPenalty
+
+  return {
+    total: modeBase + populationScore + newCityBonus + firstModeBonus + regionPreferenceScore +
+      sameRegionLinkBonus + longDistancePreference + newRegionBonus +
+      adjacentNetworkBonus - opponentBlockPenalty - costPenalty,
+    modeBase,
+    populationScore,
+    newCityBonus,
+    firstModeBonus,
+    regionPreference: regionPreferenceScore,
+    sameRegionLinkBonus,
+    longDistancePreference,
+    newRegionBonus,
+    adjacentNetworkCount,
+    adjacentNetworkBonus,
+    opponentBlockCount,
+    opponentBlockPenalty,
+    costPenalty,
+  }
+}
+
+function getDrawCityBreakdown(
+  action: Extract<BotAction, { type: "draw-city-offer" }>,
+  game: Parameters<BotController["pickAction"]>[0]["game"],
+  playerId: string,
+  weights: ScriptedBotWeights,
+): DrawCityScoreBreakdown {
+  const player = getPlayerById(game, playerId)
+  const region = action.region as import("../engine/types").CityDeckRegion
+  const deckSize = game.cityDeckCardIdsByRegion[region]?.length ?? 0
+  const ownedInRegion = player
+    ? player.ownedCityCardIds.filter(id => game.cities.find(c => c.id === id)?.region?.includes(region)).length
+    : 0
+  const opponentCitiesInRegion = game.players
+    .filter(p => p.id !== playerId)
+    .reduce((total, p) => total + p.ownedCityCardIds.filter(id =>
+      game.cities.find(c => c.id === id)?.region?.includes(region)
+    ).length, 0)
+  const remainingCitiesInDeck = (game.cityDeckCardIdsByRegion[region] ?? [])
+    .map(id => game.cities.find(c => c.id === id)).filter(Boolean)
+  const avgPopRemaining = remainingCitiesInDeck.length > 0
+    ? remainingCitiesInDeck.reduce((s, c) => s + (c!.population ?? 0), 0) / remainingCitiesInDeck.length
+    : 0
+  const bigCityScarcitySignal = deckSize > 0 && deckSize <= 6 ? avgPopRemaining / 1_000_000 : 0
+
+  return {
+    kind: "draw-city",
+    region,
+    deckSize,
+    deckSizeScore: deckSize * weights.drawRegionDeckSizeScore,
+    ownedInRegion,
+    ownedInRegionScore: ownedInRegion * weights.drawRegionOwnedCityBonus,
+    opponentCitiesInRegion,
+    opponentPenalty: opponentCitiesInRegion * weights.drawRegionOpponentCityPenalty,
+    bigCityScarcitySignal,
+    bigCityScarcityScore: bigCityScarcitySignal * weights.drawRegionBigCityScarcityBonus,
+  }
+}
+
+function getKeepCityBreakdown(
+  action: Extract<BotAction, { type: "keep-city-offer" }>,
+  game: Parameters<BotController["pickAction"]>[0]["game"],
+  playerId: string,
+  weights: ScriptedBotWeights,
+): KeepCityScoreBreakdown {
+  const player = getPlayerById(game, playerId)
+  const cityMap = new Map(game.cities.map(c => [c.id, c]))
+  const chosenCities = action.cityIds.map(id => cityMap.get(id)).filter(Boolean) as import("../engine/types").City[]
+  const ownedCities = player
+    ? (player.ownedCityCardIds.map(id => cityMap.get(id)).filter(Boolean) as import("../engine/types").City[])
+    : []
+
+  const totalPopulation = chosenCities.reduce((s, c) => s + (c.population ?? 0), 0)
+
+  let networkProximityScore = 0
+  let avgDistanceMiles: number | null = null
+  if (ownedCities.length > 0) {
+    const avgMinDist = chosenCities.reduce((sum, city) => {
+      const minDist = Math.min(...ownedCities.map(owned => calculateDistanceMiles(city, owned)))
+      return sum + minDist
+    }, 0) / chosenCities.length
+    avgDistanceMiles = Math.round(avgMinDist)
+    networkProximityScore = Math.max(0, 2000 - avgMinDist) / 100
+  }
+
+  const regionCounts = new Map<string, number>()
+  for (const id of (player?.ownedCityCardIds ?? [])) {
+    for (const r of (cityMap.get(id)?.region ?? [])) {
+      regionCounts.set(r, (regionCounts.get(r) ?? 0) + 1)
+    }
+  }
+  const topRegion = [...regionCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
+  const regionMatchCount = topRegion
+    ? chosenCities.filter(c => c.region?.includes(topRegion)).length
+    : 0
+
+  const adjacencyPotential = chosenCities.reduce((sum, city) => {
+    const adjacentRoutes = game.routes.filter(r => r.cityA === city.id || r.cityB === city.id)
+    const unclaimed = adjacentRoutes.filter(r => !r.ownerId).length
+    const opponentOwned = adjacentRoutes.filter(r => r.ownerId && r.ownerId !== playerId).length
+    return sum + unclaimed - opponentOwned * 2
+  }, 0)
+
+  return {
+    kind: "keep-city",
+    totalPopulation,
+    populationScore: (totalPopulation / 1_000_000) * weights.keepCityPopulationScore,
+    populationWeight: weights.keepCityPopulationScore,
+    avgDistanceMiles,
+    networkProximityScore: networkProximityScore * weights.keepCityNetworkProximityScore,
+    networkProximityWeight: weights.keepCityNetworkProximityScore,
+    regionMatchCount,
+    regionMatchScore: regionMatchCount * weights.keepCityRegionMatchScore,
+    regionMatchWeight: weights.keepCityRegionMatchScore,
+    topRegion,
+    adjacencyPotential,
+    adjacencyPotentialScore: adjacencyPotential * weights.keepCityAdjacencyPotentialScore,
+    adjacencyPotentialWeight: weights.keepCityAdjacencyPotentialScore,
+  }
+}
+
+function getBuyVehicleBreakdown(
+  action: Extract<BotAction, { type: "buy-vehicle" }>,
+  game: Parameters<BotController["pickAction"]>[0]["game"],
+  playerId: string,
+  weights: ScriptedBotWeights,
+): BuyVehicleScoreBreakdown {
+  const player = getPlayerById(game, playerId)
+  const card = game.vehicleCatalog.find(c => c.id === action.cardId)
+
+  if (!player || !card) {
+    return {
+      kind: "buy-vehicle",
+      cardNumber: 0, cardName: "unknown", vehicleType: "bus",
+      typePriority: 0, totalPassengerCapacity: 0, speed: 0,
+      operatingCostMultiplier: 1, purchasePriceM: 0, pricePenalty: 0,
+      cityBonus: 0, cityBonusReason: "", duplicatePenalty: 0,
+      duplicateCount: 0, firstOfTypeBonus: 0,
+    }
+  }
+
+  const ownedCityCount = player.ownedCityCardIds.length
+  const ownedVehicleCount = player.ownedVehicleCardIds
+    .map(id => game.vehicleCatalog.find(c => c.id === id))
+    .filter((c): c is NonNullable<typeof c> => c != null && c.type === card.type).length
+
+  const potentialRailClaims = countPotentialClaims(game, playerId, "rail")
+  const potentialAirClaims = countPotentialClaims(game, playerId, "air")
+
+  let cityBonus = 0
+  let cityBonusReason = ""
+  if (card.type === "bus") {
+    cityBonus = Math.min(ownedCityCount, 6) * weights.buyBusOwnedCityBonus
+    cityBonusReason = `${Math.min(ownedCityCount, 6)} owned cities × ${weights.buyBusOwnedCityBonus}`
+  } else if (card.type === "train") {
+    if (potentialRailClaims > 0) {
+      cityBonus = weights.buyTrainPotentialClaimBonus
+      cityBonusReason = `${potentialRailClaims} rail claim opportunities`
+    } else if (ownedCityCount >= 4) {
+      cityBonus = weights.buyTrainFallbackOwnedCityBonus
+      cityBonusReason = "fallback: ≥4 owned cities, no rail claims yet"
+    } else {
+      cityBonus = -weights.buyTrainNoClaimPenalty
+      cityBonusReason = "penalty: no rail claims available"
+    }
+  } else {
+    if (potentialAirClaims > 0) {
+      cityBonus = weights.buyAirPotentialClaimBonus
+      cityBonusReason = `${potentialAirClaims} air claim opportunities`
+    } else if (ownedCityCount >= 5) {
+      cityBonus = weights.buyAirFallbackOwnedCityBonus
+      cityBonusReason = "fallback: ≥5 owned cities, no air claims yet"
+    } else {
+      cityBonus = -weights.buyAirNoClaimPenalty
+      cityBonusReason = "penalty: no air claims available"
+    }
+  }
+
+  const firstOfTypeBonus =
+    card.type === "train"
+      ? ownedVehicleCount === 0 && potentialRailClaims > 0 ? weights.buyFirstTrainBonus : 0
+      : card.type === "air"
+        ? ownedVehicleCount === 0 && potentialAirClaims > 0 ? weights.buyFirstAirBonus : 0
+        : 0
+
+  return {
+    kind: "buy-vehicle",
+    cardNumber: card.number,
+    cardName: card.name,
+    vehicleType: card.type,
+    typePriority: getVehiclePriority(card.type, weights),
+    totalPassengerCapacity: card.totalPassengerCapacity,
+    speed: card.speed,
+    operatingCostMultiplier: card.operatingCostMultiplier,
+    purchasePriceM: card.purchasePrice / 1_000_000,
+    pricePenalty: card.purchasePrice / 1_000_000,
+    cityBonus,
+    cityBonusReason,
+    duplicatePenalty: ownedVehicleCount * weights.buyDuplicateVehiclePenalty,
+    duplicateCount: ownedVehicleCount,
+    firstOfTypeBonus,
+  }
+}
+
+function getBotActionLabel(
+  action: BotAction,
+  game: Parameters<BotController["pickAction"]>[0]["game"],
+): string {
+  const cityMap = new Map(game.cities.map(c => [c.id, c]))
+  switch (action.type) {
+    case "claim-route": {
+      const cityNames = action.cityIds.map(id => cityMap.get(id)?.name ?? id).join(" → ")
+      return `Build ${action.mode}: ${cityNames}`
+    }
+    case "create-service-pod": {
+      const cityNames = action.cityIds.map(id => cityMap.get(id)?.name ?? id).join(" – ")
+      return `Add to pod: ${cityNames}`
+    }
+    case "buy-vehicle": {
+      const card = game.vehicleCatalog.find(c => c.id === action.cardId)
+      return card
+        ? `Buy ${action.quantity}× #${card.number} ${card.name} (${card.type})`
+        : `Buy vehicle ${action.cardId}`
+    }
+    case "draw-city-offer":
+      return `Draw city cards from ${action.region} deck`
+    case "keep-city-offer": {
+      const cityNames = action.cityIds.map(id => cityMap.get(id)?.name ?? id).join(" + ")
+      return `Keep cities: ${cityNames}`
+    }
+    case "ready-operations":
+      return "Finish operations planning"
+    case "ready-bureaucracy":
+      return "Finish bureaucracy review"
+    case "end-turn":
+      return "End turn"
+    case "confirm-add-city-picks":
+      return "Confirm city picks"
+    case "remove-pod-city": {
+      const cityName = cityMap.get(action.cityId)?.name ?? action.cityId
+      return `Remove ${cityName} from pod`
+    }
+    default:
+      return (action as { type: string }).type
+  }
+}
+
+/** Returns the top N scored candidates for a bot's current turn, with score breakdowns. */
+export function getTopScoredBotCandidates(
+  game: Parameters<BotController["pickAction"]>[0]["game"],
+  playerId: string,
+  weights: Partial<ScriptedBotWeights>,
+  topN = 5,
+): ScoredBotCandidate[] {
+  const resolvedWeights = mergeScriptedBotWeights(weights)
+  const legalActions = getBotLegalActions(game, playerId)
+  const hasPodActions = legalActions.some(
+    a => a.type === "create-service-pod" || a.type === "remove-pod-city",
+  )
+  const precomputedSummary = hasPodActions ? getCachedBureaucracySummary(game, playerId) : undefined
+
+  return legalActions
+    .map(action => {
+      const score = scoreBotAction(action, game, playerId, resolvedWeights, precomputedSummary)
+      const breakdown =
+        action.type === "claim-route"
+          ? getClaimRouteBreakdown(action, game, playerId, resolvedWeights)
+          : action.type === "draw-city-offer"
+          ? getDrawCityBreakdown(action, game, playerId, resolvedWeights)
+          : action.type === "keep-city-offer"
+          ? getKeepCityBreakdown(action, game, playerId, resolvedWeights)
+          : action.type === "buy-vehicle"
+          ? getBuyVehicleBreakdown(action, game, playerId, resolvedWeights)
+          : null
+      return {
+        action,
+        score,
+        label: getBotActionLabel(action, game),
+        breakdown,
+      }
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topN)
+}
+
+export type OperationsPlan = {
+  routes: Array<{ mode: string; cityNames: string[] }>
+  pods: Array<{ cityNames: string[] }>
+  otherLabels: string[]
+}
+
+/**
+ * Simulate the bot's entire upcoming operations sequence and return a summary
+ * of what routes it plans to build and what pods it will create/modify.
+ */
+export function simulateOperationsPlan(
+  game: Parameters<BotController["pickAction"]>[0]["game"],
+  playerId: string,
+  weights: Partial<ScriptedBotWeights>,
+  maxSteps = 20,
+): OperationsPlan {
+  const resolvedWeights = mergeScriptedBotWeights(weights)
+  const cityMap = new Map(game.cities.map(c => [c.id, c]))
+  const routes: OperationsPlan["routes"] = []
+  const pods: OperationsPlan["pods"] = []
+  const otherLabels: string[] = []
+
+  let currentGame = game
+  for (let step = 0; step < maxSteps; step++) {
+    const legalActions = getBotLegalActions(currentGame, playerId)
+    if (legalActions.length === 0) break
+
+    const hasPodActions = legalActions.some(a => a.type === "create-service-pod" || a.type === "remove-pod-city")
+    const precomputedSummary = hasPodActions ? getCachedBureaucracySummary(currentGame, playerId) : undefined
+
+    const scored = legalActions
+      .map(a => ({ action: a, score: scoreBotAction(a, currentGame, playerId, resolvedWeights, precomputedSummary) }))
+      .sort((a, b) => b.score - a.score)
+    const topAction = scored[0]?.action
+    if (!topAction) break
+
+    if (topAction.type === "ready-operations" || topAction.type === "end-turn") break
+
+    if (topAction.type === "claim-route") {
+      routes.push({ mode: topAction.mode, cityNames: topAction.cityIds.map(id => cityMap.get(id)?.name ?? id) })
+    } else if (topAction.type === "create-service-pod") {
+      pods.push({ cityNames: topAction.cityIds.map(id => cityMap.get(id)?.name ?? id) })
+    } else if (topAction.type !== "confirm-add-city-picks" && topAction.type !== "remove-pod-city") {
+      otherLabels.push(getBotActionLabel(topAction, currentGame))
+    }
+
+    try {
+      currentGame = applyBotAction(currentGame, playerId, topAction)
+    } catch {
+      break
+    }
+  }
+
+  return { routes, pods, otherLabels }
 }

@@ -13,7 +13,8 @@
     "session-server": "node --import tsx/esm server/sessionServer.mjs",
     "simulate:bots": "tsx scripts/runBotSimulation.ts",
     "train:bots": "tsx scripts/trainBotWeights.ts",
-    "autotune:bots": "tsx scripts/autotuneBots.ts"
+    "autotune:bots": "tsx scripts/autotuneBots.ts",
+    "train:coached": "tsx scripts/trainFromCoaching.ts"
   },
   "dependencies": {
     "leaflet": "^1.9.4",

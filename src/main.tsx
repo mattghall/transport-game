@@ -1,6 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
+import { ErrorBoundary } from './ui/ErrorBoundary'
 
 document.documentElement.style.height = '100%'
 document.documentElement.style.width = '100%'
@@ -14,6 +15,8 @@ rootElement.style.height = '100%'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </React.StrictMode>,
 )

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react"
+﻿import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react"
 import {
   type RailUpgradeResult,
   type BureaucracyServiceCityMoveResult,
@@ -193,6 +193,7 @@ const PANEL_GAP = 12
 const ROW_TWO_TOP = 88
 const TABLE_ZONE_GAP = 6
 const RESIZE_HANDLE_SIZE = 12
+const COLLAPSED_LEFT_PANEL_WIDTH = 40
 const CITY_DOT_RADIUS = 2.4
 const DEMAND_POINTS_PER_MAP_CUBE = 10
 const MAP_CUBES_PER_CYLINDER = 10
@@ -1281,6 +1282,7 @@ export default function Board({
     getPhaseStatusMessage(game.currentPhase),
   )
   const [leftPanelWidth, setLeftPanelWidth] = useState(DEFAULT_LEFT_PANEL_WIDTH)
+  const [isLeftPanelCollapsed, setIsLeftPanelCollapsed] = useState(false)
   const [rightRailWidth, setRightRailWidth] = useState(DEFAULT_STATUS_RAIL_WIDTH)
   const [tableZoneHeight, setTableZoneHeight] = useState(DEFAULT_TABLE_ZONE_HEIGHT)
   const [tablePreviewWidth, setTablePreviewWidth] = useState(getDefaultTablePreviewWidth)
@@ -1362,14 +1364,28 @@ export default function Board({
       setResizeState(null)
     }
 
+    const handleTouchMove = (event: TouchEvent) => {
+      event.preventDefault()
+      const touch = event.touches[0]
+      if (touch) handleMouseMove({ clientX: touch.clientX, clientY: touch.clientY } as MouseEvent)
+    }
+
+    const handleTouchEnd = () => {
+      setResizeState(null)
+    }
+
     window.addEventListener("mousemove", handleMouseMove)
     window.addEventListener("mouseup", handleMouseUp)
+    window.addEventListener("touchmove", handleTouchMove, { passive: false })
+    window.addEventListener("touchend", handleTouchEnd)
 
     return () => {
       document.body.style.userSelect = previousUserSelect
       document.body.style.cursor = previousCursor
       window.removeEventListener("mousemove", handleMouseMove)
       window.removeEventListener("mouseup", handleMouseUp)
+      window.removeEventListener("touchmove", handleTouchMove)
+      window.removeEventListener("touchend", handleTouchEnd)
     }
   }, [leftPanelWidth, resizeState, rightRailWidth])
 
@@ -1390,12 +1406,13 @@ export default function Board({
     viewerPhase === "purchase-equipment" &&
     canPlayerStartPhaseByPipeline(game, activeViewingPlayerId, "purchase-equipment")
   const boardClearanceBottom = tableZoneHeight + PANEL_GAP * 2
-  const boardLeftInset = leftPanelWidth + PANEL_GAP * 2
+  const effectiveLeftPanelWidth = isLeftPanelCollapsed ? COLLAPSED_LEFT_PANEL_WIDTH : leftPanelWidth
+  const boardLeftInset = effectiveLeftPanelWidth + PANEL_GAP * 2
   const boardRightInset = rightRailWidth + PANEL_GAP * 2
   const rowTwoStyle = {
     ...ROW_TWO_STYLE,
     bottom: boardClearanceBottom,
-    gridTemplateColumns: `${leftPanelWidth}px minmax(0, 1fr) ${rightRailWidth}px`,
+    gridTemplateColumns: `${effectiveLeftPanelWidth}px minmax(0, 1fr) ${rightRailWidth}px`,
   } as const
   const playerPanelStyle = {
     ...PLAYER_PANEL_STYLE,
@@ -2022,6 +2039,7 @@ export default function Board({
       const claimCost = Math.ceil(
         calculateClaimRouteCost(game, {
           cityIds: selectedCities.map(city => city.id),
+          segmentPairs: option.mode === "rail" && selectedSegmentPairs.length > 0 ? selectedSegmentPairs : undefined,
           mode: option.mode,
         }, currentPlayer.id),
       )
@@ -2631,13 +2649,82 @@ export default function Board({
         }),
     }))
   }, [currentPlayerActiveBureaucracyPlans, currentPlayerBureaucracySummary])
+  const currentPlayerAggregatedCityPairings = useMemo(() => {
+    type PlanModeStats = { planId: string; mode: RouteMode; passengers: number; farePerPassenger: number; payout: number }
+    type AggPairing = {
+      key: string
+      originCityId: string
+      originCityName: string
+      destinationCityId: string
+      destinationCityName: string
+      cubes: number
+      finalDestinationCubes: number
+      passengers: number
+      pathLabels: string[]
+      planModeStats: PlanModeStats[]
+      totalDemand: number
+      planIds: string[]
+    }
+
+    // Build total demand per origin→dest from intent snapshot
+    const intentDemand = new Map<string, number>()
+    if (currentPlayerBureaucracySummary) {
+      for (const entry of currentPlayerBureaucracySummary.outboundIntentByCity) {
+        for (const dest of entry.destinations) {
+          const key = `${entry.cityId}:${dest.destCityId}`
+          intentDemand.set(key, (intentDemand.get(key) ?? 0) + dest.cubeCount)
+        }
+      }
+    }
+
+    const pairingsMap = new Map<string, AggPairing>()
+    for (const plan of currentPlayerActiveBureaucracyPlans) {
+      for (const entry of plan.simplifiedLedgerEntries) {
+        const key = `${entry.originCityId}:${entry.destinationCityId}`
+        const existing = pairingsMap.get(key)
+        if (existing) {
+          existing.cubes += entry.cubeCount
+          existing.finalDestinationCubes += entry.finalDestinationCubeCount
+          existing.passengers += entry.passengers
+          const epms = existing.planModeStats.find(s => s.planId === plan.id && s.mode === entry.mode)
+          if (epms) {
+            epms.passengers += entry.passengers
+            epms.payout += entry.payout
+          } else {
+            existing.planModeStats.push({ planId: plan.id, mode: entry.mode, passengers: entry.passengers, farePerPassenger: entry.farePerPassenger, payout: entry.payout })
+          }
+          for (const label of entry.pathLabels) {
+            if (!existing.pathLabels.includes(label)) existing.pathLabels.push(label)
+          }
+          if (!existing.planIds.includes(plan.id)) existing.planIds.push(plan.id)
+        } else {
+          pairingsMap.set(key, {
+            key,
+            originCityId: entry.originCityId,
+            originCityName: entry.originCityName,
+            destinationCityId: entry.destinationCityId,
+            destinationCityName: entry.destinationCityName,
+            cubes: entry.cubeCount,
+            finalDestinationCubes: entry.finalDestinationCubeCount,
+            passengers: entry.passengers,
+            pathLabels: [...entry.pathLabels],
+            planModeStats: [{ planId: plan.id, mode: entry.mode, passengers: entry.passengers, farePerPassenger: entry.farePerPassenger, payout: entry.payout }],
+            totalDemand: intentDemand.get(key) ?? 0,
+            planIds: [plan.id],
+          })
+        }
+      }
+    }
+    return [...pairingsMap.values()].sort((a, b) => b.passengers - a.passengers)
+  }, [currentPlayerActiveBureaucracyPlans, currentPlayerBureaucracySummary])
   const currentPlayerCombinedDemandFill = useMemo(() => {
     if (!currentPlayerBureaucracySummary) {
       return []
     }
 
     const filledByCityId = new Map<string, number>()
-    const movedOutboundByCityId = new Map<string, number>()
+    // Segment departures per origin city (includes transit cubes — used for cap logic only)
+    const segmentDeparturesByCityId = new Map<string, number>()
 
     currentPlayerBureaucracySummary.routePlans.forEach(plan => {
       plan.simplifiedCityStatuses.forEach(cityStatus => {
@@ -2646,23 +2733,39 @@ export default function Board({
           (filledByCityId.get(cityStatus.cityId) ?? 0) + cityStatus.filledCubes,
         )
       })
-
       plan.simplifiedLedgerEntries.forEach(entry => {
-        movedOutboundByCityId.set(
+        segmentDeparturesByCityId.set(
           entry.originCityId,
-          (movedOutboundByCityId.get(entry.originCityId) ?? 0) + entry.cubeCount,
+          (segmentDeparturesByCityId.get(entry.originCityId) ?? 0) + entry.cubeCount,
         )
       })
     })
 
+    // Originating cubes per city from intent snapshot (pre-simulation, excludes transit)
+    const originatingCubesByCityId = new Map<string, number>()
+    for (const entry of currentPlayerBureaucracySummary.outboundIntentByCity) {
+      originatingCubesByCityId.set(
+        entry.cityId,
+        entry.destinations.reduce((s, d) => s + d.cubeCount, 0),
+      )
+    }
+
     return currentPlayerOwnedCityCards
-      .map(city => ({
-        city,
-        outboundCubes: Math.max(0, getCityDemandSize(game, city)),
-        inboundCubes: getCityDemandAbsorptionSize(game, city),
-        filledCubes: filledByCityId.get(city.id) ?? 0,
-        movedOutboundCubes: movedOutboundByCityId.get(city.id) ?? 0,
-      }))
+      .map(city => {
+        const originating = originatingCubesByCityId.get(city.id) ?? 0
+        // Cap segment departures at originating — transit cubes can't inflate above local demand
+        const movedOutboundCubes = Math.min(
+          segmentDeparturesByCityId.get(city.id) ?? 0,
+          originating,
+        )
+        return {
+          city,
+          outboundCubes: Math.max(0, getCityDemandSize(game, city)),
+          inboundCubes: getCityDemandAbsorptionSize(game, city),
+          filledCubes: filledByCityId.get(city.id) ?? 0,
+          movedOutboundCubes,
+        }
+      })
       .sort((entryA, entryB) => {
         const sizeDifference = (entryB.city.size ?? 0) - (entryA.city.size ?? 0)
         if (sizeDifference !== 0) {
@@ -2870,6 +2973,9 @@ export default function Board({
   const areResizeHandlesVisible =
     !isResourceMarketOpen && !isBureaucracyOpen && !isEconomicsOpen && !isWikiOpen
   const canEditOperations = canPlayerEditOperations(game, activeViewingPlayerId)
+  const [demandFillHoveredDest, setDemandFillHoveredDest] = useState<string | null>(null)
+  const [demandFillSelectedDest, setDemandFillSelectedDest] = useState<string | null>(null)
+  const [networkMapGridSizes, setNetworkMapGridSizes] = useState<Record<string, { cols: number; rows: number }>>({})
   const purchaseEquipmentPlayersRemaining = game.players.filter(player => player.phase === "purchase-equipment").length
   const addCityPlayersRemaining = game.players.filter(player => player.phase === "add-city").length
   const operationsPlayersRemaining = game.players.filter(player => player.phase === "operations").length
@@ -2883,6 +2989,9 @@ export default function Board({
   const hasPendingOperationsRouteSelection =
     canEditOperations &&
     ((selectedRouteMode !== null && selectedCityIds.length >= 2) || selectedRailSegmentKeys.length > 0)
+  const unassignedVehicleCardCount = canEditOperations
+    ? Math.max(0, currentPlayerOwnedVehicleCards.length - currentPlayerActiveBureaucracyPlans.length)
+    : 0
   const isAdvanceBlocked =
     (canManageCurrentCityOffer && (game.activeCityOffer?.keptCityIds.length ?? 0) !== 2) ||
     hasPendingOperationsRouteSelection ||
@@ -2951,6 +3060,29 @@ export default function Board({
             }}
           >
             Fix the red routes before leaving Operations.
+          </div>
+        )}
+        {unassignedVehicleCardCount > 0 && (
+          <div
+            style={{
+              border: "1px solid #d7c97a",
+              borderRadius: 10,
+              padding: "8px 10px",
+              background: "#fffbea",
+              color: "#7a6200",
+              fontSize: 12,
+              fontWeight: 600,
+              display: "flex",
+              gap: 6,
+              alignItems: "center",
+            }}
+          >
+            <span>⚠️</span>
+            <span>
+              {unassignedVehicleCardCount === 1
+                ? "1 vehicle card unassigned — add a new pod to put it to work."
+                : `${unassignedVehicleCardCount} vehicle cards unassigned — add new pods to put them to work.`}
+            </span>
           </div>
         )}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-start" }}>
@@ -3615,6 +3747,22 @@ export default function Board({
     })
   }
 
+  function beginTouchResize(
+    target: ResizeTarget,
+    event: React.TouchEvent<HTMLDivElement>,
+    startValue: number,
+  ) {
+    event.preventDefault()
+    const touch = event.touches[0]
+    if (!touch) return
+    setResizeState({
+      target,
+      startX: touch.clientX,
+      startY: touch.clientY,
+      startValue,
+    })
+  }
+
   function getResizeHandleStyle(target: ResizeTarget) {
     const sharedStyle = {
       position: "absolute",
@@ -3623,6 +3771,7 @@ export default function Board({
       background:
         resizeState?.target === target ? "rgba(34, 48, 36, 0.28)" : "rgba(34, 48, 36, 0.12)",
       transition: "background 120ms ease",
+      touchAction: "none",
     } as const
 
     switch (target) {
@@ -3631,7 +3780,7 @@ export default function Board({
           ...sharedStyle,
           top: 16,
           bottom: 16,
-          left: leftPanelWidth + PANEL_GAP / 2 - RESIZE_HANDLE_SIZE / 2,
+          left: effectiveLeftPanelWidth + PANEL_GAP / 2 - RESIZE_HANDLE_SIZE / 2,
           width: RESIZE_HANDLE_SIZE,
           cursor: "ew-resize",
         } as const
@@ -3890,7 +4039,7 @@ export default function Board({
             }}
           >
             <strong>Demand:</strong>{" "}
-            {`${demandCoverage?.selectedFleetSize ?? 0}/${demandCoverage?.demandFleetSize ?? 0} demand (${ownedCount} owned)`}
+            {`${demandCoverage?.selectedFleetSize ?? 0}/${demandCoverage?.demandFleetSize ?? 0} demand`}
           </div>
         )}
         <button
@@ -4143,7 +4292,59 @@ export default function Board({
         </div>
       </div>
       <div style={rowTwoStyle}>
-        <div style={HUD_STYLE}>
+        <div
+          style={{
+            ...HUD_STYLE,
+            ...(isLeftPanelCollapsed ? {
+              padding: 6,
+              alignItems: "center",
+              justifyContent: "flex-start",
+              overflow: "hidden",
+            } : {}),
+          }}
+        >
+          {isLeftPanelCollapsed ? (
+            <button
+              type="button"
+              onClick={() => setIsLeftPanelCollapsed(false)}
+              title="Show menu"
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: 8,
+                border: "1px solid #c7d0c4",
+                background: "#ffffff",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 14,
+                flexShrink: 0,
+              }}
+            >
+              ▶
+            </button>
+          ) : (
+            <>
+              <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: -4 }}>
+                <button
+                  type="button"
+                  onClick={() => setIsLeftPanelCollapsed(true)}
+                  title="Hide menu"
+                  style={{
+                    padding: "2px 8px",
+                    borderRadius: 6,
+                    border: "1px solid #c7d0c4",
+                    background: "#f7faf6",
+                    cursor: "pointer",
+                    fontSize: 11,
+                    color: "#56635a",
+                    fontWeight: 600,
+                  }}
+                >
+                  ◀ Hide
+                </button>
+              </div>
           <div
             style={{
               border: "1px solid #d8dfd5",
@@ -4288,6 +4489,8 @@ export default function Board({
               dimmed={!activeChanceCard && remainingChanceDeckCount === 0}
             />
           </div>
+            </>
+          )}
         </div>
         <div style={BOARD_STAGE_STYLE}>
           <div style={BOARD_INNER_STYLE}>
@@ -4942,15 +5145,17 @@ export default function Board({
             )}
           </div>
         </div>
-        {areResizeHandlesVisible && (
+        {areResizeHandlesVisible && !isLeftPanelCollapsed && (
           <>
             <div
               onMouseDown={event => beginResize("left-panel", event, leftPanelWidth)}
+              onTouchStart={event => beginTouchResize("left-panel", event, leftPanelWidth)}
               style={getResizeHandleStyle("left-panel")}
               title="Resize left tray"
             />
             <div
               onMouseDown={event => beginResize("right-rail", event, rightRailWidth)}
+              onTouchStart={event => beginTouchResize("right-rail", event, rightRailWidth)}
               style={getResizeHandleStyle("right-rail")}
               title="Resize right tray"
             />
@@ -5010,9 +5215,31 @@ export default function Board({
               </button>
             </div>
               <div style={{ display: "grid", gap: 10 }}>
-                {playerSummaries.map(({ player, connectedCities, weeklyNet }) => {
-                  const isMidBureaucracy = game.bureaucracyReadyPlayerIds.length > 0 && game.currentPhase !== "purchase-equipment"
-                  const playerDone = !isMidBureaucracy || game.bureaucracyReadyPlayerIds.includes(player.id)
+                {playerSummaries.map(({ player, connectedCities }) => {
+                  const isMidBureaucracy = game.currentPhase !== "purchase-equipment"
+                  // When mid-bureaucracy, use live projected stats from the bureaucracy summary
+                  // (applyBureaucracyFuelConsumption hasn't run yet so player fields still hold last period's values)
+                  const liveSummary = isMidBureaucracy
+                    ? bureaucracySummaries.find(s => s.player.id === player.id) ?? null
+                    : null
+                  const passengers = liveSummary
+                    ? liveSummary.totalPassengersServed
+                    : player.lastPeriodPassengersServed
+                  const revenue = liveSummary ? liveSummary.totalRevenue : player.weeklyPayout
+                  const costs = liveSummary ? liveSummary.totalOperatingCost : player.operatingCosts
+                  const net = revenue - costs
+                  const stillPlaying = isMidBureaucracy && !game.bureaucracyReadyPlayerIds.includes(player.id)
+                  // Previous period for delta display
+                  const history = player.periodHistory ?? []
+                  // During bureaucracy the current period isn't committed yet → last entry is the previous period.
+                  // After bureaucracy (purchase-equipment) the current period was just appended → use second-to-last.
+                  const prevPeriodIndex = isMidBureaucracy ? history.length - 1 : history.length - 2
+                  const prevPeriod = prevPeriodIndex >= 0 ? history[prevPeriodIndex] : null
+                  const prevPassengers = prevPeriod?.passengersServed ?? null
+                  const prevNet = prevPeriod?.netRevenue ?? null
+                  const prevRevenue = prevPeriod?.grossRevenue ?? null
+                  const prevCosts = prevPeriod?.operatingCosts ?? null
+                  const prevCash = prevPeriod?.endingCash ?? null
                   return (
                   <div
                   key={`${player.id}-period-summary`}
@@ -5021,7 +5248,7 @@ export default function Board({
                     borderRadius: 12,
                     padding: 12,
                     display: "grid",
-                    gridTemplateColumns: playerDone ? "minmax(140px, 1fr) repeat(5, auto)" : "minmax(140px, 1fr) 1fr",
+                    gridTemplateColumns: "minmax(140px, 1fr) repeat(5, auto)",
                     gap: 10,
                     alignItems: "center",
                     background: "#ffffff",
@@ -5031,33 +5258,44 @@ export default function Board({
                     <strong style={{ color: player.color }}>{player.name}</strong>
                     <div style={{ color: "#56635a", fontSize: 12 }}>
                       Connected cities: {connectedCities.length}
+                      {stillPlaying && <span style={{ color: "#a07c30", fontStyle: "italic" }}> · still playing</span>}
                     </div>
                   </div>
-                  {playerDone ? [
+                  {[
                     {
                       label: "Passengers",
-                      value: formatDecimal(player.lastPeriodPassengersServed, 0),
+                      value: formatDecimal(passengers, 0),
                       emphasized: true,
+                      delta: prevPassengers !== null ? passengers - prevPassengers : null,
+                      deltaFormat: (d: number) => (d >= 0 ? "+" : "") + Math.round(d).toLocaleString(),
                     },
                     {
                       label: "Profit",
-                      value: formatCurrency(weeklyNet),
+                      value: formatCurrency(net),
                       emphasized: true,
+                      delta: prevNet !== null ? net - prevNet : null,
+                      deltaFormat: (d: number) => (d >= 0 ? "+" : "") + formatCurrency(d),
                     },
                     {
                       label: "Revenue",
-                      value: formatCurrency(player.weeklyPayout),
+                      value: formatCurrency(revenue),
                       emphasized: false,
+                      delta: prevRevenue !== null ? revenue - prevRevenue : null,
+                      deltaFormat: (d: number) => (d >= 0 ? "+" : "") + formatCurrency(d),
                     },
                     {
                       label: "Costs",
-                      value: formatCurrency(player.operatingCosts),
+                      value: formatCurrency(costs),
                       emphasized: false,
+                      delta: prevCosts !== null ? costs - prevCosts : null,
+                      deltaFormat: (d: number) => (d >= 0 ? "+" : "") + formatCurrency(d),
                     },
                     {
                       label: "Cash",
                       value: formatCurrency(player.money),
                       emphasized: false,
+                      delta: prevCash !== null ? player.money - prevCash : null,
+                      deltaFormat: (d: number) => (d >= 0 ? "+" : "") + formatCurrency(d),
                     },
                   ].map(stat => (
                     <div
@@ -5065,8 +5303,9 @@ export default function Board({
                       style={{
                         display: "flex",
                         flexDirection: "column",
-                        gap: 4,
+                        gap: 2,
                         minWidth: 96,
+                        opacity: stillPlaying ? 0.6 : 1,
                       }}
                     >
                       <div style={{ color: "#7b857d", fontSize: 11, fontWeight: 600 }}>
@@ -5082,12 +5321,18 @@ export default function Board({
                       >
                         {stat.value}
                       </div>
+                      {stat.delta !== null && (
+                        <div style={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          color: stat.delta >= 0 ? "#1a7c3c" : "#b42318",
+                          lineHeight: 1.2,
+                        }}>
+                          {stat.deltaFormat(stat.delta)}
+                        </div>
+                      )}
                     </div>
-                  )) : (
-                    <div style={{ color: "#7b857d", fontSize: 13, fontStyle: "italic" }}>
-                      Still playing…
-                    </div>
-                  )}
+                  ))}
                 </div>
                   )
                 })}
@@ -5581,55 +5826,29 @@ export default function Board({
               }}
             >
               <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 8,
-                }}
+               style={{
+                 display: "flex",
+                 flexDirection: "column",
+                 gap: 8,
+               }}
               >
-                 <div>
-                  <strong style={{ color: currentPlayerBureaucracySummary.player.color }}>
-                    {currentPlayerBureaucracySummary.player.name}
-                  </strong>
-                 </div>
-                 {canEditOperations ? (
-                  <>
-                    <div>
-                      Pods ready: <strong>{currentPlayerActiveBureaucracyPlans.length}</strong>
-                    </div>
-                    <div style={{ color: "#56635a", fontSize: 12 }}>
-                      Bus {currentPlayerActiveBureaucracyPlans.filter(plan => plan.route.mode === "bus").length}
-                      {" • "}Rail {currentPlayerActiveBureaucracyPlans.filter(plan => plan.route.mode === "rail").length}
-                      {" • "}Air {currentPlayerActiveBureaucracyPlans.filter(plan => plan.route.mode === "air").length}
-                    </div>
-                 </>
-                 ) : (
-                  <>
-                    <div>Revenue: {formatCurrency(currentPlayerBureaucracySummary.totalRevenue)}</div>
-                    <div>
-                      Operating cost: {formatCurrency(currentPlayerBureaucracySummary.totalOperatingCost)}
-                    </div>
-                    <div style={{ paddingLeft: 12, color: "#56635a", fontSize: 12 }}>
-                      Crew: {formatCurrency(currentPlayerBureaucracySummary.totalCrewCost)}
-                    </div>
-                    <div style={{ paddingLeft: 12, color: "#56635a", fontSize: 12 }}>
-                      Maintenance: {formatCurrency(currentPlayerBureaucracySummary.totalMaintenanceCost)}
-                    </div>
-                    <div style={{ paddingLeft: 12, color: "#56635a", fontSize: 12 }}>
-                      Balance: {formatCurrency(currentPlayerBureaucracySummary.totalBalanceAdjustmentCost)}
-                    </div>
-                    <div style={{ paddingLeft: 12, color: "#56635a", fontSize: 12 }}>
-                      Fuel: {formatCurrency(currentPlayerBureaucracySummary.totalFuelCost)}
-                    </div>
-                    <div>
-                      <strong>Net:</strong> {formatCurrency(currentPlayerBureaucracySummary.netRevenue)}
-                    </div>
-                    <div>
-                      Passengers served:{" "}
-                      {currentPlayerBureaucracySummary.totalPassengersServed.toLocaleString()}
-                    </div>
-                  </>
-                 )}
+                <div>
+                 <strong style={{ color: currentPlayerBureaucracySummary.player.color }}>
+                   {currentPlayerBureaucracySummary.player.name}
+                 </strong>
+                </div>
+                {canEditOperations ? (
+                 <>
+                   <div>
+                     Pods ready: <strong>{currentPlayerActiveBureaucracyPlans.length}</strong>
+                   </div>
+                   <div style={{ color: "#56635a", fontSize: 12 }}>
+                     Bus {currentPlayerActiveBureaucracyPlans.filter(plan => plan.route.mode === "bus").length}
+                     {" • "}Rail {currentPlayerActiveBureaucracyPlans.filter(plan => plan.route.mode === "rail").length}
+                     {" • "}Air {currentPlayerActiveBureaucracyPlans.filter(plan => plan.route.mode === "air").length}
+                   </div>
+                </>
+                ) : null}
                  {canEditOperations && currentPlayerOwnedModes.has("rail") && (
                   <div
                     style={{
@@ -5647,12 +5866,12 @@ export default function Board({
                     <div style={{ color: "#56635a", fontSize: 12 }}>
                       Click a segment here or on the map to lay rail between owned adjacent cities.
                     </div>
-                    {claimableRailSegments.length === 0 ? (
+                     {claimableRailSegments.length === 0 ? (
                       <div style={{ color: "#56635a", fontSize: 12 }}>
                         No owned adjacent city pairs are ready for new rail track.
                       </div>
                     ) : (
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, maxHeight: 200, overflowY: "auto", paddingRight: 2 }}>
                         {claimableRailSegments.map(segment => {
                           const isSelected = selectedRailSegmentKeys.includes(segment.id)
 
@@ -5737,7 +5956,6 @@ export default function Board({
                                 </div>
                                 <div style={{ color: "#56635a", fontSize: 11 }}>
                                   Waiting cubes {Math.max(0, demandSize)}
-                                  {" • "}Capacity {absorptionSize}
                                 </div>
                               </div>
                             )
@@ -5747,7 +5965,7 @@ export default function Board({
                     </div>
                   ) : (
                   <>
-                  {!canEditOperations && currentPlayerCombinedDemandFill.length > 0 && (
+                   {!canEditOperations && currentPlayerCombinedDemandFill.length > 0 && (
                     <div
                       style={{
                         border: "1px solid #e1e6df",
@@ -5761,7 +5979,7 @@ export default function Board({
                       <div>
                         <strong>City demand fill</strong>
                         <span style={{ color: "#56635a", fontSize: 11, marginLeft: 8 }}>
-                          1 box = 10 demand points
+                          1 box = 10 cubes • hover to see destinations
                         </span>
                       </div>
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
@@ -5769,172 +5987,214 @@ export default function Board({
                           ({
                             city,
                             outboundCubes,
-                            inboundCubes,
-                            filledCubes,
                             movedOutboundCubes,
-                          }) => (
-                            <div
-                              key={`${city.id}-combined-fill`}
-                              style={{
-                                border: "1px solid #d8dfd5",
-                                borderRadius: 10,
-                                padding: "6px 8px",
-                                background: "#ffffff",
-                                display: "grid",
-                                gap: 4,
-                                minWidth: 150,
-                              }}
-                            >
-                              <div style={{ fontSize: 12 }}>
-                                <strong>{city.name}</strong>
-                                {" • "}size {city.size}
-                              </div>
+                          }) => {
+                            const intentEntry = currentPlayerBureaucracySummary?.outboundIntentByCity.find(
+                              e => e.cityId === city.id,
+                            )
+                            const cityHasService = currentPlayerActiveBureaucracyPlans.some(
+                              plan => plan.selectedCityIds.includes(city.id),
+                            )
+                            const stuckEntry = currentPlayerBureaucracySummary?.stuckCubesByCity.find(
+                              s => s.cityId === city.id,
+                            )
+                            type Tone = "green" | "white" | "red"
+
+                            const CUBES_PER_BOX = 10
+
+                            // Build flat per-cube destination arrays from initial intent
+                            const allCubeDestinations: string[] = []
+                            if (intentEntry) {
+                              for (const dest of intentEntry.destinations) {
+                                for (let i = 0; i < dest.cubeCount; i++) {
+                                  allCubeDestinations.push(dest.destCityName)
+                                }
+                              }
+                            }
+
+                            const movedCubeDestinations = allCubeDestinations.slice(0, movedOutboundCubes)
+                            const unmovedCubeDestinations = allCubeDestinations.slice(movedOutboundCubes)
+
+                            const unmovedCount = Math.max(0, outboundCubes - movedOutboundCubes)
+                            const unmovedTone: Tone = cityHasService ? "white" : "red"
+
+                            // Fill any gap from stuck cubes at intermediate cities (transit)
+                            if (unmovedCubeDestinations.length < unmovedCount && stuckEntry) {
+                              for (const wanted of stuckEntry.wantedDestinations) {
+                                for (let i = 0; i < wanted.cubeCount && unmovedCubeDestinations.length < unmovedCount; i++) {
+                                  unmovedCubeDestinations.push(wanted.destCityName)
+                                }
+                              }
+                            }
+                            while (unmovedCubeDestinations.length < unmovedCount) {
+                              unmovedCubeDestinations.push("unknown")
+                            }
+
+                            function buildBoxes(cubeList: string[], tone: Tone): Array<{ tone: Tone; tooltip: string; primaryDest: string }> {
+                              if (cubeList.length === 0) return []
+                              const counts = new Map<string, number>()
+                              for (const d of cubeList) counts.set(d, (counts.get(d) ?? 0) + 1)
+                              const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1])
+
+                              const fullBoxes: Array<{ tone: Tone; tooltip: string; primaryDest: string }> = []
+                              const remainders: Array<{ dest: string; count: number }> = []
+
+                              for (const [dest, count] of sorted) {
+                                const full = Math.floor(count / CUBES_PER_BOX)
+                                const rem = count % CUBES_PER_BOX
+                                for (let i = 0; i < full; i++) {
+                                  fullBoxes.push({ tone, tooltip: `→ ${dest}`, primaryDest: dest })
+                                }
+                                if (rem > 0) remainders.push({ dest, count: rem })
+                              }
+
+                              // Sort remainders by count desc, pack sequentially into boxes of 10
+                              remainders.sort((a, b) => b.count - a.count)
+                              const remBoxes: Array<{ tone: Tone; tooltip: string; primaryDest: string }> = []
+                              let buf: string[] = []
+                              for (const { dest, count } of remainders) {
+                                for (let i = 0; i < count; i++) {
+                                  buf.push(dest)
+                                  if (buf.length === CUBES_PER_BOX) {
+                                    const c = new Map<string, number>()
+                                    for (const d of buf) c.set(d, (c.get(d) ?? 0) + 1)
+                                    const topDest = [...c.entries()].sort((a, b) => b[1] - a[1])[0][0]
+                                    const parts = [...c.entries()].sort((a, b) => b[1] - a[1]).map(([d, n]) => c.size === 1 ? `→ ${d}` : `→ ${d} (${n})`).join(", ")
+                                    remBoxes.push({ tone, tooltip: parts, primaryDest: topDest })
+                                    buf = []
+                                  }
+                                }
+                              }
+                              if (buf.length > 0) {
+                                const c = new Map<string, number>()
+                                for (const d of buf) c.set(d, (c.get(d) ?? 0) + 1)
+                                const topDest = [...c.entries()].sort((a, b) => b[1] - a[1])[0][0]
+                                const parts = [...c.entries()].sort((a, b) => b[1] - a[1]).map(([d, n]) => c.size === 1 ? `→ ${d}` : `→ ${d} (${n})`).join(", ")
+                                remBoxes.push({ tone, tooltip: parts, primaryDest: topDest })
+                              }
+
+                              return [...fullBoxes, ...remBoxes]
+                            }
+
+                            const boxes: Array<{ tone: Tone; tooltip: string; primaryDest: string }> = [
+                              ...buildBoxes(movedCubeDestinations, "green"),
+                              ...buildBoxes(unmovedCubeDestinations, unmovedTone),
+                            ]
+
+                            // Group boxes by primaryDest preserving order of first appearance
+                            const destOrder: string[] = []
+                            const boxesByDest = new Map<string, typeof boxes>()
+                            for (const box of boxes) {
+                              if (!boxesByDest.has(box.primaryDest)) {
+                                destOrder.push(box.primaryDest)
+                                boxesByDest.set(box.primaryDest, [])
+                              }
+                              boxesByDest.get(box.primaryDest)!.push(box)
+                            }
+
+                            return (
                               <div
+                                key={`${city.id}-combined-fill`}
                                 style={{
-                                  display: "flex",
-                                  flexWrap: "wrap",
-                                  alignItems: "center",
-                                  justifyContent: "space-between",
-                                  gap: 8,
+                                  border: "1px solid #d8dfd5",
+                                  borderRadius: 10,
+                                  padding: "6px 8px",
+                                  background: "#ffffff",
+                                  display: "grid",
+                                  gap: 4,
+                                  minWidth: 120,
                                 }}
                               >
-                                <div
-                                  style={{
-                                    display: "inline-flex",
-                                    flexWrap: "wrap",
-                                    gap: 4,
-                                  }}
-                                >
-                                  {renderDemandPointBoxes(
-                                    inboundCubes,
-                                    Math.min(inboundCubes, filledCubes),
-                                  )}
+                                <div style={{ fontSize: 12 }}>
+                                  <strong
+                                    onClick={() => setDemandFillSelectedDest(demandFillSelectedDest === city.name ? null : city.name)}
+                                    style={{
+                                      cursor: "pointer",
+                                      color: demandFillSelectedDest === city.name || demandFillHoveredDest === city.name ? "#2563eb" : undefined,
+                                      textDecoration: demandFillSelectedDest === city.name ? "underline" : undefined,
+                                      userSelect: "none",
+                                    }}
+                                  >{city.name}</strong>
+                                  {" • "}size {city.size}
+                                </div>
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "flex-start" }}>
+                                  {destOrder.map(dest => {
+                                    const destBoxes = boxesByDest.get(dest)!
+                                    const isHighlighted = demandFillHoveredDest === dest || demandFillSelectedDest === dest
+                                    return (
+                                      <div
+                                        key={dest}
+                                        style={{
+                                          display: "inline-flex",
+                                          flexWrap: "wrap",
+                                          gap: 3,
+                                          padding: 2,
+                                          borderRadius: 4,
+                                          outline: isHighlighted ? "2px solid #2563eb" : "2px solid transparent",
+                                          transition: "outline-color 0.1s",
+                                        }}
+                                        onMouseEnter={() => setDemandFillHoveredDest(dest)}
+                                        onMouseLeave={() => setDemandFillHoveredDest(null)}
+                                      >
+                                        {destBoxes.map((box, i) => (
+                                          <span
+                                            key={i}
+                                            title={box.tooltip}
+                                            style={{
+                                              width: 12,
+                                              height: 12,
+                                              borderRadius: 3,
+                                              border: `1px solid ${box.tone === "green" ? "#5fbf72" : box.tone === "red" ? "#ef4444" : "#c8d0c8"}`,
+                                              background: box.tone === "green" ? "#5fbf72" : box.tone === "red" ? "#fca5a5" : "#ffffff",
+                                              display: "inline-block",
+                                              boxSizing: "border-box",
+                                            }}
+                                          />
+                                        ))}
+                                      </div>
+                                    )
+                                  })}
+                                </div>
+                                <div style={{ color: "#56635a", fontSize: 11 }}>
+                                  Moved{" "}
+                                  <span style={{ color: unmovedCount > 0 ? (unmovedTone === "red" ? "#b42318" : "#56635a") : "#1a7c3c", fontWeight: 600 }}>
+                                    {movedOutboundCubes}/{outboundCubes}
+                                  </span>
                                 </div>
                               </div>
-                              <div style={{ color: "#56635a", fontSize: 11 }}>
-                                Filled {filledCubes} / {inboundCubes}
-                                {" • "}Out {outboundCubes}
-                                {Math.max(0, outboundCubes - movedOutboundCubes) > 0
-                                  ? ` • ${Math.max(0, outboundCubes - movedOutboundCubes)} cubes blocked by capacity`
-                                  : ""}
-                              </div>
-                            </div>
-                          ),
+                            )
+                          },
                         )}
                       </div>
                     </div>
                   )}
-                  {currentPlayerBureaucracyPlansByMode.map(({ mode, plans }) => {
-                    return (
-                    <div
-                      key={mode}
-                      style={{
-                        border: "1px solid #e1e6df",
-                        borderRadius: 10,
-                        padding: 10,
-                        background: "#ffffff",
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 8,
-                      }}
-                    >
-                      <div>
-                        <strong>{MODE_LABELS[mode]}</strong>
-                      </div>
-                      {plans.length === 0 ? (
-                        <div style={{ color: "#56635a", fontSize: 13 }}>
-                          No {MODE_LABELS[mode].toLowerCase()} services to operate.
+                  {canEditOperations
+                    ? currentPlayerBureaucracyPlansByMode.map(({ mode, plans }) => (
+                      <div
+                        key={mode}
+                        style={{
+                          border: "1px solid #e1e6df",
+                          borderRadius: 10,
+                          padding: 10,
+                          background: "#ffffff",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 8,
+                        }}
+                      >
+                        <div>
+                          <strong>{MODE_LABELS[mode]}</strong>
                         </div>
-                      ) : (
-                        plans.map(plan => {
-                          const hasCapacityShortfall =
-                            plan.selectedFleetSize < plan.demandFleetSize ||
-                            plan.movedCubes < plan.movableDemandCubes
-                          const unmetCapacityCubes = Math.max(
-                            0,
-                            plan.movableDemandCubes - plan.movedCubes,
-                          )
-                          const podCities = plan.selectedCityIds
-                            .map(cityId => cityMap[cityId])
-                            .filter(
-                              (
-                                city,
-                              ): city is GameState["cities"][number] =>
-                                city !== undefined,
-                            )
-                          const podPoints = podCities.map(city => ({
-                            cityId: city.id,
-                            cityName: city.name,
-                            ...latLngToWorld(city),
-                          }))
-
-                          const flowColors = [
-                            "#2563eb",
-                            "#7c3aed",
-                            "#d97706",
-                            "#0f766e",
-                            "#db2777",
-                            "#1d4ed8",
-                          ]
-                          const markerPrefix = plan.id.replace(
-                            /[^a-zA-Z0-9_-]/g,
-                            "-",
-                          )
-                          const pointByCityId = Object.fromEntries(
-                            podPoints.map(point => [point.cityId, point]),
-                          )
-                          const minX = Math.min(
-                            ...(podPoints.length > 0
-                              ? podPoints.map(point => point.x)
-                              : [0]),
-                          )
-                          const maxX = Math.max(
-                            ...(podPoints.length > 0
-                              ? podPoints.map(point => point.x)
-                              : [120]),
-                          )
-                          const minY = Math.min(
-                            ...(podPoints.length > 0
-                              ? podPoints.map(point => point.y)
-                              : [0]),
-                          )
-                          const maxY = Math.max(
-                            ...(podPoints.length > 0
-                              ? podPoints.map(point => point.y)
-                              : [120]),
-                          )
-                          const previewPadding = 28
-                          const previewWidth = Math.max(
-                            120,
-                            maxX - minX + previewPadding * 2,
-                          )
-                          const previewHeight = Math.max(
-                            120,
-                            maxY - minY + previewPadding * 2,
-                          )
-                          const previewViewBox = `${minX - previewPadding} ${minY - previewPadding} ${previewWidth} ${previewHeight}`
-                          const shouldStretchFlowMap =
-                            plan.simplifiedLedgerEntries.length >= 5
-                          const sortedLedgerEntries = [...plan.simplifiedLedgerEntries].sort(
-                            (entryA, entryB) => {
-                              if (entryB.passengers !== entryA.passengers) {
-                                return entryB.passengers - entryA.passengers
-                              }
-
-                              if (entryB.cubeCount !== entryA.cubeCount) {
-                                return entryB.cubeCount - entryA.cubeCount
-                              }
-
-                              return entryA.id.localeCompare(entryB.id)
-                            },
-                          )
-
-                          if (canEditOperations) {
+                        {plans.length === 0 ? (
+                          <div style={{ color: "#56635a", fontSize: 13 }}>
+                            No {MODE_LABELS[mode].toLowerCase()} services to operate.
+                          </div>
+                        ) : (
+                          plans.map(plan => {
                             const podCityIds =
                               plan.availableCityIds.length > 0
                                 ? plan.availableCityIds
                                 : plan.selectedCityIds
-
                             return (
                               <div
                                 key={plan.id}
@@ -6025,316 +6285,468 @@ export default function Board({
                                 )}
                               </div>
                             )
-                          }
-
-                          return (
-                            <div
-                            key={plan.id}
+                          })
+                        )}
+                      </div>
+                    ))
+                    : (
+                      <>
+                        {/* Two-column row: financial summary (left) + vehicles (right) */}
+                        <div style={{ display: "flex", gap: 12, alignItems: "stretch", flexWrap: "wrap" }}>
+                          {/* Financial summary */}
+                          <div
                             style={{
                               border: "1px solid #e1e6df",
-                              borderRadius: 8,
-                              padding: 8,
+                              borderRadius: 10,
+                              padding: 10,
+                              background: "#ffffff",
                               display: "flex",
                               flexDirection: "column",
-                              gap: 6,
+                              gap: 4,
+                              flex: "0 0 auto",
+                              minWidth: 220,
                             }}
                           >
-                            <div>
-                              <strong>{plan.serviceLabel}</strong>
-                            </div>
-                            <div style={{ color: "#56635a", fontSize: 13 }}>
-                              {plan.route.mode === "rail" && getRailTraction(plan.route) === "electric"
-                                ? "Electric rail "
-                                : `${MODE_LABELS[plan.route.mode]} `}
-                              {plan.segmentCount > 1 ? `• ${plan.segmentCount} segments ` : ""}
-                              {plan.vehicleCard ? (
+                            {(() => {
+                              const prevHistory = currentPlayerBureaucracySummary.player.periodHistory ?? []
+                              const prev = prevHistory.length > 0 ? prevHistory[prevHistory.length - 1] : null
+                              const netDelta = prev !== null ? currentPlayerBureaucracySummary.netRevenue - prev.netRevenue : null
+                              const paxDelta = prev !== null ? currentPlayerBureaucracySummary.totalPassengersServed - prev.passengersServed : null
+                              const delta = (val: number, isCurrency: boolean) => {
+                                const sign = val >= 0 ? "+" : ""
+                                const text = isCurrency ? `${sign}${formatCurrency(val)}` : `${sign}${val.toLocaleString()}`
+                                const color = val >= 0 ? "#1a7c3c" : "#b42318"
+                                return <span style={{ color, fontSize: 11, fontWeight: 600, marginLeft: 6 }}>{text}</span>
+                              }
+                              return (
                                 <>
-                                  {`• #${plan.vehicleCard.number} ${plan.vehicleCard.name} • `}
-                                  <span
-                                    style={{
-                                      color:
-                                        plan.selectedFleetSize < plan.demandFleetSize
-                                          ? "#b42318"
-                                          : "#56635a",
-                                      fontWeight:
-                                        plan.selectedFleetSize < plan.demandFleetSize
-                                          ? 700
-                                          : 400,
-                                    }}
-                                  >
-                                    {`Fleet ${plan.selectedFleetSize} / ${plan.demandFleetSize} Demand`}
-                                  </span>
+                                  <div style={{ fontSize: 13 }}><strong>Summary</strong></div>
+                                  <div style={{ fontSize: 13 }}>Revenue: {formatCurrency(currentPlayerBureaucracySummary.totalRevenue)}</div>
+                                  <div style={{ fontSize: 13 }}>Operating cost: {formatCurrency(currentPlayerBureaucracySummary.totalOperatingCost)}</div>
+                                  <div style={{ paddingLeft: 12, color: "#56635a", fontSize: 12 }}>Crew: {formatCurrency(currentPlayerBureaucracySummary.totalCrewCost)}</div>
+                                  <div style={{ paddingLeft: 12, color: "#56635a", fontSize: 12 }}>Maintenance: {formatCurrency(currentPlayerBureaucracySummary.totalMaintenanceCost)}</div>
+                                  <div style={{ paddingLeft: 12, color: "#56635a", fontSize: 12 }}>Balance: {formatCurrency(currentPlayerBureaucracySummary.totalBalanceAdjustmentCost)}</div>
+                                  <div style={{ paddingLeft: 12, color: "#56635a", fontSize: 12 }}>Fuel: {formatCurrency(currentPlayerBureaucracySummary.totalFuelCost)}</div>
+                                  <div style={{ fontSize: 13 }}><strong>Net:</strong> {formatCurrency(currentPlayerBureaucracySummary.netRevenue)}{netDelta !== null && delta(netDelta, true)}</div>
+                                  <div style={{ fontSize: 13 }}>Passengers served: {currentPlayerBureaucracySummary.totalPassengersServed.toLocaleString()}{paxDelta !== null && delta(paxDelta, false)}</div>
                                 </>
-                              ) : (
-                                <>
-                                  {"• No vehicle assigned • "}
-                                  <span style={{ color: "#b42318", fontWeight: 700 }}>
-                                    {`Fleet 0 / ${plan.demandFleetSize} Demand`}
-                                  </span>
-                                </>
-                              )}
-                            </div>
-                            <div
-                              style={{
-                                display: "flex",
-                                flexWrap: "wrap",
-                                gap: "4px 10px",
-                                color: "#324236",
-                                fontSize: 13,
-                              }}
-                            >
-                              {plan.distanceMiles !== null && (
-                                <span>{formatDecimal(plan.distanceMiles)} mi</span>
-                              )}
-                              <span>Demand {plan.movableDemandCubes} cubes</span>
-                              <span>Filled {plan.simplifiedCityStatuses.reduce((total, city) => total + city.filledCubes, 0)} boxes</span>
-                              {hasCapacityShortfall && (
-                                <span style={{ color: "#b42318", fontWeight: 700 }}>
-                                  {unmetCapacityCubes}{" "}
-                                  cubes blocked by capacity
-                                </span>
-                              )}
-                              <span>{plan.cubeCapacityPerTrip} cubes/trip</span>
-                              <span>max {plan.maxTripsByTime} trips</span>
-                              <span>👥 {plan.passengersPerTrip.toLocaleString()}</span>
-                              {plan.populationPerMile !== null && (
-                                <span>{Math.round(plan.populationPerMile).toLocaleString()} pax/mi</span>
-                              )}
-                              <span>x{formatDecimal(plan.simplifiedPayoutMultiplier, 0)} payout weight</span>
-                            </div>
-                            <div
-                              style={{
-                                display: "grid",
-                                gap: 8,
-                                gridTemplateColumns:
-                                  podPoints.length >= 2
-                                    ? "minmax(0, 1.25fr) minmax(0, 1fr)"
-                                    : "minmax(0, 1fr)",
-                                alignItems: shouldStretchFlowMap
-                                  ? "stretch"
-                                  : "start",
-                              }}
-                            >
-                              <div
-                                style={{
-                                  display: "grid",
-                                  gap: 8,
-                                  border: "1px solid #e1e6df",
-                                  borderRadius: 8,
-                                  padding: 8,
-                                  background: "#ffffff",
-                                }}
-                              >
-                                <div>
-                                  <strong>Simplified passenger ledger</strong>
-                                </div>
-                                {sortedLedgerEntries.length === 0 ? (
-                                  <div style={{ color: "#56635a", fontSize: 12 }}>
-                                    No passenger cubes can be moved on this service with the current setup.
-                                  </div>
-                                ) : (
-                                  sortedLedgerEntries.map(entry => (
-                                    <div
-                                      key={entry.id}
-                                      style={{
-                                        border: "1px solid #e1e6df",
-                                        borderRadius: 8,
-                                        padding: "8px 10px",
-                                        background: "#fafcf9",
-                                        display: "grid",
-                                        gap: 4,
-                                      }}
-                                    >
-                                      <div style={{ fontSize: 13 }}>
-                                        <strong>{entry.originCityName}</strong> to{" "}
-                                        <strong>{entry.destinationCityName}</strong>
-                                      </div>
-                                      <div style={{ color: "#324236", fontSize: 12 }}>
-                                        {entry.cubeCount} cube{entry.cubeCount === 1 ? "" : "s"}
-                                        {" • "}👥 {formatDecimal(entry.passengers, 0)}
-                                        {" • "}x{formatDecimal(entry.payoutMultiplier, 0)}
-                                        {" • "}Fare {formatCurrency(entry.farePerPassenger)}
-                                        {" • "}Payout {formatCurrency(entry.payout)}
-                                      </div>
-                                      <div style={{ color: "#56635a", fontSize: 11 }}>
-                                        {entry.pathLabels.join(" • ")}
-                                      </div>
-                                    </div>
-                                  ))
-                                )}
-                              </div>
-                              {podPoints.length >= 2 && (
+                              )
+                            })()}
+                          </div>
+                          {/* Vehicles */}
+                          {(() => {
+                            // Compute plan → color map using same union-find grouping as network maps
+                            const POD_COLORS_MAP = ["#2563eb", "#dc2626", "#d97706", "#7c3aed", "#0891b2", "#be185d", "#65a30d", "#c2410c"]
+                            const eligibleForColor = currentPlayerActiveBureaucracyPlans.filter(p => p.selectedCityIds.length >= 2)
+                            const _parent = new Map<string, string>()
+                            const _find = (x: string): string => {
+                              if (!_parent.has(x)) _parent.set(x, x)
+                              const p = _parent.get(x)!
+                              if (p !== x) { const r = _find(p); _parent.set(x, r); return r }
+                              return x
+                            }
+                            for (const plan of eligibleForColor) {
+                              for (let i = 1; i < plan.selectedCityIds.length; i++) {
+                                const a = _find(plan.selectedCityIds[0]), b = _find(plan.selectedCityIds[i])
+                                _parent.set(a, b)
+                              }
+                            }
+                            const _netsByRoot = new Map<string, typeof eligibleForColor>()
+                            for (const plan of eligibleForColor) {
+                              const root = _find(plan.selectedCityIds[0])
+                              if (!_netsByRoot.has(root)) _netsByRoot.set(root, [])
+                              _netsByRoot.get(root)!.push(plan)
+                            }
+                            const planColorById = new Map<string, string>()
+                            for (const netPlans of _netsByRoot.values()) {
+                              netPlans.forEach((plan, pi) => {
+                                planColorById.set(plan.id, POD_COLORS_MAP[pi % POD_COLORS_MAP.length])
+                              })
+                            }
+
+                            return (
+                          <div
+                            style={{
+                              border: "1px solid #e1e6df",
+                              borderRadius: 10,
+                              padding: 10,
+                              background: "#ffffff",
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: 8,
+                              flex: "1 1 0",
+                              minWidth: 240,
+                            }}
+                          >
+                          <div><strong>Vehicles</strong></div>
+                          {currentPlayerActiveBureaucracyPlans.filter(p => p.vehicleCard !== null).length === 0 ? (
+                            <div style={{ color: "#56635a", fontSize: 13 }}>No vehicles assigned to any route.</div>
+                          ) : (
+                            [...currentPlayerActiveBureaucracyPlans]
+                              .filter(p => p.vehicleCard !== null)
+                              .sort((a, b) => b.passengersServed - a.passengersServed)
+                              .map(plan => (
                                 <div
+                                  key={plan.id}
                                   style={{
-                                    display: "flex",
-                                    flexDirection: "column",
-                                    gap: 8,
                                     border: "1px solid #e1e6df",
                                     borderRadius: 8,
-                                    padding: 8,
-                                    background: "#ffffff",
-                                    minHeight: shouldStretchFlowMap ? 0 : 260,
+                                    padding: "8px 10px",
+                                    background: "#fafcf9",
+                                    display: "grid",
+                                    gap: 4,
                                   }}
                                 >
-                                  <div>
-                                    <strong>Route flow map</strong>
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                                    <div style={{ fontSize: 13 }}>
+                                      <strong>
+                                        {plan.route.mode === "bus" ? "🚌" : plan.route.mode === "rail" ? "🚂" : "✈️"}
+                                        {" "}#{plan.vehicleCard?.number} {plan.vehicleCard?.name}
+                                      </strong>
+                                    </div>
+                                    <div style={{ textAlign: "right", flexShrink: 0 }}>
+                                      <div style={{ fontSize: 15, fontWeight: 800, color: plan.netRevenue >= 0 ? "#1a7c3c" : "#b42318" }}>
+                                        {formatCurrency(plan.netRevenue)}
+                                      </div>
+                                    </div>
                                   </div>
-                                  <svg
-                                    viewBox={previewViewBox}
-                                    style={{
-                                      width: "100%",
-                                      height: shouldStretchFlowMap
-                                        ? "100%"
-                                        : 240,
-                                      minHeight: shouldStretchFlowMap
-                                        ? 220
-                                        : 240,
-                                      flex: shouldStretchFlowMap ? 1 : "none",
-                                      borderRadius: 8,
-                                      background: "#f7faf6",
-                                    }}
-                                  >
-                                    <defs>
-                                      {sortedLedgerEntries.map((_, entryIndex) => {
-                                        const color =
-                                          flowColors[
-                                            entryIndex % flowColors.length
-                                          ]
-
-                                        return (
-                                          <marker
-                                            key={`${markerPrefix}-arrow-${entryIndex}`}
-                                            id={`${markerPrefix}-arrow-${entryIndex}`}
-                                            viewBox="0 0 10 10"
-                                            refX="6"
-                                            refY="5"
-                                            markerWidth="2.5"
-                                            markerHeight="2.5"
-                                            orient="auto"
-                                          >
-                                            <path d="M 0 0 L 10 5 L 0 10 z" fill={color} />
-                                          </marker>
-                                        )
-                                      })}
-                                    </defs>
-                                    {plan.routes.map(route => {
-                                      const a = pointByCityId[route.cityA]
-                                      const b = pointByCityId[route.cityB]
-
-                                      if (!a || !b) {
-                                        return null
-                                      }
-
-                                      return (
-                                        <path
-                                          key={`${plan.id}-pod-${route.id}`}
-                                          d={buildSegmentPath(
-                                            a,
-                                            b,
-                                            segmentMetadataByKey[
-                                              getSegmentKey(route.cityA, route.cityB)
-                                            ]?.curve,
-                                          )}
-                                          fill="none"
-                                          stroke="#d0d9d0"
-                                          strokeWidth={2}
-                                        />
-                                      )
-                                    })}
-                                    {sortedLedgerEntries.flatMap(
-                                      (entry, entryIndex) =>
-                                        entry.pathCityIds
-                                          .slice(0, -1)
-                                          .map((startCityId, segmentIndex) => {
-                                            const endCityId =
-                                              entry.pathCityIds[segmentIndex + 1]
-                                            const a = pointByCityId[startCityId]
-                                            const b = pointByCityId[endCityId]
-
-                                            if (!a || !b) {
-                                              return null
-                                            }
-
-                                            const color =
-                                              flowColors[
-                                                entryIndex % flowColors.length
-                                              ]
-
-                                            return (
-                                              <path
-                                                key={`${plan.id}-flow-${entry.id}-${segmentIndex}`}
-                                                d={buildSegmentPath(
-                                                  a,
-                                                  b,
-                                                  segmentMetadataByKey[
-                                                    getSegmentKey(startCityId, endCityId)
-                                                  ]?.curve,
-                                                )}
-                                                fill="none"
-                                                stroke={color}
-                                                strokeWidth={Math.max(
-                                                  1,
-                                                  entry.cubeCount * 0.07,
-                                                )}
-                                                markerEnd={`url(#${markerPrefix}-arrow-${entryIndex})`}
-                                                strokeLinecap="round"
-                                                opacity={0.88}
-                                              />
-                                            )
-                                          }),
-                                    )}
-                                    {podPoints.map(point => (
-                                      <g key={`${plan.id}-city-${point.cityId}`}>
-                                        <circle
-                                          cx={point.x}
-                                          cy={point.y}
-                                          r={4.5}
-                                          fill="#ffffff"
-                                          stroke="#324236"
-                                          strokeWidth={1.5}
-                                        />
-                                        <text
-                                          x={point.x + 6}
-                                          y={point.y - 6}
-                                          fill="#324236"
-                                          fontSize={8}
-                                          fontWeight={600}
-                                        >
-                                          {point.cityName}
-                                        </text>
-                                      </g>
-                                    ))}
-                                  </svg>
-                                  <div style={{ color: "#56635a", fontSize: 11 }}>
-                                    Colored arrows show cube movement by ledger entry (arrow direction indicates destination).
+                                  <div style={{ color: planColorById.get(plan.id) ?? "#56635a", fontSize: 12, fontWeight: 600 }}>
+                                    {plan.serviceLabel}
+                                  </div>
+                                  <div style={{ color: "#324236", fontSize: 12 }}>
+                                    <span
+                                      style={{
+                                        color: plan.selectedFleetSize < plan.demandFleetSize ? "#b42318" : "#324236",
+                                        fontWeight: plan.selectedFleetSize < plan.demandFleetSize ? 700 : 400,
+                                      }}
+                                    >
+                                      Qty {plan.selectedFleetSize} / {plan.demandFleetSize} Demand
+                                    </span>
+                                    {" • "}{plan.selectedTrips} trips
+                                    {" • "}👥 {plan.passengersServed.toLocaleString()}
+                                    {" • "}Revenue {formatCurrency(plan.revenue)}
+                                    {" • "}Cost {formatCurrency(plan.operatingCost)}
                                   </div>
                                 </div>
-                              )}
+                              ))
+                          )}
+                        </div>
+                            )
+                          })()}
+                        </div>
+                        {/* Per-network modules: map on top, pairing cards below */}
+                        {(() => {
+                          const POD_COLORS_NET = ["#2563eb", "#dc2626", "#d97706", "#7c3aed", "#0891b2", "#be185d", "#65a30d", "#c2410c"]
+                          const eligiblePlans = currentPlayerActiveBureaucracyPlans.filter(p => p.selectedCityIds.length >= 2)
+                          if (eligiblePlans.length === 0 && currentPlayerAggregatedCityPairings.length === 0) return null
+
+                          // Union-find to group plans into networks
+                          const parent = new Map<string, string>()
+                          const find = (x: string): string => {
+                            if (!parent.has(x)) parent.set(x, x)
+                            const p = parent.get(x)!
+                            if (p !== x) { const r = find(p); parent.set(x, r); return r }
+                            return x
+                          }
+                          for (const plan of eligiblePlans) {
+                            for (let i = 1; i < plan.selectedCityIds.length; i++) {
+                              const a = find(plan.selectedCityIds[0]), b = find(plan.selectedCityIds[i])
+                              parent.set(a, b)
+                            }
+                          }
+                          const networksByRoot = new Map<string, typeof eligiblePlans>()
+                          for (const plan of eligiblePlans) {
+                            const root = find(plan.selectedCityIds[0])
+                            if (!networksByRoot.has(root)) networksByRoot.set(root, [])
+                            networksByRoot.get(root)!.push(plan)
+                          }
+
+                          // Build plan → color map
+                          const planColorById = new Map<string, string>()
+                          for (const netPlans of networksByRoot.values()) {
+                            netPlans.forEach((plan, pi) => {
+                              planColorById.set(plan.id, POD_COLORS_NET[pi % POD_COLORS_NET.length])
+                            })
+                          }
+
+                          const networks = [...networksByRoot.values()]
+
+                          return (
+                            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                              {networks.map((plans, ni) => {
+                                const networkPlanIdSet = new Set(plans.map(p => p.id))
+                                const networkPairings = currentPlayerAggregatedCityPairings
+                                  .filter(pair => pair.planIds.some(id => networkPlanIdSet.has(id)))
+
+                                const cityIdSet = new Set<string>()
+                                for (const plan of plans) {
+                                  for (const id of plan.selectedCityIds) cityIdSet.add(id)
+                                }
+                                const netCities = [...cityIdSet].map(id => cityMap[id]).filter(Boolean)
+                                if (netCities.length < 2) return null
+
+                                // Stable key for grid size persistence across rounds
+                                const netKey = [...cityIdSet].sort().join(",")
+
+                                const worldPts = netCities.map(c => ({ id: c.id, name: c.name, ...latLngToWorld(c) }))
+                                const CITY_R = 6, SVG_PAD = 30
+                                const rawMinX = Math.min(...worldPts.map(p => p.x))
+                                const rawMaxX = Math.max(...worldPts.map(p => p.x))
+                                const rawMinY = Math.min(...worldPts.map(p => p.y))
+                                const rawMaxY = Math.max(...worldPts.map(p => p.y))
+                                const rangeX = Math.max(rawMaxX - rawMinX, 1)
+                                const rangeY = Math.max(rawMaxY - rawMinY, 1)
+
+                                // Grid sizing: card cell dimensions + default map span from aspect ratio
+                                const CELL_W = 230, CELL_H = 76, CELL_GAP = 6
+                                const aspectRatio = rangeX / rangeY
+                                const defaultCols = aspectRatio < 0.75 ? 2 : 3
+                                const defaultRows = aspectRatio < 0.75 ? 3 : 2
+                                const gridSize = networkMapGridSizes[netKey] ?? { cols: defaultCols, rows: defaultRows }
+                                const mapCols = gridSize.cols
+                                const mapRows = gridSize.rows
+                                const mapHeight = mapRows * (CELL_H + CELL_GAP) - CELL_GAP
+                                const setGridSize = (cols: number, rows: number) =>
+                                  setNetworkMapGridSizes(prev => ({ ...prev, [netKey]: { cols: Math.max(1, Math.min(5, cols)), rows: Math.max(1, Math.min(6, rows)) } }))
+
+                                // SVG viewBox matches container dimensions exactly so map fills the space
+                                const SVG_W = mapCols * (CELL_W + CELL_GAP) - CELL_GAP
+                                const SVG_H = mapHeight
+
+                                const drawW = SVG_W - SVG_PAD * 2
+                                const drawH = SVG_H - SVG_PAD * 2
+                                const scale = Math.min(drawW / rangeX, drawH / rangeY)
+                                const toSvgX = (wx: number) => SVG_PAD + (drawW - rangeX * scale) / 2 + (wx - rawMinX) * scale
+                                const toSvgY = (wy: number) => SVG_PAD + (drawH - rangeY * scale) / 2 + (wy - rawMinY) * scale
+                                const pts = worldPts.map(p => ({ ...p, x: toSvgX(p.x), y: toSvgY(p.y) }))
+                                const ptById = new Map(pts.map(p => [p.id, p]))
+
+                                const planSegs = plans.map((plan, pi) => {
+                                  const color = POD_COLORS_NET[pi % POD_COLORS_NET.length]
+                                  const citySet = new Set(plan.selectedCityIds)
+                                  const allPlayerRoutes = getPlayerOwnedNetworkRoutes(game, plan.route.ownerId ?? currentPlayer?.id ?? "")
+                                  const routeLines = allPlayerRoutes
+                                    .filter(r => r.mode === plan.route.mode && citySet.has(r.cityA) && citySet.has(r.cityB))
+                                    .map(r => {
+                                      const a = ptById.get(r.cityA), b = ptById.get(r.cityB)
+                                      return a && b ? { ax: a.x, ay: a.y, bx: b.x, by: b.y } : null
+                                    })
+                                    .filter(Boolean) as { ax: number; ay: number; bx: number; by: number }[]
+                                  const segMap = new Map<string, { ax: number; ay: number; bx: number; by: number; cubes: number }>()
+                                  for (const e of plan.simplifiedLedgerEntries) {
+                                    const a = ptById.get(e.originCityId), b = ptById.get(e.destinationCityId)
+                                    if (!a || !b) continue
+                                    const k = `${e.originCityId}:${e.destinationCityId}`
+                                    const ex = segMap.get(k)
+                                    if (ex) ex.cubes += e.cubeCount
+                                    else segMap.set(k, { ax: a.x, ay: a.y, bx: b.x, by: b.y, cubes: e.cubeCount })
+                                  }
+                                  return { color, routeLines, segs: [...segMap.values()] }
+                                })
+                                const allSegs = planSegs.flatMap(p => p.segs)
+                                const maxCubes = Math.max(1, ...allSegs.map(s => s.cubes))
+
+                                const LANE = 5, SHRINK = CITY_R + 6
+
+                                // Pre-compute US outline in this SVG's coordinate space
+                                const outlinePathD = "M " + usOutline.map(([lng, lat]) => {
+                                  const p = latLngToWorld({ lng, lat })
+                                  return `${toSvgX(p.x).toFixed(1)},${toSvgY(p.y).toFixed(1)}`
+                                }).join(" L ") + " Z"
+
+                                // Region shading blobs for cities in this network + nearby anchors
+                                const netRegionBlobs = [
+                                  ...netCities.flatMap(city => {
+                                    const region = getPrimaryCityDeckRegion(city.region)
+                                    if (!region) return []
+                                    const pt = ptById.get(city.id)
+                                    if (!pt) return []
+                                    return [{ key: city.id, region, cx: pt.x, cy: pt.y, r: (REGION_SHADE_BASE_RADIUS[region] + (city.size ?? 0) * 8) * scale }]
+                                  }),
+                                  ...REGION_SHADE_ANCHORS.map(anchor => {
+                                    const wp = latLngToWorld(anchor)
+                                    return { key: `anc-${anchor.id}`, region: anchor.region, cx: toSvgX(wp.x), cy: toSvgY(wp.y), r: anchor.radius * scale }
+                                  }),
+                                ]
+
+                                const clipId = `nmap-clip-${ni}`
+                                const blurId = `nmap-blur-${ni}`
+
+                                const planColors = planSegs.map(s => s.color)
+                                const modeSet = new Set(plans.map(p => p.route.mode))
+                                const modeLabel = [
+                                  modeSet.has("bus") ? "🚌 Bus" : null,
+                                  modeSet.has("rail") ? "🚂 Rail" : null,
+                                  modeSet.has("air") ? "✈️ Air" : null,
+                                ].filter(Boolean).join(" · ")
+
+                                return (
+                                  <div
+                                    key={ni}
+                                    style={{
+                                      border: "1px solid #e1e6df",
+                                      borderRadius: 10,
+                                      padding: 10,
+                                      background: "#ffffff",
+                                      display: "flex",
+                                      flexDirection: "column",
+                                      gap: 8,
+                                    }}
+                                  >
+                                    {/* Route legend */}
+                                    <div style={{ fontSize: 11, color: "#56635a", display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                      <span>{modeLabel} · {netCities.length} cities</span>
+                                      {plans.map((plan, pi) => (
+                                        <span key={plan.id} style={{ color: planColors[pi], fontWeight: 600 }}>
+                                          ● {plan.serviceLabel}
+                                        </span>
+                                      ))}
+                                    </div>
+                                    {/* CSS Grid: map spans mapCols×mapRows cells, cards auto-fill remaining cells */}
+                                    <div style={{ display: "grid", gridTemplateColumns: `repeat(auto-fill, ${CELL_W}px)`, gridAutoRows: `minmax(${CELL_H}px, auto)`, gap: CELL_GAP, alignItems: "start" }}>
+                                      {/* Map spanning mapCols × mapRows */}
+                                      <div
+                                        style={{
+                                          gridColumn: `span ${mapCols}`,
+                                          gridRow: `span ${mapRows}`,
+                                          position: "relative",
+                                          height: mapHeight,
+                                        }}
+                                      >
+                                        <svg
+                                          viewBox={`0 0 ${SVG_W} ${SVG_H}`}
+                                          style={{ display: "block", width: "100%", height: "100%", borderRadius: 8, border: "1px solid #d8dfd5", overflow: "hidden" }}
+                                        >
+                                          <defs>
+                                            <clipPath id={clipId}>
+                                              <rect x="0" y="0" width={SVG_W} height={SVG_H} rx="7" />
+                                            </clipPath>
+                                            <filter id={blurId} x="-80%" y="-80%" width="260%" height="260%">
+                                              <feGaussianBlur stdDeviation="20" />
+                                            </filter>
+                                            {planSegs.map(({ color }, pi) => (
+                                              <marker key={pi} id={`na${ni}p${pi}`} markerWidth="2.5" markerHeight="2.5" refX="2" refY="1.25" orient="auto">
+                                                <path d="M0,0 L0,2.5 L2.5,1.25 z" fill={color} />
+                                              </marker>
+                                            ))}
+                                          </defs>
+
+                                          {/* Land background */}
+                                          <rect x="0" y="0" width={SVG_W} height={SVG_H} fill={MAP_OUTLINE_STYLE.fill} />
+
+                                          {/* US outline + region blobs, clipped to viewBox */}
+                                          <g clipPath={`url(#${clipId})`}>
+                                            <path
+                                              d={outlinePathD}
+                                              fill={MAP_OUTLINE_STYLE.fill}
+                                              stroke={MAP_OUTLINE_STYLE.stroke}
+                                              strokeWidth={1.5}
+                                              opacity={MAP_OUTLINE_STYLE.opacity}
+                                            />
+                                            <g filter={`url(#${blurId})`}>
+                                              {netRegionBlobs.map(blob => (
+                                                <circle
+                                                  key={blob.key}
+                                                  cx={blob.cx}
+                                                  cy={blob.cy}
+                                                  r={blob.r}
+                                                  fill={colorWithOpacity(REGION_STYLES[blob.region].fill, 0.32)}
+                                                />
+                                              ))}
+                                            </g>
+
+                                            {/* Route infrastructure lines (faint) */}
+                                            {planSegs.flatMap(({ color, routeLines }, pi) =>
+                                              routeLines.map((r, ri) => (
+                                                <line key={`rl-${pi}-${ri}`} x1={r.ax} y1={r.ay} x2={r.bx} y2={r.by} stroke={color} strokeWidth="2" strokeLinecap="round" opacity="0.2" />
+                                              ))
+                                            )}
+
+                                            {/* Traffic flow arrows */}
+                                            {planSegs.flatMap(({ color, segs }, pi) =>
+                                              segs.map((s, si) => {
+                                                const ddx = s.bx - s.ax, ddy = s.by - s.ay
+                                                const len = Math.sqrt(ddx*ddx + ddy*ddy) || 1
+                                                const px = -ddy/len*LANE, py = ddx/len*LANE
+                                                const x1 = s.ax + px + ddx/len*SHRINK
+                                                const y1 = s.ay + py + ddy/len*SHRINK
+                                                const x2 = s.bx + px - ddx/len*SHRINK
+                                                const y2 = s.by + py - ddy/len*SHRINK
+                                                const sw = 1 + (s.cubes/maxCubes)*4
+                                                return (
+                                                  <line key={`seg-${pi}-${si}`} x1={x1} y1={y1} x2={x2} y2={y2} stroke={color} strokeWidth={sw} strokeLinecap="round" opacity="0.85" markerEnd={`url(#na${ni}p${pi})`} />
+                                                )
+                                              })
+                                            )}
+
+                                            {/* City dots and labels */}
+                                            {pts.map(p => (
+                                              <g key={p.id}>
+                                                <circle cx={p.x} cy={p.y} r={CITY_R} fill="#223024" stroke="#ffffff" strokeWidth="1.5" />
+                                                <text x={p.x} y={p.y + CITY_R + 11} textAnchor="middle" fontSize="10" fill="#1a3021" fontFamily="system-ui,sans-serif" fontWeight="600" stroke="#ffffff" strokeWidth="2.5" paintOrder="stroke">
+                                                  {p.name}
+                                                </text>
+                                              </g>
+                                            ))}
+                                          </g>
+                                        </svg>
+                                        {/* Bottom row control */}
+                                        <div style={{ position: "absolute", bottom: 4, left: "50%", transform: "translateX(-50%)", display: "flex", alignItems: "center", gap: 4, background: "rgba(255,255,255,0.85)", borderRadius: 6, padding: "2px 6px", fontSize: 11, userSelect: "none" }}>
+                                          <button onClick={() => setGridSize(mapCols, mapRows - 1)} style={{ border: "none", background: "none", cursor: "pointer", padding: "0 2px", fontSize: 12, lineHeight: 1 }} title="Fewer rows">↑</button>
+                                          <span style={{ color: "#56635a", minWidth: 40, textAlign: "center" }}>{mapRows} row{mapRows !== 1 ? "s" : ""}</span>
+                                          <button onClick={() => setGridSize(mapCols, mapRows + 1)} style={{ border: "none", background: "none", cursor: "pointer", padding: "0 2px", fontSize: 12, lineHeight: 1 }} title="More rows">↓</button>
+                                        </div>
+                                        {/* Right col control */}
+                                        <div style={{ position: "absolute", right: 4, top: "50%", transform: "translateY(-50%)", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, background: "rgba(255,255,255,0.85)", borderRadius: 6, padding: "6px 2px", fontSize: 11, userSelect: "none" }}>
+                                          <button onClick={() => setGridSize(mapCols + 1, mapRows)} style={{ border: "none", background: "none", cursor: "pointer", padding: "2px 0", fontSize: 12, lineHeight: 1 }} title="More cols">→</button>
+                                          <span style={{ color: "#56635a", writingMode: "vertical-lr", textOrientation: "mixed", transform: "rotate(180deg)", minHeight: 40, textAlign: "center" }}>{mapCols} col{mapCols !== 1 ? "s" : ""}</span>
+                                          <button onClick={() => setGridSize(mapCols - 1, mapRows)} style={{ border: "none", background: "none", cursor: "pointer", padding: "2px 0", fontSize: 12, lineHeight: 1 }} title="Fewer cols">←</button>
+                                        </div>
+                                      </div>
+                                      {/* Cards — auto-placed into remaining grid cells */}
+                                      {networkPairings.map(pair => {
+                                        const pairColors = [...new Set(pair.planIds.map(id => planColorById.get(id)).filter(Boolean) as string[])]
+                                        const unmetFinal = pair.totalDemand > 0 && pair.finalDestinationCubes < pair.totalDemand
+                                        const connecting = pair.cubes - pair.finalDestinationCubes
+                                        return (
+                                          <div
+                                            key={pair.key}
+                                            style={{ border: "1px solid #e1e6df", borderRadius: 8, padding: "7px 14px", background: "#fafcf9", display: "grid", gap: 3, alignSelf: "start", overflow: "hidden" }}
+                                          >
+                                            <div style={{ fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 4 }}>
+                                              {pairColors.map((c, i) => <span key={i} style={{ display: "inline-block", width: 9, height: 9, borderRadius: "50%", background: c, flexShrink: 0 }} />)}
+                                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pair.originCityName} to {pair.destinationCityName}</span>
+                                            </div>
+                                            <div style={{ fontSize: 12, color: "#324236", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                              {"Moved: "}
+                                              <span style={{ color: unmetFinal ? "#b42318" : "inherit", fontWeight: unmetFinal ? 700 : 400 }}>
+                                                {pair.finalDestinationCubes}{unmetFinal ? `/${pair.totalDemand}` : ""} final
+                                              </span>
+                                              {connecting > 0 && <> + {connecting} connecting</>}
+                                            </div>
+                                            {pair.planModeStats.map((pms, idx) => {
+                                              const emoji = pms.mode === "bus" ? "🚌" : pms.mode === "rail" ? "🚂" : "✈️"
+                                              const routeColor = planColorById.get(pms.planId) ?? "#1a3021"
+                                              return (
+                                                <div key={idx} style={{ fontSize: 12, color: "#1a3021", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                                  {emoji} <span style={{ color: routeColor, fontWeight: 600 }}>{pms.passengers.toLocaleString()}</span>
+                                                  {" × Fare "}{formatCurrency(pms.farePerPassenger)}{" = "}<strong>{formatCurrency(pms.payout)}</strong>
+                                                </div>
+                                              )
+                                            })}
+                                          </div>
+                                        )
+                                      })}
+                                    </div>
+                                  </div>
+                                )
+                              })}
                             </div>
-                            {plan.vehicleCard ? (
-                              <div style={{ color: "#56635a", fontSize: 12 }}>
-                                Trips: {plan.selectedTrips}
-                                {" • "}Cubes moved: {plan.movedCubes}
-                                {" • "}Passengers: {plan.passengersServed.toLocaleString()}
-                                {" • "}Revenue: {formatCurrency(plan.revenue)}
-                                {" • "}Crew: {formatCurrency(plan.crewCost)}
-                                {" • "}Maint: {formatCurrency(plan.maintenanceCost)}
-                                {" • "}Balance: {formatCurrency(plan.balanceAdjustmentCost)}
-                                {" • "}Fuel cost: {formatCurrency(plan.fuelCost)}
-                                {" • "}Base cost: {formatCurrency(plan.baseOperatingCost)}
-                                {" • "}Total cost: {formatCurrency(plan.operatingCost)}
-                              </div>
-                            ) : (
-                              <div style={{ color: "#9b1c1c", fontSize: 13 }}>
-                                Assign a matching vehicle card to operate this route.
-                              </div>
-                            )}
-                          </div>
                           )
-                        })
-                      )}
-                    </div>
-                 )                 })}
+                        })()}
+                     </>
+                    )
+                  }
                  </>
                  )}
                 <div style={{ display: "flex", justifyContent: "flex-end" }}>
@@ -8160,6 +8572,7 @@ export default function Board({
         {areResizeHandlesVisible && (
           <div
             onMouseDown={event => beginResize("table-preview", event, tablePreviewWidth)}
+            onTouchStart={event => beginTouchResize("table-preview", event, tablePreviewWidth)}
             style={getResizeHandleStyle("table-preview")}
             title="Resize table preview"
           />
@@ -8168,6 +8581,7 @@ export default function Board({
       {areResizeHandlesVisible && (
         <div
           onMouseDown={event => beginResize("table-height", event, tableZoneHeight)}
+          onTouchStart={event => beginTouchResize("table-height", event, tableZoneHeight)}
           style={getResizeHandleStyle("table-height")}
           title="Resize table tray height"
         />

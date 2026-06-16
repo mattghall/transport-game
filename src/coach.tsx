@@ -1,0 +1,19 @@
+import React from "react"
+import ReactDOM from "react-dom/client"
+import CoachApp from "./CoachApp"
+
+document.documentElement.style.height = "100%"
+document.documentElement.style.width = "100%"
+document.body.style.margin = "0"
+document.body.style.width = "100%"
+document.body.style.height = "100%"
+
+const rootElement = document.getElementById("root")!
+rootElement.style.width = "100%"
+rootElement.style.height = "100%"
+
+ReactDOM.createRoot(rootElement).render(
+  <React.StrictMode>
+    <CoachApp />
+  </React.StrictMode>,
+)

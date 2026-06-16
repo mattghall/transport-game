@@ -14,9 +14,12 @@ import {
   resetAutotuneData,
   startAutotune,
   stopAutotune,
+  fetchTrainingChronicle,
+  addChronicleRuleChange,
   type AutotuneControlStatus,
   type TrainingImportanceStatus,
   type TrainingPresetStatus,
+  type TrainingChronicle,
 } from "./network/sessionSync"
 import { buildEstimatedCityLinkProfitabilityRows } from "./engine/cityLinkProfitability"
 import type { ScriptedBotWeights } from "./bots/scriptedBot"
@@ -496,6 +499,9 @@ function CombinedAutotuneLearningChart({
   series,
   windowStart,
   windowEnd,
+  ruleChanges = [],
+  currentChampions = [],
+  pastChampions = [],
 }: {
   series: Array<{
     playerCount: TrainingPlayerCount
@@ -505,6 +511,9 @@ function CombinedAutotuneLearningChart({
   }>
   windowStart: number
   windowEnd: number
+  ruleChanges?: Array<{ cycle: number; label: string }>
+  currentChampions?: Array<{ playerCount: TrainingPlayerCount; score: number }>
+  pastChampions?: Array<{ playerCount: TrainingPlayerCount; score: number }>
 }) {
   const width = 640
   const height = 240
@@ -522,7 +531,11 @@ function CombinedAutotuneLearningChart({
     3: "#2a7f3b",
     4: "#c05621",
   }
-  const values = series.flatMap(entry => [...entry.runPoints, ...entry.promotionPoints].map(point => point.value))
+  const values = [
+    ...series.flatMap(entry => [...entry.runPoints, ...entry.promotionPoints].map(point => point.value)),
+    ...currentChampions.map(c => c.score),
+    ...pastChampions.map(c => c.score),
+  ]
 
   if (values.length === 0) {
     return (
@@ -612,6 +625,72 @@ function CombinedAutotuneLearningChart({
           y2={height - chartPadding.bottom}
           stroke="#d8dfd5"
         />
+        {/* Past champion horizontal reference lines (faded dotted) */}
+        {pastChampions.map(c => {
+          const color = lineColors[c.playerCount]
+          const y = height - chartPadding.bottom - ((c.score - yAxisMin) / yAxisRange) * plotHeight
+          if (y < chartPadding.top || y > height - chartPadding.bottom) return null
+          return (
+            <line
+              key={`past-champ-${c.playerCount}`}
+              x1={chartPadding.left}
+              y1={y}
+              x2={width - chartPadding.right}
+              y2={y}
+              stroke={color}
+              strokeWidth="1"
+              strokeDasharray="3 5"
+              opacity="0.3"
+            />
+          )
+        })}
+        {/* Current champion horizontal dotted lines */}
+        {currentChampions.map(c => {
+          const color = lineColors[c.playerCount]
+          const y = height - chartPadding.bottom - ((c.score - yAxisMin) / yAxisRange) * plotHeight
+          if (y < chartPadding.top || y > height - chartPadding.bottom) return null
+          return (
+            <line
+              key={`cur-champ-${c.playerCount}`}
+              x1={chartPadding.left}
+              y1={y}
+              x2={width - chartPadding.right}
+              y2={y}
+              stroke={color}
+              strokeWidth="1"
+              strokeDasharray="4 4"
+              opacity="0.6"
+            />
+          )
+        })}
+        {/* Rule change vertical lines */}
+        {ruleChanges
+          .filter(rc => rc.cycle >= windowStart && rc.cycle <= windowEnd)
+          .map((rc, i) => {
+            const x = chartPadding.left + ((rc.cycle - windowStart) / Math.max(windowEnd - windowStart, 1)) * plotWidth
+            return (
+              <g key={`rc-${i}`}>
+                <line
+                  x1={x}
+                  y1={chartPadding.top}
+                  x2={x}
+                  y2={height - chartPadding.bottom}
+                  stroke="#6b7280"
+                  strokeWidth="1"
+                  strokeDasharray="4 3"
+                />
+                <text
+                  x={x + 3}
+                  y={chartPadding.top + 10}
+                  fontSize="9"
+                  fill="#6b7280"
+                  style={{ pointerEvents: "none" }}
+                >
+                  {rc.label}
+                </text>
+              </g>
+            )
+          })}
         {series.map(entry => {
           const color = lineColors[entry.playerCount]
           // Merge runPoints with any promotionPoints not already covered (scratch-run promotions)
@@ -711,6 +790,24 @@ function CombinedAutotuneLearningChart({
           />
           Ringed dot = latest promotion
         </span>
+        {currentChampions.length > 0 && (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <svg width="18" height="10"><line x1="0" y1="5" x2="18" y2="5" stroke="#56635a" strokeWidth="1.5" strokeDasharray="4 4" /></svg>
+            Current champion
+          </span>
+        )}
+        {pastChampions.length > 0 && (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <svg width="18" height="10"><line x1="0" y1="5" x2="18" y2="5" stroke="#56635a" strokeWidth="1.5" strokeDasharray="3 5" opacity="0.4" /></svg>
+            Pre-reset champion
+          </span>
+        )}
+        {ruleChanges.length > 0 && (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <svg width="10" height="14"><line x1="5" y1="0" x2="5" y2="14" stroke="#6b7280" strokeWidth="1" strokeDasharray="4 3" /></svg>
+            Rule change
+          </span>
+        )}
       </div>
     </div>
   )
@@ -727,11 +824,14 @@ export default function TrainingApp() {
   const [championFiles, setChampionFiles] = useState<ChampionFileEntry[]>([])
   const [autotuneStatus, setAutotuneStatus] = useState<AutotuneStatus | null>(null)
   const [autotuneHistory, setAutotuneHistory] = useState<AutotuneHistory | null>(null)
+  const [chronicle, setChronicle] = useState<TrainingChronicle | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [confirmReset, setConfirmReset] = useState(false)
   const [promotingAutotuneRunKey, setPromotingAutotuneRunKey] = useState<string | null>(null)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [selectedModeImpactPlayerCount, setSelectedModeImpactPlayerCount] = useState<TrainingPlayerCount>(4)
+  const [ruleChangeLabel, setRuleChangeLabel] = useState("")
+  const [showRuleChangeInput, setShowRuleChangeInput] = useState(false)
 
   const currentRunStartedAt = autotuneStatus?.currentRun?.startedAt ?? null
   useEffect(() => {
@@ -756,6 +856,7 @@ export default function TrainingApp() {
         autotuneHistoryResponse,
         comparisonsResponse,
         championFilesResponse,
+        chronicleResponse,
       ] = await Promise.allSettled([
         fetchAutotuneStatus(defaultServerUrl),
         fetchTrainingPresets(defaultServerUrl),
@@ -781,6 +882,7 @@ export default function TrainingApp() {
             ),
           })),
         ),
+        fetchTrainingChronicle(defaultServerUrl),
       ])
 
       if (cancelled) {
@@ -829,6 +931,10 @@ export default function TrainingApp() {
 
       if (championFilesResponse.status === "fulfilled") {
         setChampionFiles(championFilesResponse.value)
+      }
+
+      if (chronicleResponse.status === "fulfilled" && chronicleResponse.value) {
+        setChronicle(chronicleResponse.value)
       }
     }
 
@@ -894,6 +1000,18 @@ export default function TrainingApp() {
       setError(resetError instanceof Error ? resetError.message : "Could not reset autotune data.")
     } finally {
       setIsSubmitting(false)
+    }
+  }
+
+  async function handleAddRuleChange() {
+    if (!ruleChangeLabel.trim()) return
+    try {
+      const next = await addChronicleRuleChange(defaultServerUrl, ruleChangeLabel.trim())
+      setChronicle(next)
+      setRuleChangeLabel("")
+      setShowRuleChangeInput(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not add rule change.")
     }
   }
 
@@ -1398,6 +1516,20 @@ export default function TrainingApp() {
                 Manual training →
               </a>
               <a
+                href="/coach.html"
+                style={{
+                  borderRadius: 999,
+                  border: "1px solid #5c4a8a",
+                  background: "#f8f4ff",
+                  color: "#5c4a8a",
+                  padding: "10px 16px",
+                  fontWeight: 700,
+                  textDecoration: "none",
+                }}
+              >
+                🎓 Bot coaching →
+              </a>
+              <a
                 href="/"
                 style={{
                   borderRadius: 999,
@@ -1677,6 +1809,28 @@ export default function TrainingApp() {
                 gap: 12,
               }}
             >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                <span style={{ fontSize: 12, color: "#56635a" }}>
+                  {chronicle?.ruleChanges.length ? `${chronicle.ruleChanges.length} rule change(s) marked` : "No rule changes marked"}
+                </span>
+                {showRuleChangeInput ? (
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <input
+                      type="text"
+                      value={ruleChangeLabel}
+                      onChange={e => setRuleChangeLabel(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter") void handleAddRuleChange(); if (e.key === "Escape") { setShowRuleChangeInput(false); setRuleChangeLabel("") } }}
+                      placeholder="Rule change label (e.g. 'Added adjacency scoring')"
+                      autoFocus
+                      style={{ fontSize: 12, padding: "4px 8px", border: "1px solid #d8dfd5", borderRadius: 6, width: 280 }}
+                    />
+                    <button type="button" onClick={() => void handleAddRuleChange()} disabled={!ruleChangeLabel.trim()} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 6, border: "1px solid #223024", background: "#223024", color: "#fff", cursor: ruleChangeLabel.trim() ? "pointer" : "not-allowed" }}>Mark</button>
+                    <button type="button" onClick={() => { setShowRuleChangeInput(false); setRuleChangeLabel("") }} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 6, border: "1px solid #d8dfd5", background: "#fff", cursor: "pointer" }}>Cancel</button>
+                  </div>
+                ) : (
+                  <button type="button" onClick={() => setShowRuleChangeInput(true)} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 6, border: "1px solid #d8dfd5", background: "#fff", cursor: "pointer" }}>+ Mark rule change</button>
+                )}
+              </div>
               <CombinedAutotuneLearningChart
                 series={autotuneLearningRows.map(entry => ({
                   playerCount: entry.playerCount,
@@ -1686,6 +1840,17 @@ export default function TrainingApp() {
                 }))}
                 windowStart={learningWindowStart}
                 windowEnd={Math.max(currentAutotuneCycle, learningWindowStart)}
+                ruleChanges={(chronicle?.ruleChanges ?? []).filter(
+                  rc => rc.cycle >= learningWindowStart && rc.cycle <= Math.max(currentAutotuneCycle, learningWindowStart),
+                )}
+                currentChampions={([1, 2, 3, 4] as const).flatMap(pc => {
+                  const champ = autotuneStatus?.champions?.[`${pc}p`]
+                  return champ ? [{ playerCount: pc, score: champ.benchmark.score }] : []
+                })}
+                pastChampions={(chronicle?.pastChampions ?? []).flatMap(pc => {
+                  const hasCurrentChampion = !!autotuneStatus?.champions?.[`${pc.playerCount}p`]
+                  return hasCurrentChampion ? [] : [{ playerCount: pc.playerCount as 1 | 2 | 3 | 4, score: pc.benchmarkScore }]
+                })}
               />
             </div>
           </div>

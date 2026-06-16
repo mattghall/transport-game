@@ -54,6 +54,8 @@ export const FROZEN_SCRIPTED_BOT_WEIGHT_KEYS = [
   "midExpansionMultiplier",
   "lateExpansionMultiplier",
   "latePopulationMultiplier",
+  // Pair distance removed from city scoring - superseded by adjacency potential
+  "keepCityPairCohesionScore",
 ] as const satisfies Array<keyof ScriptedBotWeights>
 
 const FROZEN_SCRIPTED_BOT_WEIGHT_KEY_SET = new Set<keyof ScriptedBotWeights>(
@@ -321,7 +323,27 @@ export const SCRIPTED_BOT_LEVER_METADATA: Record<keyof ScriptedBotWeights, Scrip
     minimum: 0,
     enabled: true,
   },
+  keepCityPairCohesionScore: {
+    mutationStep: 2,
+    minimum: 0,
+    enabled: false,
+  },
   keepCityRegionMatchScore: {
+    mutationStep: 2,
+    minimum: 0,
+    enabled: true,
+  },
+  keepCityAdjacencyPotentialScore: {
+    mutationStep: 2,
+    minimum: 0,
+    enabled: true,
+  },
+  claimAdjacentNetworkBonus: {
+    mutationStep: 3,
+    minimum: 0,
+    enabled: true,
+  },
+  claimOpponentBlockPenalty: {
     mutationStep: 2,
     minimum: 0,
     enabled: true,

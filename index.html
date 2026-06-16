@@ -5,8 +5,126 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>transport-game</title>
+    <style>
+      #error-overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        z-index: 99999;
+        overflow: auto;
+        font-family: sans-serif;
+        align-items: center;
+        justify-content: center;
+        padding: 32px;
+        box-sizing: border-box;
+      }
+      #error-overlay.visible { display: flex; }
+      #error-map-svg { position: fixed; inset: 0; width: 100%; height: 100%; display: block; z-index: 0; }
+      #error-card {
+        position: relative;
+        z-index: 1;
+        background: rgba(255,255,255,0.88);
+        backdrop-filter: blur(6px);
+        border-radius: 16px;
+        padding: 32px 36px;
+        max-width: 640px;
+        width: 100%;
+        box-shadow: 0 8px 32px rgba(34,48,36,0.18);
+        border: 1px solid rgba(201,194,179,0.6);
+      }
+      #error-card .icon { font-size: 36px; margin-bottom: 8px; }
+      #error-card h1 { color: #b42318; font-size: 22px; margin: 0 0 6px; font-weight: 800; }
+      #error-card .subtitle { color: #56635a; font-size: 13px; margin: 0 0 16px; }
+      #error-card .error-block { background: #fdf0ec; border: 1px solid #e2b8b0; border-radius: 10px; padding: 12px 14px; margin-bottom: 16px; }
+      #error-card .error-msg { color: #7c1c14; font-weight: 700; font-size: 14px; margin-bottom: 4px; }
+      #error-card .error-stack { color: #56635a; font-size: 11px; white-space: pre-wrap; word-break: break-word; font-family: monospace; margin: 0; }
+      #error-card .btn-primary { padding: 9px 20px; background: #223024; color: #e8efe6; border: none; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600; margin-right: 8px; }
+      #error-card .btn-secondary { padding: 9px 20px; background: transparent; color: #223024; border: 1px solid #c9c2b3; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600; }
+    </style>
+    <script>
+      (function() {
+        var overlay = null;
+        var errors = [];
+
+        function getOverlay() {
+          if (!overlay) {
+            overlay = document.getElementById('error-overlay');
+          }
+          return overlay;
+        }
+
+        function renderErrors() {
+          var el = getOverlay();
+          if (!el) return;
+          el.classList.add('visible');
+          var card = document.getElementById('error-card');
+          if (!card) return;
+          card.innerHTML =
+            '<div class="icon">🚂💥</div>' +
+            '<h1>Application Error</h1>' +
+            '<p class="subtitle">Something went wrong before the app could load. The error details are below.</p>' +
+            errors.map(function(e) {
+              return '<div class="error-block">' +
+                '<div class="error-msg">' + escapeHtml(e.message) + '</div>' +
+                (e.stack ? '<pre class="error-stack">' + escapeHtml(e.stack) + '</pre>' : '') +
+                (e.source ? '<pre class="error-stack">at ' + escapeHtml(e.source) + ':' + e.lineno + ':' + e.colno + '</pre>' : '') +
+                '</div>';
+            }).join('') +
+            '<button class="btn-primary" onclick="location.reload()">Reload page</button>' +
+            '<button class="btn-secondary" onclick="document.getElementById(\'error-overlay\').classList.remove(\'visible\')">Dismiss</button>';
+        }
+
+        function escapeHtml(str) {
+          return String(str || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+        }
+
+        window.addEventListener('error', function(e) {
+          var msg = e.message || '';
+          // Vite HMR stale module cache — the ?t= timestamp in the module URL is a dev-server artifact.
+          // Auto-reload rather than showing an error the user can't do anything about.
+          if (msg.indexOf('does not provide an export named') !== -1 ||
+              msg.indexOf('Failed to fetch dynamically imported module') !== -1) {
+            location.reload();
+            return;
+          }
+          errors.push({ message: e.message, stack: e.error && e.error.stack, source: e.filename, lineno: e.lineno, colno: e.colno });
+          renderErrors();
+        });
+
+        window.addEventListener('unhandledrejection', function(e) {
+          var err = e.reason;
+          var msg = err && err.message ? err.message : String(err || '');
+          // Same Vite HMR stale module guard for promise-based import() errors.
+          if (msg.indexOf('does not provide an export named') !== -1 ||
+              msg.indexOf('Failed to fetch dynamically imported module') !== -1) {
+            location.reload();
+            return;
+          }
+          errors.push({ message: msg, stack: err && err.stack });
+          renderErrors();
+        });
+      })();
+    </script>
   </head>
   <body>
+    <div id="error-overlay">
+      <svg id="error-map-svg" viewBox="0 0 1000 600" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice" style="position:fixed;inset:0;width:100%;height:100%;display:block;z-index:0;">
+        <defs>
+          <clipPath id="err-clip"><path d="M 38.0,23.1 L 42.4,27.7 L 42.7,36.9 L 46.6,46.2 L 44.9,55.4 L 44.1,63.5 L 35.6,68.1 L 32.2,60.0 L 37.3,50.8 L 38.1,43.8 L 25.4,42.7 L 4.6,37.4 L 5.1,57.7 L 10.0,86.5 L 15.3,103.8 L 15.3,115.4 L 11.5,153.5 L 9.3,166.2 L 13.7,206.5 L 10.2,221.5 L 33.6,269.3 L 42.2,282.2 L 47.5,283.8 L 49.2,288.5 L 44.9,289.6 L 42.4,283.8 L 52.5,311.5 L 77.3,358.8 L 114.6,375.5 L 132.9,399.0 L 174.2,398.8 L 237.3,430.8 L 313.9,420.9 L 347.5,471.7 L 372.9,486.9 L 386.4,466.2 L 415.3,491.5 L 432.2,519.2 L 449.2,546.9 L 466.3,556.2 L 472.9,512.3 L 483.1,496.2 L 494.9,486.9 L 511.9,476.5 L 526.6,468.0 L 542.4,466.2 L 559.3,471.9 L 576.3,482.3 L 589.8,480.0 L 603.4,486.9 L 608.5,484.6 L 603.4,473.1 L 602.5,459.2 L 618.6,455.8 L 626.4,456.0 L 635.6,454.6 L 642.4,454.2 L 652.5,452.8 L 661.0,453.5 L 666.8,457.8 L 672.0,468.5 L 678.0,469.6 L 686.4,463.8 L 691.5,459.2 L 696.6,460.4 L 705.1,473.1 L 713.6,486.9 L 715.6,513.0 L 720.3,535.4 L 728.8,553.8 L 733.9,567.7 L 744.1,574.6 L 732.2,587.3 L 739.0,586.2 L 744.1,583.8 L 752.5,579.2 L 756.8,572.3 L 760.5,559.4 L 761.9,546.9 L 762.2,537.5 L 759.3,519.2 L 748.3,498.7 L 742.4,470.8 L 734.7,453.9 L 739.0,433.8 L 744.2,413.5 L 755.9,403.8 L 763.9,397.6 L 776.3,380.8 L 797.6,364.2 L 816.9,355.4 L 839.7,341.1 L 837.3,323.1 L 831.0,303.5 L 823.7,295.4 L 820.3,258.5 L 819.5,248.1 L 828.8,241.2 L 830.5,272.3 L 831.4,297.7 L 846.6,266.5 L 864.9,214.4 L 932.7,191.5 L 928.0,146.3 L 983.4,119.3 L 969.7,66.7 L 945.6,58.8 L 906.8,115.2 L 875.6,115.4 L 850.8,115.4 L 828.8,140.8 L 781.9,164.3 L 734.1,196.4 L 709.5,180.0 L 721.7,162.2 L 713.6,138.5 L 703.4,147.7 L 682.7,96.7 L 678.8,108.5 L 671.2,113.1 L 667.8,117.7 L 655.9,138.5 L 654.2,150.0 L 657.6,166.2 L 654.2,182.3 L 642.4,192.7 L 633.9,187.6 L 630.5,161.5 L 628.8,126.9 L 640.7,96.9 L 682.7,96.7 L 689.2,80.8 L 669.5,76.2 L 639.0,79.6 L 620.3,61.2 L 628.8,58.8 L 618.6,69.2 L 589.8,45.9 L 557.6,74.3 L 533.9,32.3 L 506.8,14.3 L 500.0,14.3 L 500.0,23.1 L 339.0,23.1 L 169.5,23.1 L 84.7,23.1 L 38.0,23.1 Z"/></clipPath>
+          <filter id="err-blur" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="20"/></filter>
+        </defs>
+        <rect width="1000" height="600" fill="#e8efe6"/>
+        <path d="M 38.0,23.1 L 42.4,27.7 L 42.7,36.9 L 46.6,46.2 L 44.9,55.4 L 44.1,63.5 L 35.6,68.1 L 32.2,60.0 L 37.3,50.8 L 38.1,43.8 L 25.4,42.7 L 4.6,37.4 L 5.1,57.7 L 10.0,86.5 L 15.3,103.8 L 15.3,115.4 L 11.5,153.5 L 9.3,166.2 L 13.7,206.5 L 10.2,221.5 L 33.6,269.3 L 42.2,282.2 L 47.5,283.8 L 49.2,288.5 L 44.9,289.6 L 42.4,283.8 L 52.5,311.5 L 77.3,358.8 L 114.6,375.5 L 132.9,399.0 L 174.2,398.8 L 237.3,430.8 L 313.9,420.9 L 347.5,471.7 L 372.9,486.9 L 386.4,466.2 L 415.3,491.5 L 432.2,519.2 L 449.2,546.9 L 466.3,556.2 L 472.9,512.3 L 483.1,496.2 L 494.9,486.9 L 511.9,476.5 L 526.6,468.0 L 542.4,466.2 L 559.3,471.9 L 576.3,482.3 L 589.8,480.0 L 603.4,486.9 L 608.5,484.6 L 603.4,473.1 L 602.5,459.2 L 618.6,455.8 L 626.4,456.0 L 635.6,454.6 L 642.4,454.2 L 652.5,452.8 L 661.0,453.5 L 666.8,457.8 L 672.0,468.5 L 678.0,469.6 L 686.4,463.8 L 691.5,459.2 L 696.6,460.4 L 705.1,473.1 L 713.6,486.9 L 715.6,513.0 L 720.3,535.4 L 728.8,553.8 L 733.9,567.7 L 744.1,574.6 L 732.2,587.3 L 739.0,586.2 L 744.1,583.8 L 752.5,579.2 L 756.8,572.3 L 760.5,559.4 L 761.9,546.9 L 762.2,537.5 L 759.3,519.2 L 748.3,498.7 L 742.4,470.8 L 734.7,453.9 L 739.0,433.8 L 744.2,413.5 L 755.9,403.8 L 763.9,397.6 L 776.3,380.8 L 797.6,364.2 L 816.9,355.4 L 839.7,341.1 L 837.3,323.1 L 831.0,303.5 L 823.7,295.4 L 820.3,258.5 L 819.5,248.1 L 828.8,241.2 L 830.5,272.3 L 831.4,297.7 L 846.6,266.5 L 864.9,214.4 L 932.7,191.5 L 928.0,146.3 L 983.4,119.3 L 969.7,66.7 L 945.6,58.8 L 906.8,115.2 L 875.6,115.4 L 850.8,115.4 L 828.8,140.8 L 781.9,164.3 L 734.1,196.4 L 709.5,180.0 L 721.7,162.2 L 713.6,138.5 L 703.4,147.7 L 682.7,96.7 L 678.8,108.5 L 671.2,113.1 L 667.8,117.7 L 655.9,138.5 L 654.2,150.0 L 657.6,166.2 L 654.2,182.3 L 642.4,192.7 L 633.9,187.6 L 630.5,161.5 L 628.8,126.9 L 640.7,96.9 L 682.7,96.7 L 689.2,80.8 L 669.5,76.2 L 639.0,79.6 L 620.3,61.2 L 628.8,58.8 L 618.6,69.2 L 589.8,45.9 L 557.6,74.3 L 533.9,32.3 L 506.8,14.3 L 500.0,14.3 L 500.0,23.1 L 339.0,23.1 L 169.5,23.1 L 84.7,23.1 L 38.0,23.1 Z" fill="#f4f1e8" stroke="#c9c2b3" stroke-width="2" opacity="0.9"/>
+        <g clip-path="url(#err-clip)" filter="url(#err-blur)">
+          <circle cx="42.5" cy="285.9" r="100" fill="#4d9de0" opacity="0.22"/><circle cx="114.6" cy="368.1" r="108" fill="#4d9de0" opacity="0.22"/><circle cx="132.9" cy="399.0" r="92" fill="#4d9de0" opacity="0.22"/><circle cx="62.9" cy="259.6" r="84" fill="#4d9de0" opacity="0.22"/><circle cx="45.3" cy="55.4" r="92" fill="#4d9de0" opacity="0.22"/><circle cx="128.5" cy="54.2" r="68" fill="#4d9de0" opacity="0.22"/><circle cx="39.5" cy="103.6" r="92" fill="#4d9de0" opacity="0.22"/><circle cx="101.2" cy="87.9" r="60" fill="#4d9de0" opacity="0.22"/><circle cx="35.9" cy="177.0" r="52" fill="#4d9de0" opacity="0.22"/><circle cx="73.6" cy="339.7" r="60" fill="#4d9de0" opacity="0.22"/><circle cx="88.3" cy="306.0" r="76" fill="#4d9de0" opacity="0.22"/><circle cx="219.2" cy="382.2" r="102" fill="#8a6dd3" opacity="0.22"/><circle cx="167.3" cy="319.4" r="86" fill="#8a6dd3" opacity="0.22"/><circle cx="339.2" cy="237.0" r="94" fill="#8a6dd3" opacity="0.22"/><circle cx="311.0" cy="344.3" r="78" fill="#8a6dd3" opacity="0.22"/><circle cx="237.8" cy="410.3" r="78" fill="#8a6dd3" opacity="0.22"/><circle cx="226.3" cy="341.5" r="54" fill="#8a6dd3" opacity="0.22"/><circle cx="222.2" cy="213.2" r="78" fill="#8a6dd3" opacity="0.22"/><circle cx="261.9" cy="263.8" r="38" fill="#8a6dd3" opacity="0.22"/><circle cx="149.2" cy="147.5" r="78" fill="#8a6dd3" opacity="0.22"/><circle cx="279.7" cy="97.4" r="54" fill="#8a6dd3" opacity="0.22"/><circle cx="342.0" cy="204.5" r="46" fill="#8a6dd3" opacity="0.22"/><circle cx="502.4" cy="467.1" r="92" fill="#e27d60" opacity="0.22"/><circle cx="478.1" cy="397.6" r="100" fill="#e27d60" opacity="0.22"/><circle cx="449.3" cy="474.9" r="84" fill="#e27d60" opacity="0.22"/><circle cx="462.0" cy="455.5" r="84" fill="#e27d60" opacity="0.22"/><circle cx="467.8" cy="512.3" r="60" fill="#e27d60" opacity="0.22"/><circle cx="465.9" cy="335.5" r="76" fill="#e27d60" opacity="0.22"/><circle cx="392.7" cy="341.1" r="52" fill="#e27d60" opacity="0.22"/><circle cx="313.7" cy="420.9" r="68" fill="#e27d60" opacity="0.22"/><circle cx="592.0" cy="462.7" r="68" fill="#e27d60" opacity="0.22"/><circle cx="529.7" cy="403.2" r="52" fill="#e27d60" opacity="0.22"/><circle cx="554.6" cy="352.2" r="68" fill="#e27d60" opacity="0.22"/><circle cx="522.7" cy="321.7" r="60" fill="#e27d60" opacity="0.22"/><circle cx="383.6" cy="418.8" r="44" fill="#e27d60" opacity="0.22"/><circle cx="688.5" cy="375.2" r="92" fill="#4fb286" opacity="0.22"/><circle cx="748.5" cy="341.1" r="84" fill="#4fb286" opacity="0.22"/><circle cx="785.9" cy="328.4" r="76" fill="#4fb286" opacity="0.22"/><circle cx="647.8" cy="319.4" r="76" fill="#4fb286" opacity="0.22"/><circle cx="696.3" cy="324.0" r="68" fill="#4fb286" opacity="0.22"/><circle cx="592.5" cy="342.9" r="68" fill="#4fb286" opacity="0.22"/><circle cx="734.7" cy="453.9" r="76" fill="#4fb286" opacity="0.22"/><circle cx="759.5" cy="559.4" r="92" fill="#4fb286" opacity="0.22"/><circle cx="721.2" cy="508.8" r="84" fill="#4fb286" opacity="0.22"/><circle cx="743.9" cy="495.7" r="84" fill="#4fb286" opacity="0.22"/><circle cx="647.3" cy="380.5" r="68" fill="#4fb286" opacity="0.22"/><circle cx="590.2" cy="408.7" r="60" fill="#4fb286" opacity="0.22"/><circle cx="831.0" cy="303.5" r="76" fill="#4fb286" opacity="0.22"/><circle cx="626.4" cy="445.6" r="52" fill="#4fb286" opacity="0.22"/><circle cx="690.2" cy="451.4" r="52" fill="#4fb286" opacity="0.22"/><circle cx="655.9" cy="406.8" r="52" fill="#4fb286" opacity="0.22"/><circle cx="763.9" cy="397.4" r="68" fill="#4fb286" opacity="0.22"/><circle cx="806.1" cy="287.5" r="76" fill="#4fb286" opacity="0.22"/><circle cx="633.6" cy="187.6" r="102" fill="#d8a031" opacity="0.22"/><circle cx="711.2" cy="177.0" r="86" fill="#d8a031" opacity="0.22"/><circle cx="658.5" cy="236.3" r="78" fill="#d8a031" opacity="0.22"/><circle cx="712.0" cy="231.7" r="78" fill="#d8a031" opacity="0.22"/><circle cx="628.8" cy="160.8" r="78" fill="#d8a031" opacity="0.22"/><circle cx="666.6" cy="162.5" r="70" fill="#d8a031" opacity="0.22"/><circle cx="515.8" cy="251.8" r="78" fill="#d8a031" opacity="0.22"/><circle cx="590.0" cy="262.6" r="86" fill="#d8a031" opacity="0.22"/><circle cx="734.1" cy="196.4" r="78" fill="#d8a031" opacity="0.22"/><circle cx="686.3" cy="251.5" r="78" fill="#d8a031" opacity="0.22"/><circle cx="665.1" cy="271.2" r="78" fill="#d8a031" opacity="0.22"/><circle cx="492.7" cy="201.9" r="70" fill="#d8a031" opacity="0.22"/><circle cx="469.0" cy="284.3" r="62" fill="#d8a031" opacity="0.22"/><circle cx="532.2" cy="194.3" r="70" fill="#d8a031" opacity="0.22"/><circle cx="538.0" cy="116.1" r="86" fill="#d8a031" opacity="0.22"/><circle cx="478.3" cy="72.2" r="54" fill="#d8a031" opacity="0.22"/><circle cx="479.3" cy="149.1" r="54" fill="#d8a031" opacity="0.22"/><circle cx="702.7" cy="192.7" r="62" fill="#d8a031" opacity="0.22"/><circle cx="864.4" cy="214.4" r="106" fill="#d35d9e" opacity="0.22"/><circle cx="844.7" cy="231.9" r="90" fill="#d35d9e" opacity="0.22"/><circle cx="820.2" cy="247.2" r="58" fill="#d35d9e" opacity="0.22"/><circle cx="813.1" cy="256.2" r="58" fill="#d35d9e" opacity="0.22"/><circle cx="783.7" cy="238.8" r="34" fill="#d35d9e" opacity="0.22"/><circle cx="762.9" cy="220.6" r="74" fill="#d35d9e" opacity="0.22"/><circle cx="781.9" cy="164.3" r="66" fill="#d35d9e" opacity="0.22"/><circle cx="831.9" cy="182.3" r="50" fill="#d35d9e" opacity="0.22"/><circle cx="815.6" cy="224.5" r="58" fill="#d35d9e" opacity="0.22"/><circle cx="828.0" cy="160.4" r="58" fill="#d35d9e" opacity="0.22"/><circle cx="868.5" cy="169.6" r="66" fill="#d35d9e" opacity="0.22"/><circle cx="721.2" cy="267.2" r="50" fill="#d35d9e" opacity="0.22"/><circle cx="914.4" cy="176.3" r="58" fill="#d35d9e" opacity="0.22"/><circle cx="877.8" cy="127.6" r="42" fill="#d35d9e" opacity="0.22"/><circle cx="908.3" cy="188.8" r="42" fill="#d35d9e" opacity="0.22"/><circle cx="928.0" cy="146.3" r="58" fill="#d35d9e" opacity="0.22"/><circle cx="62.7" cy="96.9" r="72" fill="#4d9de0" opacity="0.22"/><circle cx="64.4" cy="212.3" r="76" fill="#4d9de0" opacity="0.22"/><circle cx="88.1" cy="327.7" r="72" fill="#4d9de0" opacity="0.22"/><circle cx="132.2" cy="246.9" r="64" fill="#4d9de0" opacity="0.22"/><circle cx="228.8" cy="110.8" r="78" fill="#8a6dd3" opacity="0.22"/><circle cx="233.9" cy="214.6" r="82" fill="#8a6dd3" opacity="0.22"/><circle cx="274.6" cy="327.7" r="78" fill="#8a6dd3" opacity="0.22"/><circle cx="284.7" cy="66.9" r="64" fill="#8a6dd3" opacity="0.22"/><circle cx="396.6" cy="76.2" r="62" fill="#8a6dd3" opacity="0.22"/><circle cx="393.2" cy="120.0" r="66" fill="#8a6dd3" opacity="0.22"/><circle cx="418.6" cy="205.4" r="60" fill="#8a6dd3" opacity="0.22"/>
+        </g>
+      </svg>
+      <div id="error-card" style="position:relative;z-index:1;"></div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

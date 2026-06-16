@@ -508,6 +508,41 @@ export async function resetAutotuneData(serverUrl: string) {
   })
 }
 
+export type TrainingChronicle = {
+  version: 1
+  ruleChanges: Array<{ cycle: number; label: string; date: string }>
+  pastChampions: Array<{
+    playerCount: 1 | 2 | 3 | 4
+    fromCycle: number
+    sessionEndCycle: number
+    benchmarkScore: number
+    averagePassengers: number
+    averagePassengerMargin: number
+    winRate: number
+  }>
+}
+
+export async function fetchTrainingChronicle(serverUrl: string): Promise<TrainingChronicle | null> {
+  try {
+    const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
+    const res = await fetch(`${normalizedServerUrl}/training-results/training-chronicle.json`)
+    if (!res.ok) return null
+    const data = await res.json() as unknown
+    if (typeof data !== "object" || data === null || (data as Record<string, unknown>).version !== 1) return null
+    return data as TrainingChronicle
+  } catch {
+    return null
+  }
+}
+
+export async function addChronicleRuleChange(serverUrl: string, label: string) {
+  const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
+  return requestSessionJson<TrainingChronicle>(`${normalizedServerUrl}/training/chronicle/rule-change`, {
+    method: "POST",
+    body: JSON.stringify({ label }),
+  })
+}
+
 export async function listLanSessions(serverUrl: string) {
   const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
   return requestSessionJson<LanSessionSummary[]>(`${normalizedServerUrl}/sessions`)
@@ -548,6 +583,8 @@ export async function toggleLanLobbyBotSeat(
   clientId: string,
   playerId: string,
   isBot: boolean,
+  botPreset?: BotPresetId | null,
+  botName?: string,
 ) {
   const normalizedServerUrl = normalizeSessionServerUrl(serverUrl)
   return requestSessionJson<LanSessionSnapshot>(
@@ -555,7 +592,7 @@ export async function toggleLanLobbyBotSeat(
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ clientId, setSeatBot: { playerId, isBot } }),
+      body: JSON.stringify({ clientId, setSeatBot: { playerId, isBot, botPreset, botName } }),
     },
   )
 }

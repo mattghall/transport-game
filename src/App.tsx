@@ -18,11 +18,9 @@ import {
   savePlayerName,
 } from "./data/gameStorage"
 import { usMap } from "./data/maps/usMap"
-import {
-  MAX_SETUP_PLAYERS,
-  PLAYER_SETUP_PRESETS,
-  createDefaultSetupPlayers,
-} from "./gameSetup/defaultPlayers"
+import { usOutline } from "./data/maps/usOutline"
+import { latLngToWorld, WORLD_WIDTH, WORLD_HEIGHT } from "./engine/projection"
+import { createDefaultSetupPlayers } from "./gameSetup/defaultPlayers"
 import {
   addBureaucracyServiceSplit,
   advanceTurn,
@@ -45,23 +43,29 @@ import {
   setBureaucracyRouteVehicleCard,
   upgradeRailRoute,
 } from "./engine/actions"
-import { applyBotAction, getBotLegalActions, getPendingBotPlayerId } from "./bots/actions"
+import { getPendingBotPlayerId } from "./bots/actions"
 import {
-  createPresetBotController,
-  DEFAULT_BOT_PRESET_ID,
+  BOT_PRESETS,
+  type BotPresetId,
   fetchManagedBotPresetWeightOverrides,
-  getBotPresetLabel,
-  getPlayerBotPreset,
-  normalizeBotPresetId,
 } from "./bots/presets"
 import { findPlayerBureaucracyPlan } from "./engine/bureaucracy"
 import {
   createGameState,
   DEFAULT_STARTING_MONEY,
-  type GameSetupPlayer,
 } from "./engine/createGameState"
-import type { GameActionLogEntry, GameState, WeeklyPhase } from "./engine/types"
+import type { GameState } from "./engine/types"
 import type { GameAction } from "./engine/gameActions"
+import { MAX_SETUP_PLAYERS } from "./gameSetup/defaultPlayers"
+import {
+  appendActionLog,
+  createSetupPlayers,
+  getAdvanceTurnLogMessage,
+  getDefaultLocalViewingPlayerId,
+  getNextLocalViewingPlayerId,
+  getPhaseDiscardLogMessage,
+  runBotTurns,
+} from "./game/gameHelpers"
 import {
   buildLanSessionJoinUrl,
   createLanSession,
@@ -88,80 +92,6 @@ import {
 } from "./network/sessionSync"
 import Board from "./ui/Board"
 
-function formatPhaseLabel(phase: WeeklyPhase) {
-  switch (phase) {
-    case "purchase-equipment":
-      return "purchase equipment"
-    case "add-city":
-      return "add city"
-    case "operations":
-      return "operations"
-    case "bureaucracy":
-      return "bureaucracy"
-  }
-}
-
-function appendActionLog(
-  previousGame: GameState,
-  nextGame: GameState,
-  message: string,
-  playerId: string | null = previousGame.currentPlayerId,
-) {
-  const playerName =
-    (playerId && previousGame.players.find(player => player.id === playerId)?.name) ?? "System"
-  const entry: GameActionLogEntry = {
-    id: `action-${previousGame.actionLog.length + 1}`,
-    playerId,
-    playerName,
-    week: previousGame.currentWeek,
-    phase: previousGame.currentPhase,
-    message,
-  }
-
-  return {
-    ...nextGame,
-    actionLog: [...nextGame.actionLog, entry],
-  }
-}
-
-function getAdvanceTurnLogMessage(previousGame: GameState, nextGame: GameState) {
-  const nextPlayer = nextGame.players.find(player => player.id === nextGame.currentPlayerId)
-
-  if (
-    previousGame.currentPhase === "purchase-equipment" &&
-    nextGame.currentPhase === "purchase-equipment"
-  ) {
-    return "finished purchasing"
-  }
-
-  return nextGame.currentWeek !== previousGame.currentWeek
-    ? `advanced to month ${nextGame.currentWeek} ${formatPhaseLabel(nextGame.currentPhase)}`
-    : nextGame.currentPhase !== previousGame.currentPhase
-      ? `advanced to ${formatPhaseLabel(nextGame.currentPhase)}`
-      : `ended turn, next player ${nextPlayer?.name ?? nextGame.currentPlayerId}`
-}
-
-function getPhaseDiscardLogMessage(previousGame: GameState, nextGame: GameState) {
-  const burnedVehicleCards =
-    previousGame.currentPhase === "purchase-equipment" &&
-    nextGame.currentPhase === "add-city" &&
-    previousGame.vehicleMarketCardIds.length !== nextGame.vehicleMarketCardIds.length
-      ? previousGame.vehicleMarketCardIds
-          .filter(cardId => !nextGame.vehicleMarketCardIds.includes(cardId))
-          .map(cardId => previousGame.vehicleCatalog.find(card => card.id === cardId) ?? null)
-          .filter((card): card is NonNullable<typeof card> => card !== null)
-          .sort((cardA, cardB) => cardA.type.localeCompare(cardB.type) || cardA.number - cardB.number)
-      : []
-  const messages = [
-    ...burnedVehicleCards.map(
-      card =>
-        `removed vehicle #${card.number} ${card.name} from the ${card.type} deck because nobody bought a ${card.type === "air" ? "plane" : card.type} this month`,
-    ),
-  ]
-
-  return messages.length > 0 ? messages.join("; ") : null
-}
-
 type LanSessionConnection = {
   sessionId: string
   sessionName: string
@@ -180,218 +110,6 @@ function createPlaceholderGame() {
     chanceCards: initialUserDecks.chanceCards,
     startingMoney: DEFAULT_STARTING_MONEY,
   })
-}
-
-function clampSetupPlayerCount(playerCount: number) {
-  return Math.max(1, Math.min(MAX_SETUP_PLAYERS, Math.floor(playerCount) || 1))
-}
-
-function getDefaultSetupPlayerName(index: number, isBot: boolean) {
-  return isBot ? `Bot ${index + 1}` : `Player ${index + 1}`
-}
-
-function normalizeSetupPlayers(players: GameSetupPlayer[]) {
-  return PLAYER_SETUP_PRESETS.slice(0, clampSetupPlayerCount(players.length)).map((preset, index) => {
-    const existingPlayer = players[index]
-    const isBot = existingPlayer?.isBot ?? false
-    const trimmedName = existingPlayer?.name?.trim() ?? ""
-    const existingBotPreset = existingPlayer?.botPreset
-      ? normalizeBotPresetId(existingPlayer.botPreset)
-      : undefined
-
-    return {
-      ...preset,
-      ...existingPlayer,
-      isBot,
-      botPreset: isBot ? existingBotPreset ?? DEFAULT_BOT_PRESET_ID : existingBotPreset,
-      name: trimmedName || getDefaultSetupPlayerName(index, isBot),
-    }
-  })
-}
-
-function createSetupPlayers(playerCount: number, botSeatIndexes: number[] = []) {
-  const botSeatIndexSet = new Set(botSeatIndexes)
-
-  return normalizeSetupPlayers(
-    PLAYER_SETUP_PRESETS.slice(0, clampSetupPlayerCount(playerCount)).map((player, index) => ({
-      ...player,
-      isBot: botSeatIndexSet.has(index),
-      botPreset: botSeatIndexSet.has(index) ? DEFAULT_BOT_PRESET_ID : undefined,
-      name: getDefaultSetupPlayerName(index, botSeatIndexSet.has(index)),
-    })),
-  )
-}
-
-function getDefaultLocalViewingPlayerId(game: GameState) {
-  const humanPlayers = game.players.filter(player => !player.isBot)
-
-  if (humanPlayers.length === 0) {
-    return null
-  }
-
-  if (game.currentPhase === "purchase-equipment") {
-    return (
-      humanPlayers.find(player => canPlayerPickCities(game, player.id))?.id ??
-      humanPlayers.find(player => canPlayerEditOperations(game, player.id) && !hasPlayerCompletedOperations(game, player.id))?.id ??
-      humanPlayers.find(
-        player =>
-          !hasPlayerCompletedPurchaseEquipment(game, player.id) &&
-          canPlayerStartPhaseByPipeline(game, player.id, "purchase-equipment"),
-      )?.id ??
-      humanPlayers[0]?.id ??
-      null
-    )
-  }
-
-  if (game.currentPhase === "operations") {
-    return (
-      humanPlayers.find(player => canPlayerEditOperations(game, player.id) && !hasPlayerCompletedOperations(game, player.id))
-        ?.id ??
-      humanPlayers[0]?.id ??
-      null
-    )
-  }
-
-  if (game.currentPhase === "bureaucracy") {
-    return (
-      humanPlayers.find(player => !hasPlayerCompletedBureaucracy(game, player.id))?.id ??
-      humanPlayers[0]?.id ??
-      null
-    )
-  }
-
-  if (game.currentPhase === "add-city") {
-    return (
-      humanPlayers.find(player => canPlayerPickCities(game, player.id))?.id ??
-      humanPlayers.find(player => canPlayerEditOperations(game, player.id) && !hasPlayerCompletedOperations(game, player.id))
-        ?.id ??
-      humanPlayers.find(player => player.id === game.currentPlayerId)?.id ??
-      humanPlayers[0]?.id ??
-      null
-    )
-  }
-
-  return humanPlayers.find(player => player.id === game.currentPlayerId)?.id ?? humanPlayers[0]?.id ?? null
-}
-
-function getNextLocalViewingPlayerId(game: GameState, currentSelectedPlayerId: string | null = null) {
-  const humanPlayers = game.players.filter(player => !player.isBot)
-
-  if (humanPlayers.length === 0) {
-    return null
-  }
-
-  if (
-    currentSelectedPlayerId &&
-    humanPlayers.some(player => player.id === currentSelectedPlayerId)
-  ) {
-    if (game.currentPhase === "operations" && canPlayerEditOperations(game, currentSelectedPlayerId)) {
-      return currentSelectedPlayerId
-    }
-
-    if (game.currentPhase === "bureaucracy" && !hasPlayerCompletedBureaucracy(game, currentSelectedPlayerId)) {
-      return currentSelectedPlayerId
-    }
-
-    if (
-      game.currentPhase === "add-city" &&
-      (canPlayerPickCities(game, currentSelectedPlayerId) || canPlayerEditOperations(game, currentSelectedPlayerId))
-    ) {
-      return currentSelectedPlayerId
-    }
-
-    if (
-      game.currentPhase === "purchase-equipment" &&
-      (
-        canPlayerPickCities(game, currentSelectedPlayerId) ||
-        canPlayerEditOperations(game, currentSelectedPlayerId) ||
-        (!hasPlayerCompletedPurchaseEquipment(game, currentSelectedPlayerId) &&
-          canPlayerStartPhaseByPipeline(game, currentSelectedPlayerId, "purchase-equipment"))
-      )
-    ) {
-      return currentSelectedPlayerId
-    }
-  }
-
-  return getDefaultLocalViewingPlayerId(game)
-}
-
-function getBotActionLogMessage(previousGame: GameState, nextGame: GameState, action: ReturnType<typeof getBotLegalActions>[number]) {
-  return action.type === "buy-vehicle"
-    ? (() => {
-        const card = previousGame.vehicleCatalog.find(vehicleCard => vehicleCard.id === action.cardId)
-        return card
-          ? `purchased ${action.quantity} vehicle${action.quantity === 1 ? "" : "s"} of #${card.number} ${card.name}`
-          : "purchased a vehicle"
-      })()
-    : action.type === "draw-city-offer"
-      ? `drew 4 city cards from the ${action.region} deck`
-      : action.type === "keep-city-offer"
-        ? "picked 2 city cards from the draw"
-        : action.type === "confirm-add-city-picks"
-          ? nextGame.currentPhase === "operations"
-            ? "confirmed city picks and opened Operations for every player"
-            : `confirmed city picks; ${nextGame.players.find(player => player.id === nextGame.currentPlayerId)?.name ?? nextGame.currentPlayerId} is selecting cities`
-          : action.type === "create-service-pod"
-            ? (() => {
-                const cityMap = new Map(previousGame.cities.map(city => [city.id, city]))
-                const cityLabel = action.cityIds
-                  .map(cityId => cityMap.get(cityId)?.name ?? cityId)
-                  .join(" - ")
-                return `created a service pod for ${cityLabel}`
-              })()
-          : action.type === "ready-operations"
-            ? nextGame.currentPhase === "bureaucracy"
-              ? "finished operations planning and advanced to bureaucracy"
-              : "finished operations planning"
-            : action.type === "ready-bureaucracy"
-              ? nextGame.currentPhase === "purchase-equipment"
-                ? "finished bureaucracy review and advanced to purchase equipment"
-                : "finished bureaucracy review"
-              : getAdvanceTurnLogMessage(previousGame, nextGame)
-}
-
-function runBotTurns(game: GameState, botPlayerIds: ReadonlySet<string>) {
-  let nextGame = game
-  let hasChanged = false
-
-  while (true) {
-    const actingBotPlayerId = getPendingBotPlayerId(nextGame, botPlayerIds)
-
-    if (!actingBotPlayerId) {
-      break
-    }
-
-    const legalActions = getBotLegalActions(nextGame, actingBotPlayerId)
-
-    if (legalActions.length === 0) {
-      break
-    }
-
-    const action = createPresetBotController(
-      actingBotPlayerId,
-      getPlayerBotPreset(nextGame.players.find(player => player.id === actingBotPlayerId) ?? null),
-      nextGame.botPresetWeightsById,
-    ).pickAction({
-      game: nextGame,
-      playerId: actingBotPlayerId,
-      legalActions,
-      phase: nextGame.currentPhase,
-    })
-    const advancedGame = applyBotAction(nextGame, actingBotPlayerId, action)
-    const discardMessage =
-      action.type === "end-turn" ? getPhaseDiscardLogMessage(nextGame, advancedGame) : null
-    const actionMessage = getBotActionLogMessage(nextGame, advancedGame, action)
-    const fullMessage = discardMessage ? `${actionMessage}; ${discardMessage}` : actionMessage
-
-    nextGame = appendActionLog(nextGame, advancedGame, fullMessage, actingBotPlayerId)
-    hasChanged = true
-  }
-
-  return {
-    game: nextGame,
-    hasChanged,
-  }
 }
 
 function isLegacyLobbyApiError(error: unknown) {
@@ -423,6 +141,63 @@ function shouldReplaceJoinAppUrl(rawUrl: string) {
 type GameMutationFailure = {
   ok: false
   error: string
+}
+
+const REGION_FILL_MAP: Record<string, string> = {
+  Pacific: "#4d9de0", Mountain: "#8a6dd3", South: "#e27d60",
+  Southeast: "#4fb286", Midwest: "#d8a031", Northeast: "#d35d9e",
+}
+const REGION_BASE_R: Record<string, number> = {
+  Pacific: 36, Mountain: 38, South: 28, Southeast: 28, Midwest: 30, Northeast: 26,
+}
+const REGION_ANCHORS_APP = [
+  { region: "Pacific", lat: 45.8, lng: -121.3, r: 72 }, { region: "Pacific", lat: 40.8, lng: -121.2, r: 76 },
+  { region: "Pacific", lat: 35.8, lng: -119.8, r: 72 }, { region: "Pacific", lat: 39.3, lng: -117.2, r: 64 },
+  { region: "Mountain", lat: 45.2, lng: -111.5, r: 78 }, { region: "Mountain", lat: 40.7, lng: -111.2, r: 82 },
+  { region: "Mountain", lat: 35.8, lng: -108.8, r: 78 }, { region: "Mountain", lat: 47.1, lng: -108.2, r: 64 },
+  { region: "Mountain", lat: 46.7, lng: -101.6, r: 62 }, { region: "Mountain", lat: 44.8, lng: -101.8, r: 66 },
+  { region: "Mountain", lat: 41.1, lng: -100.3, r: 60 },
+]
+const appOutlinePath = usOutline
+  .map(([lng, lat]) => { const p = latLngToWorld({ lng, lat }); return `${p.x},${p.y}` })
+  .join(" L ")
+const appRegionBlobs = [
+  ...usMap.cities.map(city => {
+    const region = city.region?.[0]
+    if (!region || !REGION_FILL_MAP[region]) return null
+    const { x, y } = latLngToWorld(city)
+    return { region, x, y, r: (REGION_BASE_R[region] ?? 30) + city.size * 8 }
+  }).filter((b): b is NonNullable<typeof b> => b !== null),
+  ...REGION_ANCHORS_APP.map(a => { const { x, y } = latLngToWorld(a); return { ...a, x, y } }),
+]
+
+function MapBackdrop() {
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 0, background: "#e8efe6" }}>
+      <svg
+        viewBox={`0 0 ${WORLD_WIDTH} ${WORLD_HEIGHT}`}
+        width="100%"
+        height="100%"
+        preserveAspectRatio="xMidYMid slice"
+        style={{ display: "block" }}
+      >
+        <defs>
+          <clipPath id="app-map-clip">
+            <path d={`M ${appOutlinePath} Z`} />
+          </clipPath>
+          <filter id="app-region-blur" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="20" />
+          </filter>
+        </defs>
+        <path d={`M ${appOutlinePath} Z`} fill="#f4f1e8" stroke="#c9c2b3" strokeWidth={2} opacity={0.9} />
+        <g clipPath="url(#app-map-clip)" filter="url(#app-region-blur)">
+          {appRegionBlobs.map((blob, i) => (
+            <circle key={i} cx={blob.x} cy={blob.y} r={blob.r} fill={REGION_FILL_MAP[blob.region]} opacity={0.22} />
+          ))}
+        </g>
+      </svg>
+    </div>
+  )
 }
 
 export default function App() {
@@ -462,6 +237,8 @@ export default function App() {
   const [lanSeatCount, setLanSeatCount] = useState(4)
   const [playerName, setPlayerName] = useState("")
   const [isUpdatingLobby, setIsUpdatingLobby] = useState(false)
+  // Pending bot name edits keyed by playerId — sent on input blur
+  const [pendingBotNames, setPendingBotNames] = useState<Record<string, string>>({})
   const [launcherSessions, setLauncherSessions] = useState<LanSessionSummary[]>([])
   const [launcherServerOnline, setLauncherServerOnline] = useState<boolean | null>(null)
   const [isLaunchingSession, setIsLaunchingSession] = useState(false)
@@ -1083,6 +860,8 @@ export default function App() {
   const handleToggleLobbyBotSeat = useCallback(async (playerId: string, isBot: boolean) => {
     const activeLanSession = lanSessionRef.current
     if (!activeLanSession) return
+    const seatNum = playerId.replace(/^p/i, "")
+    const defaultBotName = `Bot ${seatNum}`
     try {
       const snapshot = await toggleLanLobbyBotSeat(
         activeLanSession.serverUrl,
@@ -1090,11 +869,33 @@ export default function App() {
         lobbyClientId,
         playerId,
         isBot,
+        isBot ? "bot-avg" : null,
+        isBot ? defaultBotName : undefined,
       )
       applyLanSnapshot(snapshot, activeLanSession.serverUrl)
     } catch (error) {
       setLanStatusTone("error")
       setLanStatusMessage(error instanceof Error ? error.message : "Could not update seat.")
+    }
+  }, [applyLanSnapshot, lobbyClientId])
+
+  const handleUpdateLobbyBotConfig = useCallback(async (playerId: string, botPreset: BotPresetId, botName: string) => {
+    const activeLanSession = lanSessionRef.current
+    if (!activeLanSession) return
+    try {
+      const snapshot = await toggleLanLobbyBotSeat(
+        activeLanSession.serverUrl,
+        activeLanSession.sessionId,
+        lobbyClientId,
+        playerId,
+        true,
+        botPreset,
+        botName.trim() || undefined,
+      )
+      applyLanSnapshot(snapshot, activeLanSession.serverUrl)
+    } catch (error) {
+      setLanStatusTone("error")
+      setLanStatusMessage(error instanceof Error ? error.message : "Could not update bot config.")
     }
   }, [applyLanSnapshot, lobbyClientId])
 
@@ -1738,14 +1539,18 @@ export default function App() {
             minHeight: "100vh",
             padding: 24,
             overflowY: "auto",
+            position: "relative",
           }}
         >
+          <MapBackdrop />
           <div
             style={{
               maxWidth: 1080,
               margin: "0 auto",
               display: "grid",
               gap: 20,
+              position: "relative",
+              zIndex: 1,
             }}
           >
             <div
@@ -1989,23 +1794,28 @@ export default function App() {
         <div
           style={{
             height: "100%",
+            minHeight: "100vh",
             display: "grid",
             placeItems: "center",
-            background: "#f3f6f2",
             padding: 24,
+            position: "relative",
           }}
         >
+          <MapBackdrop />
           <div
             style={{
               maxWidth: 520,
               width: "100%",
               borderRadius: 18,
               border: "1px solid #d8dfd5",
-              background: "#ffffff",
+              background: "rgba(255,255,255,0.92)",
+              backdropFilter: "blur(6px)",
               padding: 24,
               boxShadow: "0 12px 40px rgba(0, 0, 0, 0.14)",
               display: "grid",
               gap: 14,
+              position: "relative",
+              zIndex: 1,
             }}
           >
             <div style={{ display: "grid", gap: 4 }}>
@@ -2089,12 +1899,13 @@ export default function App() {
                 const isFilled = Boolean(lobbyPlayer?.claimedBy)
                 const isReady = Boolean(lobbyPlayer?.isReady)
                 const isBotSeat = Boolean(lobbyPlayer?.isBot)
-                const botPresetLabel = isBotSeat ? getBotPresetLabel(player.botPreset) : null
                 const seatLabel = `Seat ${player.id.replace(/^p/i, "")}`
                 const statusLabel = isBotSeat ? (isReady ? "Bot ready" : "Bot") : isReady ? "Ready" : isFilled ? "Filled" : "Waiting"
                 const accentColor = isBotSeat ? "#5c4a8a" : isReady ? "#1f5f2c" : isFilled ? "#8a5a00" : "#56635a"
                 const borderColor = isBotSeat ? "#cbb9ec" : isReady ? "#98c7a4" : isFilled ? "#d7c08a" : "#d8dfd5"
                 const background = isBotSeat ? "#f8f4ff" : isReady ? "#f3fbf4" : isFilled ? "#fff9ef" : "#fbfcfb"
+                const currentBotPreset = (BOT_PRESETS.some(p => p.id === player.botPreset) ? player.botPreset : "bot-avg") as BotPresetId
+                const pendingName = pendingBotNames[player.id] ?? player.name
 
                 return (
                   <div
@@ -2113,11 +1924,6 @@ export default function App() {
                       {isFilled ? player.name : "Waiting"}
                     </div>
                     <div style={{ fontSize: 13, color: accentColor, fontWeight: 700 }}>{statusLabel}</div>
-                    {botPresetLabel && (
-                      <div style={{ fontSize: 12, color: "#6b5a93", fontWeight: 700 }}>
-                        {botPresetLabel}
-                      </div>
-                    )}
                     {!isFilled && lanLobby?.status !== "started" && (
                       <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#56635a", cursor: "pointer" }}>
                         <input
@@ -2127,6 +1933,32 @@ export default function App() {
                         />
                         Bot seat
                       </label>
+                    )}
+                    {isBotSeat && lanLobby?.status !== "started" && (
+                      <div style={{ display: "grid", gap: 5, marginTop: 2 }}>
+                        <input
+                          type="text"
+                          value={pendingName}
+                          onChange={e => setPendingBotNames(prev => ({ ...prev, [player.id]: e.target.value }))}
+                          onBlur={e => {
+                            const name = e.target.value.trim()
+                            const seatNum = player.id.replace(/^p/i, "")
+                            const finalName = name || `Bot ${seatNum}`
+                            void handleUpdateLobbyBotConfig(player.id, currentBotPreset, finalName)
+                          }}
+                          placeholder={`Bot ${player.id.replace(/^p/i, "")}`}
+                          style={{ padding: "5px 8px", borderRadius: 7, border: "1px solid #cbb9ec", fontSize: 12, background: "#fff", width: "100%", boxSizing: "border-box" }}
+                        />
+                        <select
+                          value={currentBotPreset}
+                          onChange={e => void handleUpdateLobbyBotConfig(player.id, e.target.value as BotPresetId, pendingName)}
+                          style={{ padding: "5px 8px", borderRadius: 7, border: "1px solid #cbb9ec", fontSize: 12, background: "#fff", cursor: "pointer" }}
+                        >
+                          {BOT_PRESETS.map(preset => (
+                            <option key={preset.id} value={preset.id}>{preset.label}</option>
+                          ))}
+                        </select>
+                      </div>
                     )}
                   </div>
                 )

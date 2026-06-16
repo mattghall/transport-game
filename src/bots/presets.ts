@@ -80,7 +80,11 @@ export const BEST_BOT_WEIGHTS: ScriptedBotWeights = {
   drawRegionBigCityScarcityBonus: 5,
   keepCityPopulationScore: 10,
   keepCityNetworkProximityScore: 6,
+  keepCityPairCohesionScore: 0,
   keepCityRegionMatchScore: 4,
+  keepCityAdjacencyPotentialScore: 5,
+  claimAdjacentNetworkBonus: 8,
+  claimOpponentBlockPenalty: 4,
 }
 
 export const BOT_PRESETS: ReadonlyArray<{

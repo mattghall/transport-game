@@ -7,6 +7,9 @@ export default defineConfig({
   plugins: [react()],
   server: {
     host: true,
+    hmr: {
+      overlay: false,
+    },
   },
   build: {
     rollupOptions: {
@@ -16,6 +19,7 @@ export default defineConfig({
         admin: fileURLToPath(new URL("./admin.html", import.meta.url)),
         training: fileURLToPath(new URL("./training.html", import.meta.url)),
         "manual-training": fileURLToPath(new URL("./manual-training.html", import.meta.url)),
+        coach: fileURLToPath(new URL("./coach.html", import.meta.url)),
       },
     },
   },

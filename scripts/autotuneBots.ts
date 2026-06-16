@@ -3,6 +3,7 @@ import { cpus } from "node:os"
 import { resolve } from "node:path"
 import {
   DEFAULT_SCRIPTED_BOT_WEIGHTS,
+  mergeScriptedBotWeights,
   type ScriptedBotWeights,
 } from "../src/bots/scriptedBot.ts"
 import {
@@ -142,12 +143,12 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value)
 }
 
-function isValidWeights(value: unknown): value is ScriptedBotWeights {
+function isValidWeights(value: unknown): value is Partial<ScriptedBotWeights> {
+  // Accept partial weights — mergeScriptedBotWeights fills in any missing keys with defaults.
+  // This prevents saved champion files from being rejected when new weight keys are added.
   return (
     isRecord(value) &&
-    Object.entries(DEFAULT_SCRIPTED_BOT_WEIGHTS).every(([key]) =>
-      isFiniteNumber((value as Record<string, unknown>)[key]),
-    )
+    Object.values(value).every(entry => isFiniteNumber(entry))
   )
 }
 
@@ -166,7 +167,17 @@ function parseChampionRecord(value: unknown, playerCount: PlayerCount): Champion
     return null
   }
 
-  return value as ChampionRecord
+  return {
+    ...(value as ChampionRecord),
+    training: {
+      ...(value as ChampionRecord).training,
+      final: {
+        ...(value as ChampionRecord).training.final,
+        // Fill in any weights added since this champion was saved
+        weights: mergeScriptedBotWeights((value as ChampionRecord).training.final.weights),
+      },
+    },
+  }
 }
 
 function loadChampion(playerCount: PlayerCount) {
