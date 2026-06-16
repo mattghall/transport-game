@@ -13,7 +13,7 @@ import type {
 } from "./types"
 
 export function getActiveChanceCard(game: GameState): ChanceCard | null {
-  if (!game.activeChanceCardId) {
+  if (!game.chanceCardsEnabled || !game.activeChanceCardId) {
     return null
   }
 

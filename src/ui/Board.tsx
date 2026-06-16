@@ -58,6 +58,11 @@ import {
 } from "../engine/trips"
 import { computeLabels } from "../engine/layout"
 import { usOutline } from "../data/maps/usOutline"
+import {
+  enableDebugMode,
+  disableDebugMode,
+  getDebugEntries,
+} from "../engine/debugLogger"
 import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch"
 import type {
   CityDeckRegion,
@@ -2351,6 +2356,10 @@ export default function Board({
         return `${cityA} - ${cityB} (${route.mode === "rail" ? `${getRailTraction(route) === "electric" ? "Electric rail" : "Rail"}` : MODE_LABELS[route.mode]})`
       })
       const weeklyNet = player.weeklyPayout - player.operatingCosts
+      const bureaucracySummary = bureaucracySummaries.find(s => s.player.id === player.id)
+      const projectedMoney = game.currentPhase === "bureaucracy" && bureaucracySummary
+        ? player.money + bureaucracySummary.netRevenue
+        : player.money
       const ownedVehicleCards = player.ownedVehicleCardIds
         .map(cardId => vehicleCardMap[cardId])
         .filter((card): card is VehicleCard => card !== undefined)
@@ -2374,9 +2383,10 @@ export default function Board({
         ownedVehicleCounts,
         ownedRouteCount,
         weeklyNet,
+        projectedMoney,
       }
     })
-  }, [cityMap, game, vehicleCardMap])
+  }, [cityMap, game, vehicleCardMap, bureaucracySummaries])
   const gameOverSummaryPlayers = useMemo(
     () =>
       victoryStandings.map(standing => {
@@ -2976,6 +2986,9 @@ export default function Board({
   const [demandFillHoveredDest, setDemandFillHoveredDest] = useState<string | null>(null)
   const [demandFillSelectedDest, setDemandFillSelectedDest] = useState<string | null>(null)
   const [networkMapGridSizes, setNetworkMapGridSizes] = useState<Record<string, { cols: number; rows: number }>>({})
+  const [debugMode, setDebugMode] = useState(false)
+  const [debugLogEntries, setDebugLogEntries] = useState<ReturnType<typeof getDebugEntries>>([])
+  const [debugLogOpen, setDebugLogOpen] = useState(false)
   const purchaseEquipmentPlayersRemaining = game.players.filter(player => player.phase === "purchase-equipment").length
   const addCityPlayersRemaining = game.players.filter(player => player.phase === "add-city").length
   const operationsPlayersRemaining = game.players.filter(player => player.phase === "operations").length
@@ -3725,7 +3738,12 @@ export default function Board({
       ? `Starting ${formatPhaseLabel(getNextPhase(game.currentPhase)).toLowerCase()}.`
       : `${nextPlayer?.name ?? "Next player"} is up.`
 
+    if (debugMode) enableDebugMode()
     const result = await onAdvanceTurn()
+    if (debugMode) {
+      setDebugLogEntries(getDebugEntries())
+      disableDebugMode()
+    }
     if (!result.ok) {
       setStatusMessage(result.error)
       return
@@ -4211,7 +4229,7 @@ export default function Board({
       <div style={TOP_BAR_STYLE}>
         <div style={TOP_BAR_PLAYERS_STYLE}>
         {playerSummaries.map(
-          ({ player, connectedCities, weeklyNet, ownedVehicleCardCounts, ownedRouteCount }) => (
+          ({ player, connectedCities, weeklyNet, ownedVehicleCardCounts, ownedRouteCount, projectedMoney }) => (
             <button
               key={`${player.id}-summary`}
               type="button"
@@ -4234,7 +4252,7 @@ export default function Board({
               </div>
               <div>
                 <span>
-                  <strong>$</strong> {formatCurrency(player.money).replace("$", "")}
+                  <strong>$</strong> {formatCurrency(projectedMoney).replace("$", "")}
                 </span>
               </div>
               <div
@@ -5035,6 +5053,39 @@ export default function Board({
                 >
                   Undo
                 </button>
+                {/* Panel resize controls for touch/mobile */}
+                <div style={{ borderTop: "1px solid #d8dfd5", paddingTop: 6, display: "grid", gap: 4 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#56635a", letterSpacing: "0.06em", textTransform: "uppercase", paddingLeft: 2 }}>Resize panels</div>
+                  {[
+                    { label: "Left tray", value: leftPanelWidth, min: MIN_TRAY_SIZE, max: Math.max(MIN_TRAY_SIZE, window.innerWidth - PANEL_GAP * 4 - MIN_TRAY_SIZE - rightRailWidth), set: setLeftPanelWidth },
+                    { label: "Right rail", value: rightRailWidth, min: MIN_STATUS_RAIL_WIDTH, max: Math.max(MIN_STATUS_RAIL_WIDTH, window.innerWidth - PANEL_GAP * 4 - MIN_TRAY_SIZE - leftPanelWidth), set: setRightRailWidth },
+                    { label: "Table height", value: tableZoneHeight, min: MIN_TRAY_SIZE, max: Math.max(MIN_TRAY_SIZE, window.innerHeight - ROW_TWO_TOP - PANEL_GAP * 2 - MIN_TRAY_SIZE), set: setTableZoneHeight },
+                  ].map(({ label, value, min, max, set }) => (
+                    <div key={label} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", borderRadius: 8, border: "1px solid #e1e6df", background: "#ffffff" }}>
+                      <span style={{ fontSize: 12, flex: 1, color: "#324236" }}>{label}</span>
+                      <button type="button" onClick={() => set(v => Math.max(min, v - 40))} style={{ width: 26, height: 26, borderRadius: 6, border: "1px solid #c7d0c4", background: "#f8faf7", cursor: "pointer", fontWeight: 700, fontSize: 14, lineHeight: 1 }}>−</button>
+                      <span style={{ fontSize: 11, color: "#56635a", minWidth: 36, textAlign: "center" }}>{value}px</span>
+                      <button type="button" onClick={() => set(v => Math.min(max, v + 40))} style={{ width: 26, height: 26, borderRadius: 6, border: "1px solid #c7d0c4", background: "#f8faf7", cursor: "pointer", fontWeight: 700, fontSize: 14, lineHeight: 1 }}>+</button>
+                    </div>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDebugMode(prev => !prev)}
+                  style={{
+                    padding: "8px 10px",
+                    borderRadius: 10,
+                    border: `1px solid ${debugMode ? "#c55" : "#c7d0c4"}`,
+                    cursor: "pointer",
+                    background: debugMode ? "#ffeaea" : "#ffffff",
+                    fontWeight: 600,
+                    textAlign: "left",
+                    fontSize: 13,
+                    color: debugMode ? "#a00" : "#324236",
+                  }}
+                >
+                  {debugMode ? "🐛 Debug mode ON" : "🐛 Debug mode"}
+                </button>
               </div>
             )}
             <div
@@ -5114,8 +5165,7 @@ export default function Board({
                 )
               })}
             </div>
-            {game.currentPhase !== "bureaucracy" && (
-              <button
+            <button
                 type="button"
                 onClick={handleAdvanceTurnClick}
                 disabled={game.isGameOver || isAdvanceBlocked}
@@ -5142,7 +5192,6 @@ export default function Board({
                   Next
                 </span>
               </button>
-            )}
           </div>
         </div>
         {areResizeHandlesVisible && !isLeftPanelCollapsed && (
@@ -6720,7 +6769,7 @@ export default function Board({
                                             <div style={{ fontSize: 12, color: "#324236", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                                               {"Moved: "}
                                               <span style={{ color: unmetFinal ? "#b42318" : "inherit", fontWeight: unmetFinal ? 700 : 400 }}>
-                                                {pair.finalDestinationCubes}{unmetFinal ? `/${pair.totalDemand}` : ""} final
+                                                {pair.finalDestinationCubes}{unmetFinal ? `/${pair.totalDemand}` : ""}{" cubes"}
                                               </span>
                                               {connecting > 0 && <> + {connecting} connecting</>}
                                             </div>
@@ -6738,6 +6787,59 @@ export default function Board({
                                         )
                                       })}
                                     </div>
+                                    {/* Route optimization suggestions */}
+                                    {(() => {
+                                      const suggestions: Array<{ type: "add" | "remove"; cityName: string; planLabel: string; detail: string }> = []
+
+                                      for (const plan of plans) {
+                                        // Suggest adding available cities with significant unserved demand
+                                        for (const cityId of plan.availableCityIds) {
+                                          if (plan.selectedCityIds.includes(cityId)) continue
+                                          const demandEntry = plan.cityCubeDemands.find(d => d.cityId === cityId)
+                                          if (!demandEntry || demandEntry.outboundCubes <= 0) continue
+                                          const stuckEntry = currentPlayerBureaucracySummary?.stuckCubesByCity.find(s => s.cityId === cityId)
+                                          const stuckCount = stuckEntry?.stuckCubeCount ?? demandEntry.outboundCubes
+                                          if (stuckCount <= 0) continue
+                                          suggestions.push({
+                                            type: "add",
+                                            cityName: demandEntry.cityName,
+                                            planLabel: plan.serviceLabel,
+                                            detail: `+${stuckCount} demand cube${stuckCount !== 1 ? "s" : ""} served`,
+                                          })
+                                        }
+
+                                        // Suggest removing cities with zero demand and no stuck cubes wanting to go there
+                                        for (const status of plan.simplifiedCityStatuses) {
+                                          if (status.outboundCubes > 0 || status.filledCubes > 0) continue
+                                          const hasInbound = plan.simplifiedLedgerEntries.some(e => e.destinationCityId === status.cityId && e.cubeCount > 0)
+                                          if (hasInbound) continue
+                                          suggestions.push({
+                                            type: "remove",
+                                            cityName: status.cityName,
+                                            planLabel: plan.serviceLabel,
+                                            detail: "no demand, reduces operating cost",
+                                          })
+                                        }
+                                      }
+
+                                      if (suggestions.length === 0) return null
+                                      return (
+                                        <div style={{ marginTop: 8, padding: "8px 12px", background: "#fffbea", border: "1px solid #e6c94a", borderRadius: 8, fontSize: 12, color: "#6b4f00" }}>
+                                          <div style={{ fontWeight: 700, marginBottom: 5, color: "#5a3e00" }}>💡 Route Suggestions</div>
+                                          {suggestions.map((s, i) => (
+                                            <div key={i} style={{ marginBottom: 3, display: "flex", gap: 6, alignItems: "flex-start" }}>
+                                              <span style={{ flexShrink: 0, color: s.type === "add" ? "#1a7a38" : "#a04000" }}>
+                                                {s.type === "add" ? "＋" : "－"}
+                                              </span>
+                                              <span>
+                                                <strong>{s.type === "add" ? "Add" : "Remove"} {s.cityName}</strong>
+                                                {" to "}{s.planLabel}: {s.detail}
+                                              </span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )
+                                    })()}
                                   </div>
                                 )
                               })}
@@ -6749,24 +6851,6 @@ export default function Board({
                   }
                  </>
                  )}
-                <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                  <button
-                    type="button"
-                    onClick={handleAdvanceTurnClick}
-                    disabled={game.isGameOver || isAdvanceBlocked}
-                    style={{
-                      padding: "8px 12px",
-                      borderRadius: 999,
-                      border: "1px solid #223024",
-                      cursor: game.isGameOver || isAdvanceBlocked ? "not-allowed" : "pointer",
-                      background: game.isGameOver || isAdvanceBlocked ? "#dfe5de" : "#223024",
-                      color: "#ffffff",
-                      fontWeight: 700,
-                    }}
-                  >
-                    {advanceTurnLabel}
-                  </button>
-                </div>
               </div>
             </div>
           ) : (
@@ -8578,6 +8662,80 @@ export default function Board({
           />
         )}
       </div>
+      {/* Debug log viewer */}
+      {debugLogEntries.length > 0 && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: 36,
+            left: 8,
+            zIndex: 1001,
+            width: "min(700px, 90vw)",
+            maxHeight: "60vh",
+            background: "#1a1a1a",
+            color: "#e0e0e0",
+            fontFamily: "monospace",
+            fontSize: 11,
+            borderRadius: 8,
+            border: "1px solid #444",
+            overflow: "hidden",
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
+          <div
+            style={{
+              padding: "4px 8px",
+              background: "#2a2a2a",
+              borderBottom: "1px solid #444",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
+            <span style={{ fontWeight: 700, color: "#f80" }}>
+              Debug Log ({debugLogEntries.length} entries)
+            </span>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button
+                type="button"
+                onClick={() => setDebugLogOpen(p => !p)}
+                style={{ fontSize: 10, padding: "1px 6px", cursor: "pointer", borderRadius: 4, border: "1px solid #555", background: "#333", color: "#ccc" }}
+              >
+                {debugLogOpen ? "▼ collapse" : "▲ expand"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setDebugLogEntries([])}
+                style={{ fontSize: 10, padding: "1px 6px", cursor: "pointer", borderRadius: 4, border: "1px solid #555", background: "#333", color: "#ccc" }}
+              >
+                ✕ clear
+              </button>
+            </div>
+          </div>
+          {debugLogOpen && (
+            <div style={{ overflowY: "auto", maxHeight: "calc(60vh - 32px)", padding: "4px 0" }}>
+              {debugLogEntries.map((entry, i) => (
+                <div
+                  key={i}
+                  style={{
+                    padding: "1px 8px",
+                    borderBottom: "1px solid #2a2a2a",
+                    lineHeight: 1.4,
+                  }}
+                >
+                  <span style={{ color: "#888", marginRight: 6 }}>{String(i + 1).padStart(3, "0")}</span>
+                  <span style={{ color: "#6af", marginRight: 6 }}>[{entry.category}]</span>
+                  <span>{entry.message}</span>
+                  {entry.data !== undefined && (
+                    <span style={{ color: "#8f8", marginLeft: 6 }}>{JSON.stringify(entry.data)}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       {areResizeHandlesVisible && (
         <div
           onMouseDown={event => beginResize("table-height", event, tableZoneHeight)}

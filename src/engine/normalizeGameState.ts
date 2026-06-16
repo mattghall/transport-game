@@ -4,7 +4,7 @@ type LegacyWeeklyPhase = WeeklyPhase | "claim-routes" | "purchase-fuel"
 type LegacyPlayerState = Omit<PlayerState, "phase"> & { phase?: WeeklyPhase }
 type LegacyActiveCityOffer = Omit<ActiveCityOffer, "playerId"> & { playerId?: string }
 
-type LegacyGameState = Omit<
+  type LegacyGameState = Omit<
   GameState,
   | "currentPhase"
   | "players"
@@ -14,10 +14,12 @@ type LegacyGameState = Omit<
   | "claimedRouteCountsByPlayerIdThisTurn"
   | "actionLog"
   | "activeCityOffer"
+  | "chanceCardsEnabled"
 > & {
   currentPhase: LegacyWeeklyPhase
   players: LegacyPlayerState[]
   activeCityOffer: LegacyActiveCityOffer | null
+  chanceCardsEnabled?: boolean
   bureaucracyReadyPlayerIds?: string[]
   purchasedVehiclePlayerIds?: string[]
   claimedRoutePlayerIdsThisTurn?: string[]
@@ -53,6 +55,7 @@ export function normalizeGameState(game: LegacyGameState): GameState {
     purchasedVehiclePlayerIds: game.purchasedVehiclePlayerIds ?? [],
     claimedRoutePlayerIdsThisTurn: game.claimedRoutePlayerIdsThisTurn ?? [],
     claimedRouteCountsByPlayerIdThisTurn: game.claimedRouteCountsByPlayerIdThisTurn ?? {},
+    chanceCardsEnabled: game.chanceCardsEnabled ?? true,
     actionLog: game.actionLog.map(entry => ({
       ...entry,
       phase: normalizeWeeklyPhase(entry.phase),

@@ -102,6 +102,7 @@ export type CreateGameStateOptions = {
   players?: GameSetupPlayer[]
   vehicleCards?: VehicleCard[]
   chanceCards?: ChanceCard[]
+  chanceCardsEnabled?: boolean
   startingMoney?: number
   seed?: number
   botPresetWeightsById?: Partial<Record<BotPresetId, ScriptedBotWeights>>
@@ -257,8 +258,9 @@ export function createGameState(
   map: GameMap,
   options: CreateGameStateOptions = {},
 ): GameState {
+  const chanceCardsEnabled = options.chanceCardsEnabled ?? true
   const vehicleCards = options.vehicleCards ?? defaultDecks.vehicleCards
-  const chanceCards = options.chanceCards ?? defaultDecks.chanceCards
+  const chanceCards = chanceCardsEnabled ? (options.chanceCards ?? defaultDecks.chanceCards) : []
   const initialRandomState = createInitialRandomState(options.seed)
   const vehicleShuffle = shuffleVehicleCards(vehicleCards, initialRandomState)
   const chanceShuffle = shuffleChanceCards(chanceCards, vehicleShuffle.randomState)
@@ -281,6 +283,7 @@ export function createGameState(
     currentPhase: "add-city",
     isGameOver: false,
     operatingConfig: INITIAL_OPERATING_CONFIG,
+    chanceCardsEnabled,
     chanceCatalog: chanceCards,
     activeChanceCardId: activeChanceCard?.id ?? null,
     chanceDeckCardIds: chanceDeck.map(card => card.id),

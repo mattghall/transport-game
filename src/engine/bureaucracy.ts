@@ -6,6 +6,7 @@ import {
   getFuelPriceMultiplier,
   getWeeklyMaintenanceCostForCard,
 } from "./economy"
+import { debugLog } from "./debugLogger"
 import { getImplicitBusRoutes } from "./playerNetwork"
 import { getOwnedVehicleCountForCard } from "./playerVehicles"
 import {
@@ -468,10 +469,16 @@ function runNetworkSimulation(
 
   for (let week = 0; week < 4; week++) {
     const weekResults: PodWeekResult[] = []
+    debugLog("simulation", `── Week ${week + 1} ──────────────────────`)
 
     for (const pod of sortedPods) {
       const { vehicleCard, fleetSize, activeSegments, serviceSlotId, mode } = pod
+      debugLog("simulation", `Pod: ${serviceSlotId} | ${mode} | ${vehicleCard.name} ×${fleetSize}`, {
+        activeSegments: activeSegments.map(s => `${s.cityA}→${s.cityB} (${s.distanceMiles.toFixed(0)}mi)`),
+      })
+
       if (activeSegments.length === 0) {
+        debugLog("simulation", `  → No active segments, skipping`)
         weekResults.push({ serviceSlotId, mode, segments: [] })
         continue
       }
@@ -487,6 +494,8 @@ function runNetworkSimulation(
           ),
         ) * fleetSize
 
+      debugLog("simulation", `  Budget: ${totalWeeklyMiles.toFixed(0)} mi/wk | ${cubesPerTrip} cubes/trip | speed ${vehicleCard.speed}mph`)
+
       let remainingMiles = totalWeeklyMiles
       const segResults: SegmentWeekResult[] = []
 
@@ -501,6 +510,7 @@ function runNetworkSimulation(
       for (const seg of segsWithDemand) {
         const totalDemand = seg.demandAtoB + seg.demandBtoA
         if (totalDemand <= 0 || seg.distanceMiles <= 0 || remainingMiles < seg.distanceMiles) {
+          debugLog("simulation", `  Seg ${seg.cityA}↔${seg.cityB}: skipped (demand=${totalDemand} remaining=${remainingMiles.toFixed(0)}mi dist=${seg.distanceMiles.toFixed(0)}mi)`)
           continue
         }
         const maxTripsFromBudget = Math.floor(remainingMiles / seg.distanceMiles)
@@ -519,6 +529,8 @@ function runNetworkSimulation(
         const resultBtoA = executeMoveCubesOnSegment(
           cubeState, nextHopTable, seg.cityB, seg.cityA, cubesBtoATarget,
         )
+
+        debugLog("simulation", `  Seg ${seg.cityA}↔${seg.cityB}: demand A→B=${seg.demandAtoB} B→A=${seg.demandBtoA} | maxTrips=${maxTripsFromBudget} needed=${tripsNeeded} run=${tripsRun} | moved A→B=${resultAtoB.total}(${resultAtoB.final} final) B→A=${resultBtoA.total}(${resultBtoA.final} final)`)
 
         remainingMiles -= tripsRun * seg.distanceMiles
         segResults.push({
@@ -582,7 +594,7 @@ export function getPayoutMultiplierForDistance(distanceMiles: number) {
   return 6
 }
 
-const PAYOUT_DOLLARS_PER_WEIGHT = 7.5
+const PAYOUT_DOLLARS_PER_WEIGHT = 22.5
 
 export function getPayoutFarePerPassengerForDistance(distanceMiles: number) {
   return getPayoutMultiplierForDistance(distanceMiles) * PAYOUT_DOLLARS_PER_WEIGHT
@@ -1087,6 +1099,14 @@ export function buildPlayerBureaucracySummary(
     }
   }
 
+  debugLog("bureaucracy", `═══ Bureaucracy for ${player.name} ═══`)
+  debugLog("bureaucracy", `Initial demand (cubes):`)
+  for (const [cityId, total] of initialCubesByCity) {
+    const cityName = getCityName(game, cityId)
+    const dests = [...(initialDestsByCityId.get(cityId) ?? [])].map(([d, n]) => `${getCityName(game, d)}×${n}`).join(", ")
+    debugLog("bureaucracy", `  ${cityName}: ${total} total → [${dests}]`)
+  }
+
   // Sort assignments for simulation priority (air first, then rail, then bus)
   const sortedAssignments = [...assignments].sort((a, b) => {
     const pa = getBureaucracyPlanningPriority(a.serviceSlot.serviceGroup.mode)
@@ -1101,20 +1121,33 @@ export function buildPlayerBureaucracySummary(
   // Build simulation inputs (active pods with vehicles and ≥2 selected cities)
   const podSimInputs: PodSimInput[] = []
   for (const { serviceSlot, vehicleCard } of sortedAssignments) {
-    if (serviceSlot.isDisconnected || vehicleCard === null) continue
+    if (serviceSlot.isDisconnected || vehicleCard === null) {
+      debugLog("bureaucracy", `Pod ${serviceSlot.id}: skipped (disconnected=${serviceSlot.isDisconnected} vehicle=${vehicleCard?.name ?? "none"})`)
+      continue
+    }
     const { serviceGroup } = serviceSlot
     const defaultSelectedCityIds = serviceSlot.slotIndex === 0 ? serviceGroup.cityIds : []
     const selectedCityIds = normalizeSelectedCityIds(
       serviceGroup.cityIds,
       game.bureaucracyServiceCityIdsByRouteId[serviceSlot.id] ?? defaultSelectedCityIds,
     )
-    if (selectedCityIds.length < 2) continue
+    if (selectedCityIds.length < 2) {
+      debugLog("bureaucracy", `Pod ${serviceSlot.id}: skipped (<2 selected cities: [${selectedCityIds.join(",")}])`)
+      continue
+    }
     const activeRoutes = serviceGroup.routes.filter(
       r => selectedCityIds.includes(r.cityA) && selectedCityIds.includes(r.cityB),
     )
-    if (activeRoutes.length === 0) continue
+    if (activeRoutes.length === 0) {
+      debugLog("bureaucracy", `Pod ${serviceSlot.id}: skipped (no active routes for selected cities)`)
+      continue
+    }
     const fleetSize = getOwnedVehicleCountForCard(player, vehicleCard.id)
-    if (fleetSize <= 0) continue
+    if (fleetSize <= 0) {
+      debugLog("bureaucracy", `Pod ${serviceSlot.id}: skipped (fleet size 0)`)
+      continue
+    }
+    debugLog("bureaucracy", `Pod ${serviceSlot.id}: ${serviceGroup.mode} | ${vehicleCard.name} ×${fleetSize} | cities: [${selectedCityIds.join(",")}]`)
     podSimInputs.push({
       serviceSlotId: serviceSlot.id,
       vehicleCard,

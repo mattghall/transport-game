@@ -120,6 +120,7 @@ function writeJsonFile(path: string, payload: unknown) {
   ensureOutputDirectory()
   const temporaryPath = `${path}.tmp`
   writeFileSync(temporaryPath, JSON.stringify(payload, null, 2))
+  if (existsSync(path)) unlinkSync(path)
   renameSync(temporaryPath, path)
 }
 

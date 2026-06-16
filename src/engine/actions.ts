@@ -1286,11 +1286,11 @@ export function getConnectionOptions(
       }
     }
 
-    if (!ownedVehicleTypes.has(getVehicleTypeForMode(mode))) {
+    if (!ownedVehicleTypes.has(getVehicleTypeForMode(mode)) && mode === "air") {
       return {
         mode,
         valid: false,
-        reason: `Buy a ${mode === "rail" ? "train" : mode} vehicle card first.`,
+        reason: `Buy an air vehicle card first.`,
       }
     }
 
@@ -2509,10 +2509,10 @@ export function claimRoute(
       : getClaimSegmentPairs(game, input.mode, cityIds, playerId)
   const ownedVehicleTypes = new Set(getOwnedVehicleCards(game, playerId).map(card => card.type))
 
-  if (!ownedVehicleTypes.has(getVehicleTypeForMode(input.mode))) {
+  if (input.mode === "air" && !ownedVehicleTypes.has(getVehicleTypeForMode(input.mode))) {
     return {
       ok: false,
-      error: `Buy a ${input.mode === "rail" ? "train" : input.mode} vehicle card first.`,
+      error: `Buy an air vehicle card first.`,
     }
   }
 

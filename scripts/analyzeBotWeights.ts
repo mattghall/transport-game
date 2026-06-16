@@ -1,4 +1,4 @@
-import { mkdirSync, renameSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, renameSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import {
   FROZEN_SCRIPTED_BOT_WEIGHT_KEYS,
@@ -76,6 +76,7 @@ const modeOutputPath = resolve(
 for (const path of [outputPath, modeOutputPath]) {
   const temporaryPath = `${path}.tmp`
   writeFileSync(temporaryPath, JSON.stringify(payload, null, 2))
+  if (existsSync(path)) unlinkSync(path)
   renameSync(temporaryPath, path)
 }
 console.log(JSON.stringify(payload))

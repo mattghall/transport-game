@@ -196,6 +196,7 @@ export type GameState = {
   currentPhase: WeeklyPhase
   isGameOver: boolean
   operatingConfig: OperatingConfig
+  chanceCardsEnabled: boolean
   chanceCatalog: ChanceCard[]
   activeChanceCardId: string | null
   chanceDeckCardIds: string[]

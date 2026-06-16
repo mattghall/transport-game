@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
 import { cpus } from "node:os"
 import { dirname, resolve } from "node:path"
 import {
@@ -97,6 +97,7 @@ async function main() {
     for (const path of [outputPath, modeOutputPath]) {
       const tempOutputPath = `${path}.tmp`
       writeFileSync(tempOutputPath, JSON.stringify(trainingResults, null, 2))
+      if (existsSync(path)) unlinkSync(path)
       renameSync(tempOutputPath, path)
     }
 

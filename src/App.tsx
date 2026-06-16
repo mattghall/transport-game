@@ -235,6 +235,7 @@ export default function App() {
     () => pendingLocalLaunch?.selectedPlayerId ?? null,
   )
   const [lanSeatCount, setLanSeatCount] = useState(4)
+  const [chanceCardsEnabled, setChanceCardsEnabled] = useState(true)
   const [playerName, setPlayerName] = useState("")
   const [isUpdatingLobby, setIsUpdatingLobby] = useState(false)
   // Pending bot name edits keyed by playerId — sent on input blur
@@ -821,6 +822,7 @@ export default function App() {
           players,
           vehicleCards: initialUserDecks.vehicleCards,
           chanceCards: initialUserDecks.chanceCards,
+          chanceCardsEnabled,
           startingMoney: DEFAULT_STARTING_MONEY,
           botPresetWeightsById: managedBotPresetWeights,
         }),
@@ -1590,6 +1592,20 @@ export default function App() {
                       </option>
                     ))}
                   </select>
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={chanceCardsEnabled}
+                    onChange={e => setChanceCardsEnabled(e.target.checked)}
+                    style={{ width: 18, height: 18, cursor: "pointer" }}
+                  />
+                  <span>
+                    <strong>Chance cards</strong>
+                    <div style={{ fontSize: 12, color: "#56635a" }}>
+                      Random fuel & demand events each week
+                    </div>
+                  </span>
                 </label>
                 <div style={{ color: "#56635a", fontSize: 13 }}>
                   Share this machine&apos;s LAN address so others can join via the copied link.
