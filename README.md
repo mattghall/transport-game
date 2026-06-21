@@ -24,6 +24,15 @@ npm run session-server
 
 The session server runs on **port 8787**. The launcher shows "Session server: offline" and disables the lobby button if it isn't running.
 
+To allow friends to join from outside your network, run a third terminal:
+
+```powershell
+# Terminal 3 — public tunnel (optional, Windows)
+powershell -ExecutionPolicy Bypass -File start-transit.ps1
+```
+
+This starts a Cloudflare quick tunnel and updates `http://transit.trailmatt.com` to redirect to it. Share that URL with friends.
+
 Useful scripts:
 
 ```bash

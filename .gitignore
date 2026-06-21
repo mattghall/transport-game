@@ -32,3 +32,6 @@ public/training-results/champion-*-importance.json
 
 # Simulation build cache
 .sim-build/
+
+scripts/transit-config.json
+start-transit.ps1

@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "updatedAt": "2026-06-14T00:42:51.250Z",
+  "updatedAt": "2026-06-16T06:35:53.9017638-07:00",
   "presets": {
     "bot-best-2p": {
       "presetId": "bot-best-2p",
-      "promotedAt": "2026-06-14T00:42:48.279Z",
+      "promotedAt": "2026-06-16T06:35:53.9017638-07:00",
       "sourceTrainingGeneratedAt": "2026-06-14T00:17:39.866Z",
       "weights": {
         "vehiclePriorityBus": 56.92069311400076,
@@ -71,15 +71,15 @@
         "claimOpponentBlockPenalty": 1.472488754511708
       },
       "sourceSummary": {
-        "score": 405971.5833333334,
-        "winRate": 0.5833333333333334,
-        "averageRank": 1.4166666666666667,
-        "averagePassengers": 345683.9166666667,
-        "averagePassengerMargin": 57837.666666666664,
-        "averageConnectedCities": 0,
+        "averagePassengerMargin": 228556.21875,
+        "winRate": 1,
+        "score": 673504.1875,
         "averageMoney": 0,
+        "averagePassengers": 439947.96875,
+        "sampleCount": 32,
         "timeoutRate": 0,
-        "sampleCount": 12
+        "averageConnectedCities": 0,
+        "averageRank": 1
       },
       "sourceConfig": {
         "iterations": 0,
@@ -94,7 +94,7 @@
     },
     "bot-best-3p": {
       "presetId": "bot-best-3p",
-      "promotedAt": "2026-06-13T23:54:24.334Z",
+      "promotedAt": "2026-06-16T06:35:53.9017638-07:00",
       "sourceTrainingGeneratedAt": "2026-06-13T22:36:24.438Z",
       "weights": {
         "vehiclePriorityBus": -27.1329498725411,
@@ -161,15 +161,15 @@
         "claimOpponentBlockPenalty": 2.5208948524203167
       },
       "sourceSummary": {
-        "score": 363554.39999999997,
-        "winRate": 0.5,
-        "averageRank": 1.9,
-        "averagePassengers": 333069.6,
-        "averagePassengerMargin": 28954.8,
-        "averageConnectedCities": 0,
+        "averagePassengerMargin": 229711.66666666666,
+        "winRate": 1,
+        "score": 678808.2916666666,
         "averageMoney": 0,
+        "averagePassengers": 444096.625,
+        "sampleCount": 24,
         "timeoutRate": 0,
-        "sampleCount": 10
+        "averageConnectedCities": 0,
+        "averageRank": 1
       },
       "sourceConfig": {
         "iterations": 0,
@@ -184,6 +184,8 @@
     },
     "bot-best-4p": {
       "presetId": "bot-best-4p",
+      "promotedAt": "2026-06-16T06:35:53.9017638-07:00",
+      "sourceTrainingGeneratedAt": "2026-06-14T00:37:02.215Z",
       "weights": {
         "vehiclePriorityBus": 41.15411933930589,
         "vehiclePriorityTrain": 210.26539061477936,
@@ -248,18 +250,16 @@
         "claimAdjacentNetworkBonus": 10.712537144916132,
         "claimOpponentBlockPenalty": 2.050263832416385
       },
-      "promotedAt": "2026-06-14T00:42:51.250Z",
-      "sourceTrainingGeneratedAt": "2026-06-14T00:37:02.215Z",
       "sourceSummary": {
-        "score": 280544.125,
-        "winRate": 0.25,
-        "averageRank": 2.25,
-        "averagePassengers": 291093.625,
-        "averagePassengerMargin": -10462,
-        "averageConnectedCities": 0,
+        "averagePassengerMargin": 123737.5,
+        "winRate": 0.9,
+        "score": 507727.05,
         "averageMoney": 0,
+        "averagePassengers": 379592.05,
+        "sampleCount": 20,
         "timeoutRate": 0,
-        "sampleCount": 8
+        "averageConnectedCities": 0,
+        "averageRank": 1.1
       },
       "sourceConfig": {
         "iterations": 0,
@@ -274,7 +274,7 @@
     },
     "bot-best-1p": {
       "presetId": "bot-best-1p",
-      "promotedAt": "2026-06-13T23:54:22.366Z",
+      "promotedAt": "2026-06-16T06:35:53.9017638-07:00",
       "sourceTrainingGeneratedAt": "2026-06-13T23:50:20.445Z",
       "weights": {
         "vehiclePriorityBus": 24.341857726565976,
@@ -341,15 +341,15 @@
         "claimOpponentBlockPenalty": 1.6701906693530164
       },
       "sourceSummary": {
-        "score": 580011.1714285715,
+        "averagePassengerMargin": 510050.7,
         "winRate": 1,
-        "averageRank": 1,
-        "averagePassengers": 522737.4285714286,
-        "averagePassengerMargin": 522737.4285714286,
-        "averageConnectedCities": 0,
+        "score": 566055.77,
         "averageMoney": 0,
+        "averagePassengers": 510050.7,
+        "sampleCount": 40,
         "timeoutRate": 0,
-        "sampleCount": 14
+        "averageConnectedCities": 0,
+        "averageRank": 1
       },
       "sourceConfig": {
         "iterations": 0,

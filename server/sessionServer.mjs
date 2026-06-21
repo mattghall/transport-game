@@ -4,7 +4,8 @@ import { networkInterfaces } from "node:os"
 import { spawn, spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { dirname, resolve } from "node:path"
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
+import { extname } from "node:path"
 import { usMap } from '../src/data/maps/usMap.ts'
 import { normalizeGameState } from '../src/engine/normalizeGameState.ts'
 import { applyBotAction, getBotLegalActions, getPendingBotPlayerId } from '../src/bots/actions.ts'
@@ -55,6 +56,85 @@ const AUTOTUNE_STOP_SIGNAL_PATH = resolve(PROJECT_ROOT, "public/training-results
 const TRAINING_CHRONICLE_PATH = resolve(PROJECT_ROOT, "public/training-results/training-chronicle.json")
 const TRAINING_LOG_LIMIT = 400
 const MANAGED_BOT_PRESET_STORAGE_IDS = ["bot-avg", "bot-best-1p", "bot-best-2p", "bot-best-3p", "bot-best-4p"]
+const DIST_DIR = resolve(PROJECT_ROOT, "dist")
+
+const MIME_TYPES = {
+  ".html": "text/html; charset=utf-8",
+  ".js":   "application/javascript; charset=utf-8",
+  ".mjs":  "application/javascript; charset=utf-8",
+  ".css":  "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg":  "image/svg+xml",
+  ".png":  "image/png",
+  ".jpg":  "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".ico":  "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2":"font/woff2",
+  ".ttf":  "font/ttf",
+  ".txt":  "text/plain; charset=utf-8",
+  ".webmanifest": "application/manifest+json",
+}
+
+const HTML_ENTRY_POINTS = new Set([
+  "/index.html",
+  "/admin.html",
+  "/training.html",
+  "/manual-training.html",
+  "/compare.html",
+  "/coach.html",
+])
+
+function serveStaticFile(response, filePath) {
+  if (!existsSync(filePath)) return false
+  try {
+    const stat = statSync(filePath)
+    if (!stat.isFile()) return false
+    const ext = extname(filePath).toLowerCase()
+    const contentType = MIME_TYPES[ext] ?? "application/octet-stream"
+    const content = readFileSync(filePath)
+    response.writeHead(200, {
+      "Content-Type": contentType,
+      "Content-Length": content.length,
+      "Access-Control-Allow-Origin": "*",
+    })
+    response.end(content)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function serveStaticOrSPA(response, pathname) {
+  if (!existsSync(DIST_DIR)) {
+    sendJson(response, 503, { error: "Game frontend not built. Run: npm run build" })
+    return
+  }
+
+  // Exact file match
+  const exactPath = resolve(DIST_DIR, pathname.replace(/^\//, ""))
+  if (serveStaticFile(response, exactPath)) return
+
+  // SPA fallback — determine which HTML entry point to serve
+  // /game/*, /setup, / → index.html
+  // /admin/* → admin.html
+  // /training → training.html
+  // /manual-training → manual-training.html
+  // /compare → compare.html
+  // /coach → coach.html
+  let htmlFile = "index.html"
+  if (pathname.startsWith("/admin")) htmlFile = "admin.html"
+  else if (pathname.startsWith("/training")) htmlFile = "training.html"
+  else if (pathname.startsWith("/manual-training")) htmlFile = "manual-training.html"
+  else if (pathname.startsWith("/compare")) htmlFile = "compare.html"
+  else if (pathname.startsWith("/coach")) htmlFile = "coach.html"
+
+  const htmlPath = resolve(DIST_DIR, htmlFile)
+  if (!serveStaticFile(response, htmlPath)) {
+    sendJson(response, 404, { error: "Not found." })
+  }
+}
+
 const TRAINED_WEIGHT_KEYS = [
   "vehiclePriorityBus",
   "vehiclePriorityTrain",
@@ -2114,6 +2194,11 @@ const server = createServer(async (request, response) => {
   const sessionPath = getSessionIdFromPath(url.pathname)
 
   if (!sessionPath) {
+    // Not an API route — serve static files for GET requests, 404 otherwise
+    if (request.method === "GET") {
+      serveStaticOrSPA(response, url.pathname)
+      return
+    }
     sendJson(response, 404, { error: "Route not found." })
     return
   }
@@ -2404,5 +2489,11 @@ const server = createServer(async (request, response) => {
 })
 
 server.listen(PORT, "0.0.0.0", () => {
+  const distExists = existsSync(DIST_DIR)
   console.log(`Transport Game session server listening on http://0.0.0.0:${PORT}`)
+  if (distExists) {
+    console.log(`Serving game frontend from ${DIST_DIR}`)
+  } else {
+    console.log(`No dist/ folder found — run 'npm run build' to enable frontend serving`)
+  }
 })
