@@ -31,7 +31,7 @@ const MAX_CYCLES = Number.parseInt(process.argv[2] ?? "", 10)
 const SHOULD_STOP_AFTER_MAX_CYCLES = Number.isFinite(MAX_CYCLES) && MAX_CYCLES > 0
 
 type PlayerCount = (typeof PLAYER_COUNTS)[number]
-type RunProfile = "refine" | "explore" | "deep" | "escape"
+type RunProfile = "smoke" | "refine" | "explore" | "deep" | "escape"
 type ChampionRecord = {
   version: 1
   updatedAt: string
@@ -276,7 +276,19 @@ function getCyclesSincePromotion(status: AutotuneStatus, playerCount: PlayerCoun
   return status.cycle - championCycle
 }
 
-function getTrainingProfile(playerCount: PlayerCount, modeCycle: number, startedFromScratch: boolean, cyclesSincePromotion: number) {
+function getTrainingProfile(playerCount: PlayerCount, modeCycle: number, startedFromScratch: boolean, cyclesSincePromotion: number, isFirstCycleForMode: boolean) {
+  // First cycle for this player count: tiny smoke-test run to fail fast if something is broken
+  if (isFirstCycleForMode) {
+    return {
+      profile: "smoke" as RunProfile,
+      iterations: 2,
+      gamesPerCandidate: 2,
+      candidatesPerIteration: 4,
+      maxSteps: 800,
+      initialTemperature: 1.0,
+    }
+  }
+
   // If we've been stuck for >40 cycles, use an escape run every 3rd mode cycle
   const isEscape = !startedFromScratch && cyclesSincePromotion > 40 && modeCycle % 3 === 0
   const profile: RunProfile =
@@ -559,7 +571,8 @@ async function main() {
       const champion = status.champions[playerModeKey]
       const cyclesSincePromotion = getCyclesSincePromotion(status, playerCount)
       const startedFromScratch = !champion || modeCycle % 5 === 0
-      const profileConfig = getTrainingProfile(playerCount, modeCycle, startedFromScratch, cyclesSincePromotion)
+      const isFirstCycleForMode = modeCycle === 1
+      const profileConfig = getTrainingProfile(playerCount, modeCycle, startedFromScratch, cyclesSincePromotion, isFirstCycleForMode)
       const opponentPlan = buildOpponentPlan(playerCount, status.champions)
       const opponent = opponentPlan.label
       const baseSeed = 10_000 + cycle * 500

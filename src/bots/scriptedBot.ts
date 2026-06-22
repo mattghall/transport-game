@@ -1,4 +1,4 @@
-import { getPlayerById, calculateClaimRouteCost, resolveRouteSelection } from "../engine/actions"
+import { getPlayerById, calculateClaimRouteCost, getVehicleTradeInValue, resolveRouteSelection } from "../engine/actions"
 import { getPayoutMultiplierForDistance } from "../engine/bureaucracy"
 import { getConnectedCityIds } from "../engine/economy"
 import { getPlayerOwnedNetworkRoutes } from "../engine/playerNetwork"
@@ -415,6 +415,61 @@ function scoreBotAction(
     return weights.podRemoveCityBaseScore + netRevenuePenalty * weights.podRemoveNetRevenueGainScore
   }
 
+  if (action.type === "assign-pod-vehicle") {
+    // Assigning a vehicle to an empty pod is almost always good — score based on pod potential.
+    // Use demand from the pod plan to estimate value.
+    const summary = currentSummary ?? getCachedBureaucracySummary(game, playerId)
+    if (!summary) return 80
+    const plan = summary.routePlans.find(p => p.id === action.routeId)
+    if (!plan) return 80
+    const podDemand = plan.cityCubeDemands.reduce(
+      (total, d) => total + d.outboundCubes + d.inboundCubes,
+      0,
+    )
+    // Strong positive: assigning any vehicle unlocks revenue
+    return 100 + podDemand * weights.podDemandScore
+  }
+
+  if (action.type === "add-second-vehicle-to-pod") {
+    // Score proportional to the existing pod's net revenue — more revenue means more benefit from extra capacity
+    const summary = currentSummary ?? getCachedBureaucracySummary(game, playerId)
+    if (!summary) return Number.NEGATIVE_INFINITY
+    const cityKey = [...action.cityIds].sort().join("|")
+    const existingPod = summary.routePlans.find(
+      p => !p.isDisconnected && p.vehicleCard && [...p.selectedCityIds].sort().join("|") === cityKey,
+    )
+    if (!existingPod || (existingPod.netRevenue ?? 0) <= 0) return Number.NEGATIVE_INFINITY
+    // Score based on how profitable the existing pod is — scale revenue bonus by fleet scale weight
+    return (existingPod.netRevenue / 1_000_000) * weights.buyFleetScaleBonus
+  }
+
+  if (action.type === "exchange-vehicle") {
+    // Score upgrade based on improvement in capacity/speed vs old card; penalize cost
+    const player = getPlayerById(game, playerId)
+    if (!player) return Number.NEGATIVE_INFINITY
+    const newCard = game.vehicleCatalog.find(c => c.id === action.newCardId)
+    const oldCard = game.vehicleCatalog.find(c => c.id === action.oldCardId)
+    if (!newCard || !oldCard) return Number.NEGATIVE_INFINITY
+    const weeksOwned = player.vehicleWeeksOwnedByCardId[action.oldCardId] ?? 0
+    const tradeInValue = getVehicleTradeInValue(oldCard, weeksOwned)
+    const cost = Math.max(0, newCard.purchasePrice - tradeInValue)
+    // Capacity improvement as a fraction
+    const capacityGain = newCard.totalPassengerCapacity - oldCard.totalPassengerCapacity
+    const speedGain = newCard.speed - oldCard.speed
+    // Bonus if this card is already assigned to a profitable pod
+    const summary = currentSummary ?? getCachedBureaucracySummary(game, playerId)
+    const netRevenueFromOld = summary?.routePlans
+      .filter(p => !p.isDisconnected && p.vehicleCard?.id === action.oldCardId && (p.netRevenue ?? 0) > 0)
+      .reduce((sum, p) => sum + (p.netRevenue ?? 0), 0) ?? 0
+    const upgradeBonus = (netRevenueFromOld / 1_000_000) * weights.buyFleetScaleBonus * 0.5
+    return (
+      (capacityGain / 100) * 4 +
+      (speedGain / 10) * 2 +
+      upgradeBonus -
+      (cost / 1_000_000) * 8
+    )
+  }
+
   if (action.type === "draw-city-offer") {
     const player = getPlayerById(game, playerId)
     if (!player) return 0
@@ -587,16 +642,24 @@ export function createScriptedBot(id: string, weights: Partial<ScriptedBotWeight
 
       if (
         claimedRouteCountThisTurn >= stageClaimBudget &&
-        !availableActions.some(action => action.type === "create-service-pod") &&
+        !availableActions.some(action =>
+          action.type === "create-service-pod" ||
+          action.type === "assign-pod-vehicle" ||
+          action.type === "add-second-vehicle-to-pod",
+        ) &&
         availableActions.some(action => action.type === "ready-operations")
       ) {
         return { type: "ready-operations" }
       }
 
-      // Compute the bureaucracy summary when there are pod/removal actions to score, or when
-      // there are buy-vehicle actions (to enable fleet scaling bonuses for already-owned cards).
+      // Compute the bureaucracy summary when there are pod/vehicle/removal actions to score.
       const hasPodActions = availableActions.some(
-        a => a.type === "create-service-pod" || a.type === "remove-pod-city",
+        a =>
+          a.type === "create-service-pod" ||
+          a.type === "remove-pod-city" ||
+          a.type === "assign-pod-vehicle" ||
+          a.type === "add-second-vehicle-to-pod" ||
+          a.type === "exchange-vehicle",
       )
       const hasBuyVehicleActions = availableActions.some(a => a.type === "buy-vehicle")
       const needsSummary = hasPodActions || hasBuyVehicleActions

@@ -6,16 +6,19 @@ import {
   canPlayerPickCities,
   canPlayerStartPhaseByPipeline,
   claimRoute,
+  exchangeVehicleCard,
   getConnectionOptions,
   getPlayerById,
   confirmAddCityPicks,
   drawCityOffer,
+  getVehicleTradeInValue,
   getVisibleVehicleMarketCardIds,
   hasPlayerCompletedBureaucracy,
   hasPlayerCompletedAddCity,
   markBureaucracyReady,
   markOperationsReady,
   moveBureaucracyServiceCity,
+  setBureaucracyRouteVehicleCard,
   setActiveCityOfferKeptCityIds,
 } from "../engine/actions"
 import {
@@ -45,7 +48,7 @@ function getAvailableBotVehicleActions(game: GameState, playerId: string): BotAc
     return []
   }
 
-  return getVisibleVehicleMarketCardIds(game)
+  const buyActions: BotAction[] = getVisibleVehicleMarketCardIds(game)
     .map(cardId => game.vehicleCatalog.find(card => card.id === cardId) ?? null)
     .filter((card): card is GameState["vehicleCatalog"][number] => card !== null && card.purchasePrice <= player.money)
     .map(card => ({
@@ -53,6 +56,26 @@ function getAvailableBotVehicleActions(game: GameState, playerId: string): BotAc
       cardId: card.id,
       quantity: 1,
     }))
+
+  // Exchange actions: trade an owned vehicle for a market vehicle
+  const exchangeActions: BotAction[] = getVisibleVehicleMarketCardIds(game)
+    .flatMap(newCardId => {
+      const newCard = game.vehicleCatalog.find(c => c.id === newCardId)
+      if (!newCard || player.ownedVehicleCardIds.includes(newCardId)) return []
+      return player.ownedVehicleCardIds.flatMap(oldCardId => {
+        const oldCard = game.vehicleCatalog.find(c => c.id === oldCardId)
+        if (!oldCard || oldCard.type !== newCard.type) return []
+        const weeksOwned = player.vehicleWeeksOwnedByCardId[oldCardId] ?? 0
+        const tradeInValue = getVehicleTradeInValue(oldCard, weeksOwned)
+        const cost = Math.max(0, newCard.purchasePrice - tradeInValue)
+        if (player.money < cost) return []
+        // Only consider upgrades (new card costs more at purchase, indicating better stats)
+        if (newCard.purchasePrice <= oldCard.purchasePrice) return []
+        return [{ type: "exchange-vehicle" as const, newCardId, oldCardId }]
+      })
+    })
+
+  return [...buyActions, ...exchangeActions]
 }
 
 function getAvailableClaimActions(game: GameState, playerId: string): BotAction[] {
@@ -197,7 +220,63 @@ function getAvailableOperationsActions(game: GameState, playerId: string): BotAc
         )
     : []
 
-  return [...claimActions, ...podActions, ...removePodCityActions, { type: "ready-operations" }]
+  // Assign unassigned vehicles to pods that have no vehicle yet
+  const player = getPlayerById(game, playerId)
+  const assignedVehicleCardIds = new Set(Object.values(game.bureaucracyVehicleCardIdsByRouteId))
+  const unassignedOwnedVehicleCardIds = (player?.ownedVehicleCardIds ?? [])
+    .filter(cardId => !assignedVehicleCardIds.has(cardId))
+
+  const assignVehicleActions: BotAction[] = playerSummary
+    ? playerSummary.routePlans
+        .filter(plan => !plan.isDisconnected && plan.selectedCityIds.length >= 2 && !plan.vehicleCard)
+        .flatMap(plan => {
+          const vehicleTypeForMode =
+            plan.route.mode === "bus" ? "bus" : plan.route.mode === "rail" ? "train" : "air"
+          const compatibleCard = unassignedOwnedVehicleCardIds.find(cardId => {
+            const card = game.vehicleCatalog.find(c => c.id === cardId)
+            return card?.type === vehicleTypeForMode
+          })
+          if (!compatibleCard) return []
+          return [{ type: "assign-pod-vehicle" as const, routeId: plan.id, vehicleCardId: compatibleCard }]
+        })
+    : []
+
+  // Add a second vehicle to high-demand pods (those with net revenue > 0 and unassigned matching vehicles)
+  const addSecondVehicleActions: BotAction[] = playerSummary
+    ? playerSummary.routePlans
+        .filter(plan =>
+          !plan.isDisconnected &&
+          plan.selectedCityIds.length >= 2 &&
+          plan.vehicleCard != null &&
+          (plan.netRevenue ?? 0) > 0 &&
+          plan.canAddSplitService,
+        )
+        .flatMap(plan => {
+          const vehicleTypeForMode =
+            plan.route.mode === "bus" ? "bus" : plan.route.mode === "rail" ? "train" : "air"
+          // Find an unassigned vehicle of same type (can be same or different card)
+          const compatibleCard = unassignedOwnedVehicleCardIds.find(cardId => {
+            const card = game.vehicleCatalog.find(c => c.id === cardId)
+            return card?.type === vehicleTypeForMode
+          })
+          if (!compatibleCard) return []
+          return [{
+            type: "add-second-vehicle-to-pod" as const,
+            corridorId: plan.corridorId,
+            cityIds: plan.selectedCityIds,
+            vehicleCardId: compatibleCard,
+          }]
+        })
+    : []
+
+  return [
+    ...claimActions,
+    ...podActions,
+    ...removePodCityActions,
+    ...assignVehicleActions,
+    ...addSecondVehicleActions,
+    { type: "ready-operations" },
+  ]
 }
 
 function buildServicePodCandidates(
@@ -408,6 +487,43 @@ export function applyBotAction(game: GameState, playerId: string, action: BotAct
         action.sourceRouteId,
         playerId,
       )
+      if (!result.ok) {
+        throw new Error(result.error)
+      }
+      return result.game
+    }
+    case "assign-pod-vehicle": {
+      const result = setBureaucracyRouteVehicleCard(game, action.routeId, action.vehicleCardId, playerId)
+      if (!result.ok) {
+        throw new Error(result.error)
+      }
+      return result.game
+    }
+    case "add-second-vehicle-to-pod": {
+      // Create a new slot for the same city set, then assign the vehicle to it
+      const splitResult = addBureaucracyServiceSplit(game, action.corridorId, playerId, action.cityIds)
+      if (!splitResult.ok) {
+        throw new Error(splitResult.error)
+      }
+      // Find the newly created slot (no vehicle assigned, matching corridor and city set)
+      const newSummary = getCachedBureaucracySummary(splitResult.game, playerId)
+      const cityKey = [...action.cityIds].sort().join("|")
+      const newSlot = newSummary?.routePlans.find(
+        p =>
+          !p.isDisconnected &&
+          !p.vehicleCard &&
+          p.corridorId === action.corridorId &&
+          [...p.selectedCityIds].sort().join("|") === cityKey,
+      )
+      if (!newSlot) return splitResult.game
+      const assignResult = setBureaucracyRouteVehicleCard(splitResult.game, newSlot.id, action.vehicleCardId, playerId)
+      if (!assignResult.ok) {
+        throw new Error(assignResult.error)
+      }
+      return assignResult.game
+    }
+    case "exchange-vehicle": {
+      const result = exchangeVehicleCard(game, action.newCardId, action.oldCardId, playerId)
       if (!result.ok) {
         throw new Error(result.error)
       }

@@ -7,5 +7,42 @@
       "date": "2026-06-14T03:05:06.298Z"
     }
   ],
-  "pastChampions": []
+  "pastChampions": [
+    {
+      "playerCount": 1,
+      "fromCycle": 644,
+      "sessionEndCycle": 911,
+      "benchmarkScore": 566055.77,
+      "averagePassengers": 510050.7,
+      "averagePassengerMargin": 510050.7,
+      "winRate": 1
+    },
+    {
+      "playerCount": 2,
+      "fromCycle": 667,
+      "sessionEndCycle": 911,
+      "benchmarkScore": 673504.1875,
+      "averagePassengers": 439947.96875,
+      "averagePassengerMargin": 228556.21875,
+      "winRate": 1
+    },
+    {
+      "playerCount": 3,
+      "fromCycle": 2,
+      "sessionEndCycle": 2,
+      "benchmarkScore": 291060.4166666667,
+      "averagePassengers": 339106.25,
+      "averagePassengerMargin": -49045.833333333336,
+      "winRate": 0.375
+    },
+    {
+      "playerCount": 4,
+      "fromCycle": 1,
+      "sessionEndCycle": 2,
+      "benchmarkScore": 305410,
+      "averagePassengers": 370872.5,
+      "averagePassengerMargin": -65755,
+      "winRate": 0.3
+    }
+  ]
 }

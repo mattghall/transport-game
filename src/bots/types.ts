@@ -40,6 +40,31 @@ export type RemovePodCityBotAction = {
   sourceRouteId: string
 }
 
+/** Assign an owned vehicle card to an existing pod slot that has no vehicle. */
+export type AssignPodVehicleBotAction = {
+  type: "assign-pod-vehicle"
+  routeId: string
+  vehicleCardId: string
+}
+
+/**
+ * Add a second (or Nth) vehicle to a high-performing pod by creating a new slot
+ * with the same city set and assigning the given vehicle card to it.
+ */
+export type AddSecondVehicleToPodBotAction = {
+  type: "add-second-vehicle-to-pod"
+  corridorId: string
+  cityIds: string[]
+  vehicleCardId: string
+}
+
+/** Trade in an old vehicle card for a better one in the market during purchase-equipment. */
+export type ExchangeVehicleBotAction = {
+  type: "exchange-vehicle"
+  newCardId: string
+  oldCardId: string
+}
+
 export type ReadyOperationsBotAction = {
   type: "ready-operations"
 }
@@ -60,6 +85,9 @@ export type BotAction =
   | ClaimRouteBotAction
   | CreateServicePodBotAction
   | RemovePodCityBotAction
+  | AssignPodVehicleBotAction
+  | AddSecondVehicleToPodBotAction
+  | ExchangeVehicleBotAction
   | ReadyOperationsBotAction
   | ReadyBureaucracyBotAction
   | EndTurnBotAction
