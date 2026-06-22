@@ -1280,7 +1280,7 @@ export default function App() {
               }
             : result
         },
-        { type: "add-service-split", corridorId, initialCityIds },
+        { type: "add-service-split", corridorId },
       ),
     [commitGameMutation, resolveActingPlayerId],
   )

@@ -682,6 +682,8 @@ export default function CoachApp() {
           onMoveBureaucracyServiceCity={noop}
           onDeleteBureaucracyServicePod={noop}
           onAdvanceTurn={noop}
+          onExchangeVehicleCard={noop}
+          onStopAutoPlay={noopVoid}
           onUndo={noopVoid}
           canUndo={false}
         />

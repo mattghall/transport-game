@@ -26,6 +26,7 @@ import {
   getMaxFuelUnitsCapacityForPlayer,
   getPayoutMultiplierForDistance,
   isValidServicePodSelection,
+  type BureaucracyRoutePlan,
 } from "../engine/bureaucracy"
 import {
   getAffordableFleetSize,
@@ -3318,7 +3319,6 @@ export default function Board({
                     // Use first plan as the representative for route / city state
                     const plan = mergedPod.plans[0]
                     const isInvalidPod = mergedPod.plans.some(p => invalidCurrentPlayerPodRouteIds.has(p.id))
-                    const routeSelectColors = getRouteSelectColors(plan.route.mode)
                     const dropError =
                       draggedPodCity && draggedPodCity.corridorId === group.corridorId
                         ? getPodMoveError(group.plans, draggedPodCity.cityId, plan.id)
@@ -3625,7 +3625,7 @@ export default function Board({
                         ) : (
                           <>
                             <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                              {plan.selectedCityIds.map(cityId => (
+                              {plan.selectedCityIds.map((cityId: string) => (
                                 <div
                                   key={`pod-editor-city-${plan.id}-${cityId}`}
                                   draggable
@@ -3692,7 +3692,6 @@ export default function Board({
                 {/* DISCONNECTED pod — only show when there are disconnected cities OR a vehicle is assigned */}
                 {disconnectedPlan && (disconnectedPlan.selectedCityIds.length > 0 || anyVehicleAssigned) && (() => {
                   const plan = disconnectedPlan
-                  const isInvalidPod = false
                   const dropError = draggedPodCity && draggedPodCity.corridorId === group.corridorId
                     ? getPodMoveError(group.plans, draggedPodCity.cityId, plan.id)
                     : null
@@ -7469,21 +7468,6 @@ export default function Board({
                                   const p = latLngToWorld({ lng, lat })
                                   return `${toSvgX(p.x).toFixed(1)},${toSvgY(p.y).toFixed(1)}`
                                 }).join(" L ") + " Z"
-
-                                // Region shading blobs for cities in this network + nearby anchors
-                                const netRegionBlobs = [
-                                  ...netCities.flatMap(city => {
-                                    const region = getPrimaryCityDeckRegion(city.region)
-                                    if (!region) return []
-                                    const pt = ptById.get(city.id)
-                                    if (!pt) return []
-                                    return [{ key: city.id, region, cx: pt.x, cy: pt.y, r: (REGION_SHADE_BASE_RADIUS[region] + (city.size ?? 0) * 8) * scale }]
-                                  }),
-                                  ...REGION_SHADE_ANCHORS.map(anchor => {
-                                    const wp = latLngToWorld(anchor)
-                                    return { key: `anc-${anchor.id}`, region: anchor.region, cx: toSvgX(wp.x), cy: toSvgY(wp.y), r: anchor.radius * scale }
-                                  }),
-                                ]
 
                                 const clipId = `nmap-clip-${ni}`
 

@@ -85,6 +85,7 @@ export const BEST_BOT_WEIGHTS: ScriptedBotWeights = {
   keepCityAdjacencyPotentialScore: 5,
   claimAdjacentNetworkBonus: 8,
   claimOpponentBlockPenalty: 4,
+  buyFleetScaleBonus: 30,
 }
 
 export const BOT_PRESETS: ReadonlyArray<{
