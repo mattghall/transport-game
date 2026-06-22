@@ -814,7 +814,16 @@ function CombinedAutotuneLearningChart({
 }
 
 export default function TrainingApp() {
-  const defaultServerUrl = getLocalSessionServerUrl()
+  // Allow overriding the server URL via ?serverUrl=http://... query param or
+  // the VITE_TRAINING_SERVER_URL build-time env var. Falls back to localhost.
+  const defaultServerUrl = useMemo(() => {
+    const params = new URLSearchParams(window.location.search)
+    const queryUrl = params.get("serverUrl")
+    if (queryUrl) return queryUrl.replace(/\/$/, "")
+    const envUrl = import.meta.env.VITE_TRAINING_SERVER_URL
+    if (envUrl) return String(envUrl).replace(/\/$/, "")
+    return getLocalSessionServerUrl()
+  }, [])
   const [error, setError] = useState<string | null>(null)
   const [refreshNonce, setRefreshNonce] = useState(0)
   const [autotuneControlStatus, setAutotuneControlStatus] = useState<AutotuneControlStatus | null>(null)

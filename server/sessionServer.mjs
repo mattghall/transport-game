@@ -12,6 +12,7 @@ import { applyBotAction, getBotLegalActions, getPendingBotPlayerId } from '../sr
 import { createPresetBotController } from '../src/bots/presets.ts'
 import {
   buyVehicleCard,
+  exchangeVehicleCard,
   advanceTurn,
   drawCityOffer,
   setActiveCityOfferKeptCityIds,
@@ -38,6 +39,8 @@ const sessionStreams = new Map()
 const pendingSeatReleases = new Map()
 // active SSE connection counts per client, keyed by `${sessionId}:${clientId}`
 const activeConnectionCounts = new Map()
+// turn timer timeouts keyed by sessionId
+const turnTimerTimeouts = new Map()
 const SEAT_RELEASE_DELAY_MS = 12000
 let activeSessionId = null
 const BOT_CLAIM_PREFIX = "bot:"
@@ -227,30 +230,78 @@ function runServerBotTurns(game, session) {
   const botPlayerIds = new Set(
     session.lobby.players.filter(p => p.isBot).map(p => p.playerId),
   )
-  if (botPlayerIds.size === 0) return game
+
+  // During auto-play, treat ALL players as bots until the target week is reached
+  const isAutoPlaying = game.autoPlayUntilWeek > 0 && game.currentWeek <= game.autoPlayUntilWeek && !game.isGameOver
+  const effectiveBotIds = isAutoPlaying
+    ? new Set(game.players.map(p => p.id))
+    : botPlayerIds
+
+  if (effectiveBotIds.size === 0) return game
 
   let nextGame = game
-  let safetyLimit = 500
+  // Use a higher limit during auto-play to handle multi-month, multi-player games
+  let safetyLimit = isAutoPlaying ? 10_000 : 1_000
 
   while (safetyLimit-- > 0) {
-    const pendingBotId = getPendingBotPlayerId(nextGame, botPlayerIds)
+    const pendingBotId = getPendingBotPlayerId(nextGame, effectiveBotIds)
     if (!pendingBotId) break
 
-    const legalActions = getBotLegalActions(nextGame, pendingBotId)
+    // Re-check auto-play condition after each tick (week may have advanced)
+    const stillAutoPlaying = nextGame.autoPlayUntilWeek > 0 && nextGame.currentWeek <= nextGame.autoPlayUntilWeek && !nextGame.isGameOver
+    const currentEffectiveBotIds = stillAutoPlaying ? new Set(nextGame.players.map(p => p.id)) : botPlayerIds
+    const stillPending = getPendingBotPlayerId(nextGame, currentEffectiveBotIds)
+    if (!stillPending) break
+
+    const legalActions = getBotLegalActions(nextGame, stillPending)
     if (legalActions.length === 0) break
 
-    const player = nextGame.players.find(p => p.id === pendingBotId)
+    const player = nextGame.players.find(p => p.id === stillPending)
     const bot = createPresetBotController(
-      pendingBotId,
+      stillPending,
       player?.botPreset,
       nextGame.botPresetWeightsById,
     )
     const phase = player?.phase ?? nextGame.currentPhase
-    const action = bot.pickAction({ game: nextGame, playerId: pendingBotId, legalActions, phase })
-    nextGame = applyBotAction(nextGame, pendingBotId, action)
+    const action = bot.pickAction({ game: nextGame, playerId: stillPending, legalActions, phase })
+    nextGame = applyBotAction(nextGame, stillPending, action)
   }
 
   return nextGame
+}
+
+/**
+ * After a game starts or an action is taken, if auto-play is still in progress,
+ * schedule another bot pass on the next tick so the UI stays responsive.
+ */
+function scheduleAutoPlayContinuation(sessionId) {
+  const session = sessions.get(sessionId)
+  if (!session) return
+  const game = session.game
+  if (!game || !game.autoPlayUntilWeek || game.autoPlayUntilWeek <= 0) return
+  if (game.isGameOver || game.currentWeek > game.autoPlayUntilWeek) return
+
+  setTimeout(() => {
+    const currentSession = sessions.get(sessionId)
+    if (!currentSession) return
+    try {
+      const hydratedGame = hydrateServerGame(currentSession)
+      if (hydratedGame.isGameOver || hydratedGame.currentWeek > hydratedGame.autoPlayUntilWeek) return
+      const gameAfterBots = runServerBotTurns(hydratedGame, currentSession)
+      const nextSession = {
+        ...currentSession,
+        version: currentSession.version + 1,
+        updatedAt: new Date().toISOString(),
+        game: dehydrateGame(gameAfterBots),
+      }
+      sessions.set(sessionId, nextSession)
+      broadcastSession(sessionId)
+      // Recurse in case one pass wasn't enough
+      scheduleAutoPlayContinuation(sessionId)
+    } catch (err) {
+      console.error(`[auto-play] Continuation failed for session ${sessionId}:`, err)
+    }
+  }, 0)
 }
 
 function dehydrateGame(game) {
@@ -264,6 +315,11 @@ function canPlayerAct(game, playerId, session) {
   // Reject bot impersonation — bots are run server-side only
   const lobbyPlayer = session.lobby.players.find(p => p.playerId === playerId)
   if (!lobbyPlayer || lobbyPlayer.isBot) return false
+
+  // During auto-play, all seats are controlled by bots — block human actions
+  if (game.autoPlayUntilWeek > 0 && game.currentWeek <= game.autoPlayUntilWeek && !game.isGameOver) {
+    return false
+  }
 
   const player = game.players.find(p => p.id === playerId)
   if (!player) return false
@@ -318,13 +374,21 @@ function applyGameAction(game, playerId, action) {
       if (!result.ok) throw new Error(result.error)
       return advanceTurn(result.game, playerId)
     }
+    case 'exchange-vehicle': {
+      const result = exchangeVehicleCard(game, action.newCardId, action.oldCardId, playerId)
+      if (!result.ok) throw new Error(result.error)
+      return advanceTurn(result.game, playerId)
+    }
+    case 'stop-auto-play': {
+      return { ...game, autoPlayUntilWeek: 0, turnTimerExpiresAt: null }
+    }
     case 'set-route-vehicle': {
       const result = setBureaucracyRouteVehicleCard(game, action.routeId, action.vehicleCardId, playerId)
       if (!result.ok) throw new Error(result.error)
       return result.game
     }
     case 'add-service-split': {
-      const result = addBureaucracyServiceSplit(game, action.corridorId, playerId)
+      const result = addBureaucracyServiceSplit(game, action.corridorId, playerId, action.initialCityIds ?? undefined)
       if (!result.ok) throw new Error(result.error)
       return result.game
     }
@@ -1558,16 +1622,8 @@ function getAssignedPlayerId(lobby, clientId, requestedPlayerId) {
   const nextAvailablePlayer = currentLobby.players.find(lobbyPlayer => lobbyPlayer.claimedBy === null) ?? null
 
   if (!nextAvailablePlayer) {
-    // All seats are taken — allow joining as spectator if every claimed seat is a bot
-    const allSeatsTakenByBots = currentLobby.players.every(
-      lobbyPlayer => lobbyPlayer.claimedBy && lobbyPlayer.isBot,
-    )
-    if (allSeatsTakenByBots) {
-      return null
-    }
-    const error = new Error("This session is full.")
-    error.statusCode = 409
-    throw error
+    // No seat available — allow joining as spectator (SSE-only, no write path needed)
+    return null
   }
 
   return nextAvailablePlayer.playerId
@@ -1714,6 +1770,75 @@ function broadcastSession(sessionId) {
   for (const stream of streams.keys()) {
     sendEvent(stream, "snapshot", session)
   }
+}
+
+/** Cancel any existing turn timer for a session and set up a new one if applicable. */
+function setupTurnTimer(sessionId) {
+  // Cancel existing timer
+  if (turnTimerTimeouts.has(sessionId)) {
+    clearTimeout(turnTimerTimeouts.get(sessionId))
+    turnTimerTimeouts.delete(sessionId)
+  }
+
+  const session = sessions.get(sessionId)
+  if (!session) return
+
+  const game = session.game
+  if (!game || !game.turnTimerSeconds || game.turnTimerSeconds <= 0 || game.isGameOver) return
+
+  // Find a human player who still needs to act this phase
+  const lobby = session.lobby
+  const humanPlayerIds = new Set((lobby?.players ?? []).filter(p => !p.isBot).map(p => p.playerId))
+  const hydratedGame = hydrateServerGame(session)
+
+  const pendingHumanPlayer = hydratedGame.players.find(p =>
+    humanPlayerIds.has(p.id) && canPlayerAct(hydratedGame, p.id, session)
+  )
+
+  if (!pendingHumanPlayer) return
+
+  const expiresAt = Date.now() + game.turnTimerSeconds * 1000
+
+  // Update turnTimerExpiresAt in the stored game
+  const nextSession = {
+    ...session,
+    game: { ...game, turnTimerExpiresAt: expiresAt },
+  }
+  sessions.set(sessionId, nextSession)
+  broadcastSession(sessionId)
+
+  const timeoutId = setTimeout(() => {
+    turnTimerTimeouts.delete(sessionId)
+    const currentSession = sessions.get(sessionId)
+    if (!currentSession) return
+
+    const currentGame = hydrateServerGame(currentSession)
+    if (currentGame.isGameOver) return
+
+    // Auto-advance the human player whose timer expired
+    try {
+      const playerId = pendingHumanPlayer.id
+      if (!canPlayerAct(currentGame, playerId, currentSession)) return
+
+      const gameAfterAction = applyGameAction(currentGame, playerId, { type: 'advance-turn' })
+      const gameAfterBots = runServerBotTurns(gameAfterAction, currentSession)
+      const mutableGame = dehydrateGame(gameAfterBots)
+
+      const timedOutSession = {
+        ...currentSession,
+        version: currentSession.version + 1,
+        updatedAt: new Date().toISOString(),
+        game: mutableGame,
+      }
+      sessions.set(sessionId, timedOutSession)
+      broadcastSession(sessionId)
+      setupTurnTimer(sessionId)
+    } catch (err) {
+      console.error(`[timer] Auto-advance failed for session ${sessionId}:`, err)
+    }
+  }, game.turnTimerSeconds * 1000)
+
+  turnTimerTimeouts.set(sessionId, timeoutId)
 }
 
 function closeSession(sessionId, message) {
@@ -2149,6 +2274,8 @@ const server = createServer(async (request, response) => {
       sessions.set(sessionId, session)
       activeSessionId = sessionId
       sendJson(response, 201, session)
+      // If auto-play is configured, schedule a follow-up pass in case the initial run didn't complete
+      scheduleAutoPlayContinuation(sessionId)
       return
     } catch (error) {
       sendJson(response, 400, {
@@ -2281,8 +2408,15 @@ const server = createServer(async (request, response) => {
 
       const hydratedGame = hydrateServerGame(session)
 
-      if (!canPlayerAct(hydratedGame, body.playerId, session)) {
+      // stop-auto-play can be called by any human player in the session
+      const isStopAutoPlay = body.action.type === 'stop-auto-play'
+      const isHumanPlayer = session.lobby?.players?.some(p => p.playerId === body.playerId && !p.isBot)
+      if (!isStopAutoPlay && !canPlayerAct(hydratedGame, body.playerId, session)) {
         sendJson(response, 403, { error: "It is not your turn to act." })
+        return
+      }
+      if (isStopAutoPlay && !isHumanPlayer) {
+        sendJson(response, 403, { error: "Only human players can take over auto-play." })
         return
       }
 
@@ -2300,6 +2434,7 @@ const server = createServer(async (request, response) => {
       sessions.set(sessionPath.sessionId, nextSession)
       sendJson(response, 200, { ok: true })
       broadcastSession(sessionPath.sessionId)
+      setupTurnTimer(sessionPath.sessionId)
       return
     } catch (error) {
       sendJson(response, 400, {
@@ -2394,6 +2529,8 @@ const server = createServer(async (request, response) => {
       sessions.set(sessionPath.sessionId, nextSession)
       sendJson(response, 200, nextSession)
       broadcastSession(sessionPath.sessionId)
+      // If auto-play is configured, kick off bot continuation for all seats
+      scheduleAutoPlayContinuation(sessionPath.sessionId)
       return
     } catch (error) {
       sendJson(response, error?.statusCode ?? 400, {

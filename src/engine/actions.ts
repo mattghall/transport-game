@@ -168,6 +168,25 @@ export type VehiclePurchaseResult =
       error: string
     }
 
+export type VehicleExchangeResult =
+  | {
+      ok: true
+      game: GameState
+      newCard: VehicleCard
+      oldCard: VehicleCard
+      tradeInValue: number
+      cost: number
+    }
+  | {
+      ok: false
+      error: string
+    }
+
+export function getVehicleTradeInValue(card: VehicleCard, weeksOwned: number): number {
+  const depreciation = Math.min(0.9, 0.1 * weeksOwned)
+  return Math.round(card.purchasePrice * (1 - depreciation))
+}
+
 export type BureaucracyFuelUnitsResult =
   | {
       ok: true
@@ -1792,10 +1811,17 @@ function advancePhase(game: GameState): GameState {
   }
 
   const activeChanceCardId = nextDeck[0] ?? null
-  const players = resolvedGame.players.map(player => ({
-    ...player,
-    phase: "purchase-equipment" as WeeklyPhase,
-  }))
+  const players = resolvedGame.players.map(player => {
+    const vehicleWeeksOwnedByCardId = { ...player.vehicleWeeksOwnedByCardId }
+    for (const cardId of player.ownedVehicleCardIds) {
+      vehicleWeeksOwnedByCardId[cardId] = (vehicleWeeksOwnedByCardId[cardId] ?? 0) + 1
+    }
+    return {
+      ...player,
+      phase: "purchase-equipment" as WeeklyPhase,
+      vehicleWeeksOwnedByCardId,
+    }
+  })
 
   return {
     ...resolvedGame,
@@ -1986,6 +2012,10 @@ export function buyVehicleCard(
             ...player.ownedVehicleCountsByCardId,
             [card.id]: (player.ownedVehicleCountsByCardId[card.id] ?? 0) + quantity,
           },
+          vehicleWeeksOwnedByCardId: {
+            ...player.vehicleWeeksOwnedByCardId,
+            [card.id]: player.vehicleWeeksOwnedByCardId[card.id] ?? 0,
+          },
           inventory: {
             ...player.inventory,
             vehicles: {
@@ -1997,6 +2027,96 @@ export function buyVehicleCard(
       }),
     },
   }
+}
+
+export function exchangeVehicleCard(
+  game: GameState,
+  newCardId: string,
+  oldCardId: string,
+  playerId = game.currentPlayerId,
+): VehicleExchangeResult {
+  if (isGameLocked(game)) {
+    return { ok: false, error: "Game is locked." }
+  }
+
+  const player = getPlayerById(game, playerId)
+  if (!player) {
+    return { ok: false, error: "Player not found." }
+  }
+
+  const newCard = game.vehicleCatalog.find(c => c.id === newCardId)
+  if (!newCard) {
+    return { ok: false, error: "New vehicle card not found." }
+  }
+
+  const oldCard = game.vehicleCatalog.find(c => c.id === oldCardId)
+  if (!oldCard) {
+    return { ok: false, error: "Trade-in vehicle card not found." }
+  }
+
+  if (!player.ownedVehicleCardIds.includes(oldCardId)) {
+    return { ok: false, error: "You do not own the vehicle to trade in." }
+  }
+
+  if (player.ownedVehicleCardIds.includes(newCardId)) {
+    return { ok: false, error: "You already own this vehicle." }
+  }
+
+  if (!game.vehicleMarketCardIds.includes(newCardId)) {
+    return { ok: false, error: "That vehicle is not available in the market." }
+  }
+
+  const weeksOwned = player.vehicleWeeksOwnedByCardId[oldCardId] ?? 0
+  const tradeInValue = getVehicleTradeInValue(oldCard, weeksOwned)
+  const cost = Math.max(0, newCard.purchasePrice - tradeInValue)
+
+  if (player.money < cost) {
+    return { ok: false, error: `Not enough money. Need ${cost.toLocaleString()}, have ${Math.round(player.money).toLocaleString()}.` }
+  }
+
+  const newVehicleWeeksOwnedByCardId = { ...player.vehicleWeeksOwnedByCardId }
+  delete newVehicleWeeksOwnedByCardId[oldCardId]
+  newVehicleWeeksOwnedByCardId[newCardId] = 0
+
+  const newOwnedVehicleCountsByCardId = { ...player.ownedVehicleCountsByCardId }
+  const remainingCount = (newOwnedVehicleCountsByCardId[oldCardId] ?? 1) - 1
+  if (remainingCount <= 0) {
+    delete newOwnedVehicleCountsByCardId[oldCardId]
+  } else {
+    newOwnedVehicleCountsByCardId[oldCardId] = remainingCount
+  }
+  newOwnedVehicleCountsByCardId[newCardId] = (newOwnedVehicleCountsByCardId[newCardId] ?? 0) + 1
+
+  const newOwnedVehicleCardIds = player.ownedVehicleCardIds
+    .filter(id => id !== oldCardId || remainingCount > 0)
+    .concat(player.ownedVehicleCardIds.includes(newCardId) ? [] : [newCardId])
+
+  const inventoryKey = newCard.type === "train" ? "trains" as const : newCard.type === "air" ? "planes" as const : "buses" as const
+  const oldInventoryKey = oldCard.type === "train" ? "trains" as const : oldCard.type === "air" ? "planes" as const : "buses" as const
+
+  const nextGame: GameState = {
+    ...game,
+    vehicleMarketCardIds: game.vehicleMarketCardIds.filter(id => id !== newCardId),
+    players: game.players.map(p =>
+      p.id !== playerId ? p : {
+        ...p,
+        money: p.money - cost,
+        ownedVehicleCardIds: newOwnedVehicleCardIds,
+        ownedVehicleCountsByCardId: newOwnedVehicleCountsByCardId,
+        vehicleWeeksOwnedByCardId: newVehicleWeeksOwnedByCardId,
+        inventory: {
+          ...p.inventory,
+          vehicles: {
+            ...p.inventory.vehicles,
+            [inventoryKey]: p.inventory.vehicles[inventoryKey] + 1,
+            [oldInventoryKey]: Math.max(0, p.inventory.vehicles[oldInventoryKey] - 1),
+          },
+        },
+      }
+    ),
+  }
+
+  return { ok: true, game: nextGame, newCard, oldCard, tradeInValue, cost }
 }
 
 export function setBureaucracyRouteFuelUnits(
@@ -2197,6 +2317,7 @@ export function addBureaucracyServiceSplit(
   game: GameState,
   corridorId: string,
   playerId = game.currentPlayerId,
+  initialCityIds?: string[],
 ): BureaucracyServiceSplitResult {
   if (isGameLocked(game)) {
     return {
@@ -2212,6 +2333,14 @@ export function addBureaucracyServiceSplit(
     }
   }
 
+  const currentCount = Math.max(1, game.bureaucracyServiceSlotCountsByCorridorId[corridorId] ?? 1)
+  const newSlotIndex = currentCount
+  const newSlotId = buildServiceSlotId(corridorId, newSlotIndex)
+
+  const nextCitySelections = initialCityIds
+    ? { ...game.bureaucracyServiceCityIdsByRouteId, [newSlotId]: initialCityIds }
+    : game.bureaucracyServiceCityIdsByRouteId
+
   return {
     ok: true,
     corridorId,
@@ -2219,8 +2348,9 @@ export function addBureaucracyServiceSplit(
       ...game,
       bureaucracyServiceSlotCountsByCorridorId: {
         ...game.bureaucracyServiceSlotCountsByCorridorId,
-        [corridorId]: Math.max(1, game.bureaucracyServiceSlotCountsByCorridorId[corridorId] ?? 1) + 1,
+        [corridorId]: currentCount + 1,
       },
+      bureaucracyServiceCityIdsByRouteId: nextCitySelections,
     },
   }
 }

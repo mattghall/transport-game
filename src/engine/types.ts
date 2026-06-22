@@ -144,6 +144,7 @@ export type PlayerState = {
   inventory: PlayerInventory
   ownedVehicleCardIds: string[]
   ownedVehicleCountsByCardId: Record<string, number>
+  vehicleWeeksOwnedByCardId: Record<string, number>
   operatingCosts: number
   weeklyPayout: number
   lastPeriodPassengersServed: number
@@ -221,6 +222,9 @@ export type GameState = {
   claimedRouteCountsByPlayerIdThisTurn: Record<string, number>
   claimedRouteModesThisPhase: RouteClaimsByMode
   botPresetWeightsById?: Partial<Record<BotPresetId, ScriptedBotWeights>>
+  turnTimerSeconds: number
+  turnTimerExpiresAt: number | null
+  autoPlayUntilWeek: number
 
   players: Player[]
   leadPlayerIndex: number

@@ -106,6 +106,8 @@ export type CreateGameStateOptions = {
   startingMoney?: number
   seed?: number
   botPresetWeightsById?: Partial<Record<BotPresetId, ScriptedBotWeights>>
+  turnTimerSeconds?: number
+  autoPlayUntilWeek?: number
 }
 
 function shuffleVehicleCards(cards: VehicleCard[], initialRandomState: number) {
@@ -205,6 +207,7 @@ function createPlayer(
     },
     ownedVehicleCardIds: [],
     ownedVehicleCountsByCardId: {},
+    vehicleWeeksOwnedByCardId: {},
     operatingCosts: 0,
     weeklyPayout: 0,
     lastPeriodPassengersServed: 0,
@@ -237,6 +240,7 @@ function applyOpeningBusPurchases(
     },
     ownedVehicleCardIds: [...player.ownedVehicleCardIds],
     ownedVehicleCountsByCardId: { ...player.ownedVehicleCountsByCardId },
+    vehicleWeeksOwnedByCardId: { ...player.vehicleWeeksOwnedByCardId },
   }))
 
   // Give every player a free Toyota Sienna starter vehicle
@@ -244,6 +248,7 @@ function applyOpeningBusPurchases(
     nextPlayers.forEach(player => {
       player.ownedVehicleCardIds = [...new Set([...player.ownedVehicleCardIds, siennaCard.id])]
       player.ownedVehicleCountsByCardId[siennaCard.id] = (player.ownedVehicleCountsByCardId[siennaCard.id] ?? 0) + 1
+      player.vehicleWeeksOwnedByCardId[siennaCard.id] = player.vehicleWeeksOwnedByCardId[siennaCard.id] ?? 0
       player.inventory.vehicles.buses += 1
     })
   }
@@ -310,6 +315,9 @@ export function createGameState(
     claimedRouteCountsByPlayerIdThisTurn: {},
     claimedRouteModesThisPhase: EMPTY_ROUTE_CLAIMS_BY_MODE,
     botPresetWeightsById: options.botPresetWeightsById ? { ...options.botPresetWeightsById } : undefined,
+    turnTimerSeconds: options.turnTimerSeconds ?? 0,
+    turnTimerExpiresAt: null,
+    autoPlayUntilWeek: options.autoPlayUntilWeek ?? 0,
     players,
     leadPlayerIndex: 0,
     currentPlayerId: players[0]?.id ?? "p1",

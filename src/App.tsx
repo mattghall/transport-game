@@ -25,6 +25,7 @@ import {
   addBureaucracyServiceSplit,
   advanceTurn,
   buyVehicleCard,
+  exchangeVehicleCard,
   canPlayerEditOperations,
   canPlayerPickCities,
   canPlayerStartPhaseByPipeline,
@@ -236,6 +237,8 @@ export default function App() {
   )
   const [lanSeatCount, setLanSeatCount] = useState(4)
   const [chanceCardsEnabled, setChanceCardsEnabled] = useState(true)
+  const [turnTimerSeconds, setTurnTimerSeconds] = useState(60)
+  const [autoPlayUntilWeek, setAutoPlayUntilWeek] = useState(0)
   const [playerName, setPlayerName] = useState("")
   const [isUpdatingLobby, setIsUpdatingLobby] = useState(false)
   // Pending bot name edits keyed by playerId — sent on input blur
@@ -813,7 +816,13 @@ export default function App() {
     setIsLaunchingSession(true)
 
     try {
-      const players = createSetupPlayers(lanSeatCount)
+      // When auto-play is enabled: seat 0 (p1) stays human so the player can take
+      // over after the preview months. Seats 1..N-1 are regular bots that keep
+      // playing after the preview period ends.
+      const botSeatIndexes = autoPlayUntilWeek > 0
+        ? Array.from({ length: Math.max(0, lanSeatCount - 1) }, (_, i) => i + 1)
+        : []
+      const players = createSetupPlayers(lanSeatCount, botSeatIndexes)
       const initialUserDecks = loadUserDecks()
       const managedBotPresetWeights = await fetchManagedBotPresetWeightOverrides(players.length)
       const snapshot = await createLanSession(defaultSessionServerUrl, {
@@ -825,23 +834,36 @@ export default function App() {
           chanceCardsEnabled,
           startingMoney: DEFAULT_STARTING_MONEY,
           botPresetWeightsById: managedBotPresetWeights,
+          turnTimerSeconds,
+          autoPlayUntilWeek,
         }),
       })
 
+      // When auto-play is configured, immediately claim the human seat, mark ready,
+      // and start the game so bots can run all seats through the preview months.
+      let finalSnapshot = snapshot
+      if (autoPlayUntilWeek > 0) {
+        finalSnapshot = await updateLanLobby(defaultSessionServerUrl, snapshot.sessionId, {
+          clientId: lobbyClientId,
+          isReady: true,
+          startGame: true,
+        })
+      }
+
       setLanStatusTone("neutral")
       setLanStatusMessage(
-        `Created ${snapshot.sessionName}. Share the join link to invite others.`,
+        `Created ${finalSnapshot.sessionName}. Share the join link to invite others.`,
       )
       setLauncherSessions(current => {
-        const nextSessions = current.filter(session => session.sessionId !== snapshot.sessionId)
+        const nextSessions = current.filter(session => session.sessionId !== finalSnapshot.sessionId)
         return [
           {
-            sessionId: snapshot.sessionId,
-            sessionName: snapshot.sessionName,
-            updatedAt: snapshot.updatedAt,
-            lobbyStatus: snapshot.lobby.status,
-            playerCount: snapshot.game.players.length,
-            readyPlayerCount: snapshot.lobby.players.filter(player => player.isReady).length,
+            sessionId: finalSnapshot.sessionId,
+            sessionName: finalSnapshot.sessionName,
+            updatedAt: finalSnapshot.updatedAt,
+            lobbyStatus: finalSnapshot.lobby.status,
+            playerCount: finalSnapshot.game.players.length,
+            readyPlayerCount: finalSnapshot.lobby.players.filter(player => player.isReady).length,
             isActive: true,
           },
           ...nextSessions.map(session => ({
@@ -850,14 +872,14 @@ export default function App() {
           })),
         ]
       })
-      applyLanSnapshot(snapshot, defaultSessionServerUrl)
+      applyLanSnapshot(finalSnapshot, defaultSessionServerUrl)
     } catch (error) {
       setLanStatusTone("error")
       setLanStatusMessage(error instanceof Error ? error.message : "Could not launch the LAN session.")
     } finally {
       setIsLaunchingSession(false)
     }
-  }, [applyLanSnapshot, defaultSessionServerUrl, lanSeatCount])
+  }, [applyLanSnapshot, autoPlayUntilWeek, chanceCardsEnabled, defaultSessionServerUrl, lanSeatCount, lobbyClientId, turnTimerSeconds])
 
   const handleToggleLobbyBotSeat = useCallback(async (playerId: string, isBot: boolean) => {
     const activeLanSession = lanSessionRef.current
@@ -1119,6 +1141,39 @@ export default function App() {
     [commitGameMutation, game, selectedPlayerId],
   )
 
+  const handleExchangeVehicleCard = useCallback(
+    async (newCardId: string, oldCardId: string) =>
+      commitGameMutation(
+        baseGame => {
+          const actingPlayerId = resolveActingPlayerId(baseGame) ?? baseGame.currentPlayerId
+          const result = exchangeVehicleCard(baseGame, newCardId, oldCardId, actingPlayerId)
+
+          if (!result.ok) {
+            return result
+          }
+
+          const loggedGame = appendActionLog(
+            baseGame,
+            result.game,
+            `exchanged #${result.oldCard.number} ${result.oldCard.name} for #${result.newCard.number} ${result.newCard.name}`,
+            actingPlayerId,
+          )
+          const advancedGame = advanceTurn(loggedGame, actingPlayerId)
+
+          return {
+            ok: true as const,
+            game: advancedGame,
+            newCard: result.newCard,
+            oldCard: result.oldCard,
+            tradeInValue: result.tradeInValue,
+            cost: result.cost,
+          }
+        },
+        { type: "exchange-vehicle", newCardId, oldCardId },
+      ),
+    [commitGameMutation, resolveActingPlayerId],
+  )
+
   const handleBuyVehicleCardAndAdvance = useCallback(
     async (cardId: string, quantity: number) =>
       commitGameMutation(
@@ -1162,6 +1217,18 @@ export default function App() {
     [commitGameMutation, resolveActingPlayerId],
   )
 
+  const handleStopAutoPlay = useCallback(async () => {
+    const actingPlayerId = resolveActingPlayerId(game) ?? game?.currentPlayerId ?? null
+    if (!actingPlayerId) return
+    await commitGameMutation(
+      baseGame => ({
+        ok: true as const,
+        game: { ...baseGame, autoPlayUntilWeek: 0, turnTimerExpiresAt: null },
+      }),
+      { type: "stop-auto-play" },
+    )
+  }, [commitGameMutation, resolveActingPlayerId, game])
+
   const handleSetBureaucracyRouteVehicleCard = useCallback(
     async (routeId: string, vehicleCardId: string | null) =>
       commitGameMutation(
@@ -1195,11 +1262,11 @@ export default function App() {
   )
 
   const handleAddBureaucracyServiceSplit = useCallback(
-    async (corridorId: string) =>
+    async (corridorId: string, initialCityIds?: string[]) =>
       commitGameMutation(
         baseGame => {
           const actingPlayerId = resolveActingPlayerId(baseGame)
-          const result = addBureaucracyServiceSplit(baseGame, corridorId, actingPlayerId)
+          const result = addBureaucracyServiceSplit(baseGame, corridorId, actingPlayerId, initialCityIds)
 
           return result.ok
             ? {
@@ -1213,7 +1280,7 @@ export default function App() {
               }
             : result
         },
-        { type: "add-service-split", corridorId },
+        { type: "add-service-split", corridorId, initialCityIds },
       ),
     [commitGameMutation, resolveActingPlayerId],
   )
@@ -1604,6 +1671,45 @@ export default function App() {
                     <strong>Chance cards</strong>
                     <div style={{ fontSize: 12, color: "#56635a" }}>
                       Random fuel & demand events each week
+                    </div>
+                  </span>
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <select
+                    value={turnTimerSeconds}
+                    onChange={e => setTurnTimerSeconds(Number(e.target.value))}
+                    style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid #c7d0c4", fontSize: 14 }}
+                  >
+                    <option value={0}>No timer</option>
+                    <option value={30}>30 seconds</option>
+                    <option value={60}>1 minute</option>
+                    <option value={90}>90 seconds</option>
+                    <option value={120}>2 minutes</option>
+                    <option value={180}>3 minutes</option>
+                  </select>
+                  <span>
+                    <strong>Turn timer</strong>
+                    <div style={{ fontSize: 12, color: "#56635a" }}>
+                      Auto-advance when time runs out
+                    </div>
+                  </span>
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <select
+                    value={autoPlayUntilWeek}
+                    onChange={e => setAutoPlayUntilWeek(Number(e.target.value))}
+                    style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid #c7d0c4", fontSize: 14 }}
+                  >
+                    <option value={0}>No auto-play</option>
+                    <option value={1}>Auto-play month 1</option>
+                    <option value={2}>Auto-play months 1–2</option>
+                    <option value={3}>Auto-play months 1–3</option>
+                    <option value={5}>Auto-play months 1–5</option>
+                  </select>
+                  <span>
+                    <strong>Bot preview</strong>
+                    <div style={{ fontSize: 12, color: "#56635a" }}>
+                      Bots play early months; take over when ready
                     </div>
                   </span>
                 </label>
@@ -2075,12 +2181,15 @@ export default function App() {
               onDrawCityOffer={handleDrawCityOffer}
               onSetActiveCityOfferKeptCityIds={handleSetActiveCityOfferKeptCityIds}
               onBuyVehicleCard={handleBuyVehicleCardAndAdvance}
+              onExchangeVehicleCard={handleExchangeVehicleCard}
               onUpgradeRailRoute={handleUpgradeRailRoute}
               onSetBureaucracyRouteVehicleCard={handleSetBureaucracyRouteVehicleCard}
               onAddBureaucracyServiceSplit={handleAddBureaucracyServiceSplit}
               onMoveBureaucracyServiceCity={handleMoveBureaucracyServiceCity}
               onDeleteBureaucracyServicePod={handleDeleteBureaucracyServicePod}
               onAdvanceTurn={handleAdvanceTurn}
+              onStopAutoPlay={handleStopAutoPlay}
+              onGoHome={() => setAppMode("launcher")}
               onUndo={handleUndo}
               canUndo={history.length > 0 && lanSession === null && !isLocalBotTurn}
             />
@@ -2177,9 +2286,7 @@ export default function App() {
               >
                 <div style={{ fontSize: 22, fontWeight: 800, color: "#223024" }}>
                   {selectedPlayer
-                    ? game.currentPhase === "add-city" && hasPlayerCompletedAddCity(game, selectedPlayerId)
-                      ? "Operations locked in"
-                      : `Waiting for ${waitingForPlayer?.name ?? game.currentPlayerId}`
+                    ? `Waiting for ${waitingForPlayer?.name ?? "other players"}`
                     : "Viewing live game"}
                 </div>
                 <div style={{ color: "#56635a", fontSize: 14 }}>

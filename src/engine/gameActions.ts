@@ -21,3 +21,5 @@ export type GameAction =
   | { type: "move-service-city"; corridorId: string; cityId: string; routeId: string; sourceRouteId: string | null }
   | { type: "delete-service-pod"; corridorId: string; routeId: string }
   | { type: "upgrade-rail"; routeId: string }
+  | { type: "exchange-vehicle"; newCardId: string; oldCardId: string }
+  | { type: "stop-auto-play" }

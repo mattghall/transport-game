@@ -51,6 +51,7 @@ import {
 import { getPlayerOwnedNetworkRoutes } from "../engine/playerNetwork"
 import { getOwnedVehicleCountsByCardId } from "../engine/playerVehicles"
 import { latLngToWorld } from "../engine/projection"
+import { getVehicleTradeInValue } from "../engine/actions"
 import {
   calculateDistanceMiles,
   calculateRealFuelFromUnits,
@@ -141,12 +142,28 @@ type Props = {
         error: string
       }
   >
+  onExchangeVehicleCard: (
+    newCardId: string,
+    oldCardId: string,
+  ) => MaybePromise<
+    | {
+        ok: true
+        newCard: VehicleCard
+        oldCard: VehicleCard
+        tradeInValue: number
+        cost: number
+      }
+    | {
+        ok: false
+        error: string
+      }
+  >
   onUpgradeRailRoute: (routeId: string) => MaybePromise<RailUpgradeResult>
   onSetBureaucracyRouteVehicleCard: (
     routeId: string,
     vehicleCardId: string | null,
   ) => MaybePromise<BureaucracyVehicleCardResult>
-  onAddBureaucracyServiceSplit: (corridorId: string) => MaybePromise<BureaucracyServiceSplitResult>
+  onAddBureaucracyServiceSplit: (corridorId: string, initialCityIds?: string[]) => MaybePromise<BureaucracyServiceSplitResult>
   onMoveBureaucracyServiceCity: (
     corridorId: string,
     cityId: string,
@@ -163,6 +180,8 @@ type Props = {
     error: string
   }>
   onAdvanceTurn: () => MaybePromise<{ ok: true; game: GameState } | { ok: false; error: string }>
+  onStopAutoPlay: () => MaybePromise<void>
+  onGoHome?: () => void
   onUndo: () => void
   canUndo: boolean
 }
@@ -1251,12 +1270,15 @@ export default function Board({
   onDrawCityOffer,
   onSetActiveCityOfferKeptCityIds,
   onBuyVehicleCard,
+  onExchangeVehicleCard,
   onUpgradeRailRoute,
   onSetBureaucracyRouteVehicleCard,
   onAddBureaucracyServiceSplit,
   onMoveBureaucracyServiceCity,
   onDeleteBureaucracyServicePod,
   onAdvanceTurn,
+  onStopAutoPlay,
+  onGoHome,
   onUndo,
   canUndo,
 }: Props) {
@@ -1267,6 +1289,13 @@ export default function Board({
   const [selectedOwnedCityIds, setSelectedOwnedCityIds] = useState<string[]>([])
   const [selectedRailSegmentKeys, setSelectedRailSegmentKeys] = useState<string[]>([])
   const [draggedPodCity, setDraggedPodCity] = useState<DraggedPodCity | null>(null)
+  const [draggedVehicleCard, setDraggedVehicleCard] = useState<{
+    planId: string
+    cardId: string
+    corridorId: string
+    selectedCityIds: string[]
+    hasSiblings: boolean
+  } | null>(null)
   const [expandedPlayerId, setExpandedPlayerId] = useState<string | null>(null)
   const [isResourceMarketOpen, setIsResourceMarketOpen] = useState(false)
   const [isVehicleMarketOpen, setIsVehicleMarketOpen] = useState(false)
@@ -1278,11 +1307,31 @@ export default function Board({
   const [wikiPreviousPanel, setWikiPreviousPanel] = useState<RestorablePanel>(null)
   const [zoomScale, setZoomScale] = useState(1)
   const [isLiveStagePulseOn, setIsLiveStagePulseOn] = useState(false)
+  const [turnTimerSecondsLeft, setTurnTimerSecondsLeft] = useState<number | null>(null)
+
+  useEffect(() => {
+    if (!game.turnTimerExpiresAt || !game.turnTimerSeconds) {
+      setTurnTimerSecondsLeft(null)
+      return
+    }
+    const update = () => {
+      const left = Math.max(0, Math.round((game.turnTimerExpiresAt! - Date.now()) / 1000))
+      setTurnTimerSecondsLeft(left)
+    }
+    update()
+    const id = window.setInterval(update, 500)
+    return () => window.clearInterval(id)
+  }, [game.turnTimerExpiresAt, game.turnTimerSeconds])
   const [isPeriodSummaryOpen, setIsPeriodSummaryOpen] = useState(false)
   const [isGameSummaryMinimized, setIsGameSummaryMinimized] = useState(false)
   const [lastShownPeriodSummaryKey, setLastShownPeriodSummaryKey] = useState<string | null>(null)
   const [showCityNames, setShowCityNames] = useState(true)
   const [showCitySizeBubbles, setShowCitySizeBubbles] = useState(false)
+  const [pendingExchangeOldCardId, setPendingExchangeOldCardId] = useState<string | null>(null)
+  const [autoPlayCompleteMonths] = useState<number>(() =>
+    game.autoPlayUntilWeek > 0 && game.currentWeek > game.autoPlayUntilWeek ? game.autoPlayUntilWeek : 0,
+  )
+  const [hasDismissedAutoPlayBanner, setHasDismissedAutoPlayBanner] = useState(false)
   const [statusMessage, setStatusMessage] = useState<string>(
     getPhaseStatusMessage(game.currentPhase),
   )
@@ -1700,7 +1749,8 @@ export default function Board({
 
       const cityOwners = ownedCityPlayersByCityId.get(city.id) ?? []
 
-      if (cityOwners.length > 0) {
+      // Don't show ownership bubbles during operations — routes shown via pod preview lines
+      if (cityOwners.length > 0 && game.currentPhase !== "operations") {
         const primaryOwner = cityOwners[0]
         return {
           radius: city.size * 2.4,
@@ -2441,6 +2491,25 @@ export default function Board({
   )
   const displayedMapRoutes = useMemo(
     () => {
+      // Build route → pod color map from bureaucracy summaries
+      const routePodColorMap = new Map<string, string>()
+      for (const summary of bureaucracySummaries) {
+        const plansWithRoutes = summary.routePlans.filter(
+          p => !p.isDisconnected && p.selectedCityIds.length >= 2 && p.routes.length > 0,
+        )
+        plansWithRoutes.forEach((plan, pi) => {
+          const podColor =
+            plan.route.mode === "rail"
+              ? RAIL_POD_COLOR_PALETTE[pi % RAIL_POD_COLOR_PALETTE.length]
+              : plan.route.mode === "bus"
+                ? BUS_POD_COLOR_PALETTE[pi % BUS_POD_COLOR_PALETTE.length]
+                : POD_COLOR_PALETTE[pi % POD_COLOR_PALETTE.length]
+          for (const route of plan.routes) {
+            routePodColorMap.set(`${summary.player.id}:${route.id}`, podColor)
+          }
+        })
+      }
+
       const routesByKey = new Map<
         string,
         {
@@ -2508,7 +2577,8 @@ export default function Board({
             }
             for (const route of plan.routes) {
               if (route.mode === "air" && !airRouteIdsWithPlane.has(route.id)) continue
-              addRoute(`${player.id}:${route.id}`, route, player.color, 0.95)
+              const key = `${player.id}:${route.id}`
+              addRoute(key, route, routePodColorMap.get(key) ?? player.color, 0.95)
             }
           }
         }
@@ -2527,8 +2597,8 @@ export default function Board({
             }
             for (const route of plan.routes) {
               if (route.mode === "air" && !airRouteIdsWithPlane.has(route.id)) continue
-              // Show current player's routes at full opacity; others dimmed
-              addRoute(`${summary.player.id}:${route.id}`, route, summary.player.color, isCurrentPlayer ? 1 : 0.35)
+              const key = `${summary.player.id}:${route.id}`
+              addRoute(key, route, routePodColorMap.get(key) ?? summary.player.color, isCurrentPlayer ? 1 : 0.35)
             }
           }
         }
@@ -2543,10 +2613,11 @@ export default function Board({
             if (route.mode === "air" && !airRouteIdsWithPlane.has(route.id)) {
               continue
             }
+            const key = `${player.id}:${route.id}`
             addRoute(
-              `${player.id}:${route.id}`,
+              key,
               route,
-              player.color,
+              routePodColorMap.get(key) ?? player.color,
               MODE_LINE_STYLES[route.mode].opacity ?? 1,
             )
           }
@@ -2567,7 +2638,8 @@ export default function Board({
           }
 
           for (const route of plan.routes) {
-            addRoute(`${summary.player.id}:${route.id}`, route, summary.player.color, 1)
+            const key = `${summary.player.id}:${route.id}`
+            addRoute(key, route, routePodColorMap.get(key) ?? summary.player.color, 1)
           }
         }
       }
@@ -2595,10 +2667,11 @@ export default function Board({
       })
     }, [game, game.resourceMarket])
   const visibleVehicleCards = useMemo(() => {
+    const ownedCardIds = new Set(currentPlayerOwnedVehicleCards.map(c => c.id))
     return getVisibleVehicleMarketCardIds(game)
       .map(cardId => vehicleCardMap[cardId])
-      .filter((card): card is VehicleCard => card !== undefined)
-  }, [game, vehicleCardMap])
+      .filter((card): card is VehicleCard => card !== undefined && !ownedCardIds.has(card.id))
+  }, [game, vehicleCardMap, currentPlayerOwnedVehicleCards])
   const vehicleMarketCountsByType = useMemo(
     () => ({
       bus: game.vehicleMarketCardIds.reduce(
@@ -3005,6 +3078,14 @@ export default function Board({
   const unassignedVehicleCardCount = canEditOperations
     ? Math.max(0, currentPlayerOwnedVehicleCards.length - currentPlayerActiveBureaucracyPlans.length)
     : 0
+  const assignedVehicleCardIds = new Set(
+    canEditOperations
+      ? currentPlayerActiveBureaucracyPlans.map(plan => plan.vehicleCard?.id).filter((id): id is string => id !== undefined)
+      : [],
+  )
+  const unassignedVehicleCards = canEditOperations
+    ? currentPlayerOwnedVehicleCards.filter(card => !assignedVehicleCardIds.has(card.id))
+    : []
   const isAdvanceBlocked =
     (canManageCurrentCityOffer && (game.activeCityOffer?.keptCityIds.length ?? 0) !== 2) ||
     hasPendingOperationsRouteSelection ||
@@ -3014,6 +3095,56 @@ export default function Board({
     : shouldAdvancePhase
       ? "Next phase"
       : "Next player"
+
+  function renderPodMiniMap(cityIds: string[], mode: RouteMode) {
+    if (cityIds.length < 2) return null
+    const cities = cityIds.map(id => cityMap[id]).filter(Boolean)
+    if (cities.length < 2) return null
+
+    const worldPts = cities.map(c => ({ id: c.id, name: c.name, size: c.size, ...latLngToWorld(c) }))
+    const SVG_W = 130, SVG_H = 72, PAD = 14
+    const rawMinX = Math.min(...worldPts.map(p => p.x))
+    const rawMaxX = Math.max(...worldPts.map(p => p.x))
+    const rawMinY = Math.min(...worldPts.map(p => p.y))
+    const rawMaxY = Math.max(...worldPts.map(p => p.y))
+    const rangeX = Math.max(rawMaxX - rawMinX, 60)
+    const rangeY = Math.max(rawMaxY - rawMinY, 40)
+    const cx = (rawMinX + rawMaxX) / 2, cy = (rawMinY + rawMaxY) / 2
+    const scale = Math.min((SVG_W - PAD * 2) / rangeX, (SVG_H - PAD * 2) / rangeY)
+    const tx = (wx: number) => SVG_W / 2 + (wx - cx) * scale
+    const ty = (wy: number) => SVG_H / 2 + (wy - cy) * scale
+    const pts = worldPts.map(p => ({ ...p, sx: tx(p.x), sy: ty(p.y) }))
+    const ptMap = new Map(pts.map(p => [p.id, p]))
+
+    // Route lines between cities in this pod
+    const ownedRoutes = getPlayerOwnedNetworkRoutes(game, currentPlayer?.id ?? "")
+    const cityIdSet = new Set(cityIds)
+    const lines = ownedRoutes.filter(r =>
+      r.mode === mode && cityIdSet.has(r.cityA) && cityIdSet.has(r.cityB)
+    ).map(r => {
+      const a = ptMap.get(r.cityA), b = ptMap.get(r.cityB)
+      return a && b ? { key: `${r.cityA}-${r.cityB}`, x1: a.sx, y1: a.sy, x2: b.sx, y2: b.sy } : null
+    }).filter(Boolean) as { key: string; x1: number; y1: number; x2: number; y2: number }[]
+
+    const lineColor = mode === "rail" ? "#5b7395" : mode === "air" ? "#7c66a7" : "#68865b"
+
+    return (
+      <svg width={SVG_W} height={SVG_H} style={{ display: "block", flexShrink: 0, borderRadius: 6, background: "#f7faf6", border: "1px solid #e1e6df" }}>
+        {lines.map(l => (
+          <line key={l.key} x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2}
+            stroke={lineColor} strokeWidth={2} strokeOpacity={0.7} strokeLinecap="round" />
+        ))}
+        {pts.map(p => (
+          <g key={p.id}>
+            <circle cx={p.sx} cy={p.sy} r={3} fill={lineColor} />
+            <text x={p.sx} y={p.sy - 5} textAnchor="middle" fontSize={7} fill="#324236" fontFamily="system-ui, sans-serif">
+              {p.name.length > 10 ? p.name.slice(0, 9) + "…" : p.name}
+            </text>
+          </g>
+        ))}
+      </svg>
+    )
+  }
 
   function renderOperationsPodEditor(
     groups = currentPlayerPodGroups,
@@ -3027,18 +3158,15 @@ export default function Board({
       return (
         <div
           style={{
-            border: "1px solid #e1e6df",
+            border: "1px dashed #e1e6df",
             borderRadius: 10,
-            padding: 10,
+            padding: "8px 10px",
             background: "#fafcf9",
-            display: "grid",
-            gap: 4,
+            color: "#848484",
+            fontSize: 12,
           }}
         >
-          <strong>Route editor</strong>
-          <div style={{ color: "#56635a", fontSize: 12 }}>
-            {options?.emptyMessage ?? "No editable routes are available in this section yet."}
-          </div>
+          {options?.emptyMessage ?? "No editable routes are available in this section yet."}
         </div>
       )
     }
@@ -3054,12 +3182,6 @@ export default function Board({
           gap: 10,
         }}
       >
-        <div style={{ display: "grid", gap: 4 }}>
-          <strong>Route editor</strong>
-          <div style={{ color: "#56635a", fontSize: 12 }}>
-            Split a corridor into smaller routes, drag cities to copy them into another pod, or use disconnected/× to remove a city from just one pod.
-          </div>
-        </div>
         {hasInvalidOperationsPods && (
           <div
             style={{
@@ -3099,9 +3221,29 @@ export default function Board({
           </div>
         )}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-start" }}>
-          {groups.map(group => {
+          {[...groups].sort((a, b) => {
+            const aHasVehicle = a.plans.some(p => !p.isDisconnected && p.vehicleCard != null) ? 1 : 0
+            const bHasVehicle = b.plans.some(p => !p.isDisconnected && p.vehicleCard != null) ? 1 : 0
+            return bHasVehicle - aHasVehicle
+          }).map(group => {
             const disconnectedPlan =
               group.plans.find(plan => plan.isDisconnected) ?? null
+
+            // Pre-compute merged pod count so we can size the network group accordingly
+            const cityKeyFn = (ids: string[]) => [...ids].sort().join("\x00")
+            const uniquePodKeys = new Set(
+              group.plans.filter(p => !p.isDisconnected).map(p => cityKeyFn(p.selectedCityIds))
+            )
+            const mergedPodCount = Math.max(1, uniquePodKeys.size)
+            // Whether any route in this network has a vehicle assigned
+            const anyVehicleAssigned = group.plans.some(p => !p.isDisconnected && p.vehicleCard != null)
+
+            // Vehicle networks: higher grow + wider basis; no-vehicle: compact
+            const podBasisPx = anyVehicleAssigned ? 500 : 280
+            const podMinPx = anyVehicleAssigned ? 420 : 240
+            const networkFlexGrow = anyVehicleAssigned ? mergedPodCount * 2 : mergedPodCount
+            const networkFlexBasis = `${mergedPodCount * podBasisPx}px`
+            const networkMinWidth = mergedPodCount * podMinPx
 
             return (
             <div
@@ -3114,9 +3256,8 @@ export default function Board({
                 display: "grid",
                 gap: 8,
                 background: "#fafcf9",
-                flex: "1 1 calc((100% - 10px) / 2)",
-                maxWidth: "calc((100% - 10px) / 2)",
-                minWidth: 280,
+                flex: `${networkFlexGrow} 1 ${networkFlexBasis}`,
+                minWidth: networkMinWidth,
               }}
             >
               <div
@@ -3152,25 +3293,47 @@ export default function Board({
                   </button>
                 )}
               </div>
-              <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 2 }}>
-                {group.plans.map(plan => {
-                  const isInvalidPod = invalidCurrentPlayerPodRouteIds.has(plan.id)
-                  const routeSelectColors = getRouteSelectColors(plan.route.mode)
-                  const dropError =
-                    draggedPodCity && draggedPodCity.corridorId === group.corridorId
-                      ? getPodMoveError(group.plans, draggedPodCity.cityId, plan.id)
-                      : null
-                  const canDrop =
-                    draggedPodCity !== null &&
-                    draggedPodCity.corridorId === group.corridorId &&
-                    dropError === null
-                  const availableVehicleCards = currentPlayerOwnedVehicleCards.filter(
-                    card => card.type === getVehicleTypeForMode(plan.route.mode),
-                  )
+              <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                {/* Content pods — wrap among themselves */}
+                <div style={{ flex: 1, display: "flex", gap: 8, flexWrap: "wrap", minWidth: 0 }}>
+                {(() => {
+                  // Group non-disconnected plans by their selected city set;
+                  // plans sharing the same cities form one merged pod with multiple vehicle cards.
+                  const cityKey = (ids: string[]) => [...ids].sort().join("\x00")
+                  type MergedPodGroup = { key: string, plans: BureaucracyRoutePlan[] }
+                  const mergedGroups: MergedPodGroup[] = []
+                  const keyToIndex = new Map<string, number>()
+                  for (const plan of group.plans) {
+                    if (plan.isDisconnected) continue
+                    const k = cityKey(plan.selectedCityIds)
+                    const idx = keyToIndex.get(k)
+                    if (idx !== undefined) {
+                      mergedGroups[idx].plans.push(plan)
+                    } else {
+                      keyToIndex.set(k, mergedGroups.length)
+                      mergedGroups.push({ key: k, plans: [plan] })
+                    }
+                  }
+                  return mergedGroups.map(mergedPod => {
+                    // Use first plan as the representative for route / city state
+                    const plan = mergedPod.plans[0]
+                    const isInvalidPod = mergedPod.plans.some(p => invalidCurrentPlayerPodRouteIds.has(p.id))
+                    const routeSelectColors = getRouteSelectColors(plan.route.mode)
+                    const dropError =
+                      draggedPodCity && draggedPodCity.corridorId === group.corridorId
+                        ? getPodMoveError(group.plans, draggedPodCity.cityId, plan.id)
+                        : null
+                    const canDrop =
+                      draggedPodCity !== null &&
+                      draggedPodCity.corridorId === group.corridorId &&
+                      dropError === null
+                    const availableVehicleCards = currentPlayerOwnedVehicleCards.filter(
+                      card => card.type === getVehicleTypeForMode(plan.route.mode),
+                    )
 
-                  return (
+                    return (
                     <div
-                      key={`pod-editor-slot-${plan.id}`}
+                      key={`pod-editor-slot-${mergedPod.key}`}
                       onDragOver={event => {
                         if (canDrop) {
                           event.preventDefault()
@@ -3204,92 +3367,246 @@ export default function Board({
                           : undefined)
                       }
                       style={{
-                        minWidth: 180,
-                        minHeight: 72,
+                        ...(() => {
+                          if (plan.isDisconnected) {
+                            return { flex: "0 0 auto", minWidth: 0 }
+                          }
+                          const hasContent = mergedPod.plans.some(p => p.vehicleCard) || plan.selectedCityIds.length > 0
+                          return hasContent
+                            ? { flex: "2 1 340px", minWidth: 0 }
+                            : { flex: "1 1 180px", minWidth: 0, maxWidth: 320 }
+                        })(),
                         border: `1px dashed ${
                           draggedPodCity?.corridorId === group.corridorId
-                            ? canDrop
-                              ? "#86a889"
-                              : "#d2a4a4"
-                            : isInvalidPod
-                              ? "#c53030"
-                              : "#b9c5ba"
+                            ? canDrop ? "#86a889" : "#d2a4a4"
+                            : isInvalidPod ? "#c53030" : "#b9c5ba"
                         }`,
                         borderRadius: 10,
-                        padding: 8,
+                        overflow: "hidden",
                         background:
                           draggedPodCity?.corridorId === group.corridorId
-                            ? canDrop
-                              ? "#f7faf6"
-                              : "#fff7f7"
-                            : isInvalidPod
-                              ? "#fff5f5"
-                              : "#ffffff",
-                        display: "grid",
-                        alignContent: "start",
-                        gap: 6,
-                        flex: "0 0 180px",
+                            ? canDrop ? "#f7faf6" : "#fff7f7"
+                            : isInvalidPod ? "#fff5f5" : "#ffffff",
+                        display: "flex",
+                        flexDirection: "row",
+                        boxSizing: "border-box",
+                        minHeight: 90,
                       }}
                     >
-                      <div
-                        style={{
-                          display: "flex",
-                          justifyContent: "space-between",
-                          alignItems: "center",
-                          gap: 8,
-                        }}
-                      >
-                        {plan.isDisconnected ? (
-                          <div style={{ color: "#56635a", fontSize: 11, fontWeight: 700 }}>
-                            DISCONNECTED
-                          </div>
-                        ) : (
-                          <>
-                            <select
-                              value={plan.vehicleCard?.id ?? ""}
-                              onChange={event =>
-                                handleSetBureaucracyVehicleCard(
-                                  plan.id,
-                                  event.target.value === "" ? null : event.target.value,
-                                )
+                      {/* ── Left: vehicle section ── */}
+                      {!plan.isDisconnected && (
+                        <div
+                          onDragOver={event => {
+                            // Allow drop if dragging a vehicle card from a different pod
+                            if (draggedVehicleCard && canEditOperations) {
+                              const allPlanIds = mergedPod.plans.map(p => p.id)
+                              if (!allPlanIds.includes(draggedVehicleCard.planId)) {
+                                event.preventDefault()
                               }
-                              disabled={!canEditOperations}
-                              style={{
-                                minWidth: 0,
-                                width: 0,
-                                maxWidth: "100%",
-                                flex: "1 1 0",
-                                padding: "6px 8px",
-                                borderRadius: 8,
-                                border: `1px solid ${routeSelectColors.border}`,
-                                background: routeSelectColors.background,
-                                color: routeSelectColors.color,
-                                fontSize: 12,
-                              }}
-                            >
-                              <option value="">No vehicle assigned</option>
-                              {availableVehicleCards.map(card => (
-                                <option key={card.id} value={card.id}>
-                                  #{card.number} {card.name} ({currentPlayerOwnedVehicleCountsByCardId[card.id] ?? 0})
-                                </option>
-                              ))}
-                            </select>
+                            }
+                          }}
+                          onDrop={async event => {
+                            event.preventDefault()
+                            if (!draggedVehicleCard || !canEditOperations) return
+                            const { planId: srcPlanId, cardId, corridorId: srcCorridorId, selectedCityIds: srcCityIds, hasSiblings: srcHasSiblings } = draggedVehicleCard
+                            setDraggedVehicleCard(null)
+                            // Find a plan with no vehicle to assign to; otherwise use the first plan
+                            const emptySlot = mergedPod.plans.find(p => !p.vehicleCard)
+                            const targetPlan = emptySlot ?? mergedPod.plans[0]
+                            const displaced = targetPlan.vehicleCard
+                            await handleSetBureaucracyVehicleCard(targetPlan.id, cardId)
+                            if (displaced) {
+                              // Swap: send the displaced card back to source
+                              await handleSetBureaucracyVehicleCard(srcPlanId, displaced.id)
+                            } else if (srcHasSiblings) {
+                              // Source had other vehicles — delete the now-empty source slot
+                              await handleDeleteServicePod(srcCorridorId, srcPlanId, srcCityIds)
+                            } else {
+                              await handleSetBureaucracyVehicleCard(srcPlanId, null)
+                            }
+                          }}
+                          style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 6,
+                            padding: 8,
+                            background: draggedVehicleCard && !mergedPod.plans.map(p => p.id).includes(draggedVehicleCard.planId)
+                              ? "#eef6ee"
+                              : "#f4f7f3",
+                            borderRight: "1px solid #dde5da",
+                            flexShrink: 0,
+                            justifyContent: "space-between",
+                            transition: "background 120ms ease",
+                          }}>
+                          {/* Full vehicle cards — side by side for each plan in the merged group */}
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "stretch" }}>
+                            {mergedPod.plans.map(mp => mp.vehicleCard ? (
+                              renderPodVehicleCard(
+                                mp,
+                                canEditOperations ? (
+                                  mergedPod.plans.length === 1
+                                    ? null
+                                    : () => handleDeleteServicePod(group.corridorId, mp.id, mp.selectedCityIds)
+                                ) : null,
+                                group.corridorId,
+                                mergedPod.plans.length > 1,
+                              )
+                            ) : (
+                              <div
+                                key={`pod-empty-${mp.id}`}
+                                onDragOver={event => {
+                                  if (draggedVehicleCard && draggedVehicleCard.planId !== mp.id && canEditOperations) {
+                                    event.preventDefault()
+                                  }
+                                }}
+                                onDrop={async event => {
+                                  event.preventDefault()
+                                  if (!draggedVehicleCard || !canEditOperations) return
+                                  const { planId: srcPlanId, cardId, corridorId: srcCorridorId, selectedCityIds: srcCityIds, hasSiblings: srcHasSiblings } = draggedVehicleCard
+                                  setDraggedVehicleCard(null)
+                                  await handleSetBureaucracyVehicleCard(mp.id, cardId)
+                                  if (srcHasSiblings) {
+                                    await handleDeleteServicePod(srcCorridorId, srcPlanId, srcCityIds)
+                                  } else {
+                                    await handleSetBureaucracyVehicleCard(srcPlanId, null)
+                                  }
+                                }}
+                                style={{
+                                 position: "relative",
+                                 display: "flex",
+                                 flexDirection: "column",
+                                 alignItems: "center",
+                                 justifyContent: "center",
+                                 gap: 4,
+                                 padding: "12px 16px",
+                                 borderRadius: 14,
+                                 background: draggedVehicleCard ? "#f0faf0" : "#ffffff",
+                                 border: `1.5px dashed ${draggedVehicleCard ? "#56a85c" : "#c7d0c4"}`,
+                                 minWidth: 156,
+                                 minHeight: 185,
+                                 color: "#8b948d",
+                                 fontSize: 11,
+                                 fontStyle: "italic",
+                                 textAlign: "center",
+                                 boxSizing: "border-box",
+                                }}>
+                                {canEditOperations && mergedPod.plans.length > 1 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteServicePod(group.corridorId, mp.id, mp.selectedCityIds)}
+                                    title="Remove this empty slot"
+                                    style={{
+                                      position: "absolute",
+                                      top: 6,
+                                      right: 6,
+                                      border: "none",
+                                      background: "transparent",
+                                      color: "#9b1c1c",
+                                      cursor: "pointer",
+                                      fontSize: 13,
+                                      fontWeight: 700,
+                                      lineHeight: 1,
+                                      padding: 0,
+                                    }}
+                                  >×</button>
+                                )}
+                                <span style={{ fontSize: 24, opacity: 0.3 }}>
+                                  {plan.route.mode === "bus" ? "🚌" : plan.route.mode === "rail" ? "🚂" : "✈️"}
+                                </span>
+                                {draggedVehicleCard ? "Drop here" : "No vehicle assigned"}
+                              </div>
+                            ))}
+                          </div>
+                          {/* Vehicle selectors (one per plan) + Add vehicle button */}
+                          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                            {mergedPod.plans.map(mp => (
+                              <select
+                                key={`vehicle-select-${mp.id}`}
+                                value={mp.vehicleCard?.id ?? ""}
+                                onChange={event =>
+                                  handleSetBureaucracyVehicleCard(
+                                    mp.id,
+                                    event.target.value === "" ? null : event.target.value,
+                                  )
+                                }
+                                disabled={!canEditOperations}
+                                style={{
+                                  width: "100%",
+                                  padding: "3px 4px",
+                                  borderRadius: 6,
+                                  border: "1px solid #c7d0c4",
+                                  background: "#ffffff",
+                                  fontSize: 10,
+                                }}
+                              >
+                                <option value="">— no vehicle —</option>
+                                {availableVehicleCards.map(card => (
+                                  <option key={card.id} value={card.id}>
+                                    #{card.number} {card.name} ×{currentPlayerOwnedVehicleCountsByCardId[card.id] ?? 1}
+                                  </option>
+                                ))}
+                              </select>
+                            ))}
+                            {canEditOperations && !plan.isDisconnected && (
+                              <button
+                                type="button"
+                                onClick={() => handleAddVehicleToRoute(group.corridorId, plan.selectedCityIds)}
+                                style={{
+                                  padding: "3px 8px",
+                                  borderRadius: 6,
+                                  border: "1px dashed #86a889",
+                                  background: "#f4f9f4",
+                                  color: "#2c6e31",
+                                  cursor: "pointer",
+                                  fontSize: 11,
+                                  fontWeight: 600,
+                                }}
+                              >
+                                + Add vehicle
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* ── Right: cities section ── */}
+                      <div style={{
+                        flex: plan.isDisconnected ? "0 0 auto" : 1,
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 4,
+                        padding: 8,
+                        minWidth: 0,
+                      }}>
+                        {/* Top row: DISCONNECTED label or invalid warning + delete button */}
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 4 }}>
+                          <div style={plan.isDisconnected ? undefined : { flex: 1 }}>
+                            {plan.isDisconnected && (
+                              <span style={{ fontSize: 10, fontWeight: 700, color: "#56635a", letterSpacing: "0.05em" }}>
+                                DISCONNECTED
+                              </span>
+                            )}
+                            {isInvalidPod && (
+                              <span style={{ fontSize: 10, fontWeight: 700, color: "#9b1c1c" }}>
+                                Illegal route
+                              </span>
+                            )}
+                          </div>
+                          {!plan.isDisconnected && (
                             <button
                               type="button"
-                              onClick={() =>
-                                handleDeleteServicePod(
-                                  group.corridorId,
-                                  plan.id,
-                                  plan.selectedCityIds,
-                                )
-                              }
-                              title="Delete this route; any city not used by another pod will fall into disconnected"
+                              onClick={() => {
+                                for (const mp of mergedPod.plans) {
+                                  handleDeleteServicePod(group.corridorId, mp.id, mp.selectedCityIds)
+                                }
+                              }}
+                              title="Delete this route"
                               style={{
                                 border: "none",
                                 background: "transparent",
                                 color: "#9b1c1c",
                                 cursor: "pointer",
-                                fontSize: 12,
+                                fontSize: 14,
                                 fontWeight: 700,
                                 lineHeight: 1,
                                 padding: 0,
@@ -3298,93 +3615,152 @@ export default function Board({
                             >
                               ×
                             </button>
+                          )}
+                        </div>
+                        {/* Cities */}
+                        {plan.selectedCityIds.length === 0 ? (
+                          <div style={{ color: "#8b948d", fontSize: 12 }}>
+                            {plan.isDisconnected ? "Click × or drop city here" : "Drop city here"}
+                          </div>
+                        ) : (
+                          <>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                              {plan.selectedCityIds.map(cityId => (
+                                <div
+                                  key={`pod-editor-city-${plan.id}-${cityId}`}
+                                  draggable
+                                  onDragStart={() =>
+                                    setDraggedPodCity({ corridorId: group.corridorId, routeId: plan.id, cityId })
+                                  }
+                                  onDragEnd={() => setDraggedPodCity(null)}
+                                  style={{
+                                    border: "1px solid #d8dfd5",
+                                    borderRadius: 999,
+                                    padding: "3px 5px 3px 7px",
+                                    background: "#ffffff",
+                                    color: "#324236",
+                                    fontSize: 11,
+                                    cursor: "grab",
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: 4,
+                                  }}
+                                >
+                                  <span>{(cityMap[cityId]?.name ?? cityId)} ({cityMap[cityId]?.size ?? "?"})</span>
+                                  {!plan.isDisconnected && disconnectedPlan && (
+                                    <button
+                                      type="button"
+                                      onClick={event => {
+                                        event.preventDefault()
+                                        event.stopPropagation()
+                                        handleMoveServiceCity(group.corridorId, cityId, disconnectedPlan.id, plan.id)
+                                      }}
+                                      title="Remove this city from this route only"
+                                      style={{
+                                        border: "none",
+                                        background: "transparent",
+                                        color: "#9b1c1c",
+                                        cursor: "pointer",
+                                        fontSize: 11,
+                                        fontWeight: 700,
+                                        lineHeight: 1,
+                                        padding: 0,
+                                      }}
+                                    >
+                                      ×
+                                    </button>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                            {plan.selectedCityIds.length >= 2 && plan.populationPerMile !== null && (
+                              <div style={{ color: "#56635a", fontSize: 10 }}>
+                                {Math.round(plan.populationPerMile).toLocaleString()} pax/mi
+                              </div>
+                            )}
+                            {plan.selectedCityIds.length >= 2 && !plan.isDisconnected && (
+                              <div>{renderPodMiniMap(plan.selectedCityIds, group.mode)}</div>
+                            )}
                           </>
                         )}
                       </div>
-                      {isInvalidPod && (
-                        <div style={{ color: "#9b1c1c", fontSize: 11, fontWeight: 700 }}>
-                          Illegal route
-                        </div>
-                      )}
+                    </div>
+                  )
+                })
+              })()}
+              </div>
+                {/* DISCONNECTED pod — only show when there are disconnected cities OR a vehicle is assigned */}
+                {disconnectedPlan && (disconnectedPlan.selectedCityIds.length > 0 || anyVehicleAssigned) && (() => {
+                  const plan = disconnectedPlan
+                  const isInvalidPod = false
+                  const dropError = draggedPodCity && draggedPodCity.corridorId === group.corridorId
+                    ? getPodMoveError(group.plans, draggedPodCity.cityId, plan.id)
+                    : null
+                  const canDrop = draggedPodCity !== null && draggedPodCity.corridorId === group.corridorId && dropError === null
+                  return (
+                    <div
+                      key={`pod-editor-slot-disconnected-${group.corridorId}`}
+                      onDragOver={event => { if (canDrop) event.preventDefault() }}
+                      onDrop={event => {
+                        event.preventDefault()
+                        if (!draggedPodCity || draggedPodCity.corridorId !== group.corridorId) return
+                        if (dropError) { setStatusMessage(dropError); setDraggedPodCity(null); return }
+                        handleMoveServiceCity(draggedPodCity.corridorId, draggedPodCity.cityId, plan.id, draggedPodCity.routeId)
+                        setDraggedPodCity(null)
+                      }}
+                      style={{
+                        flex: "0 0 auto",
+                        maxWidth: 220,
+                        border: `1px dashed ${
+                          draggedPodCity?.corridorId === group.corridorId
+                            ? canDrop ? "#86a889" : "#d2a4a4"
+                            : "#b9c5ba"
+                        }`,
+                        borderRadius: 10,
+                        background: draggedPodCity?.corridorId === group.corridorId
+                          ? canDrop ? "#f7faf6" : "#fff7f7"
+                          : "#ffffff",
+                        padding: 8,
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 4,
+                        alignSelf: "flex-start",
+                      }}
+                    >
+                      <span style={{ fontSize: 10, fontWeight: 700, color: "#56635a", letterSpacing: "0.05em" }}>
+                        DISCONNECTED
+                      </span>
                       {plan.selectedCityIds.length === 0 ? (
-                        <div style={{ color: "#8b948d", fontSize: 12 }}>
-                          {plan.isDisconnected
-                            ? "Click × or drop city here"
-                            : "Drop city here"}
-                        </div>
+                        <div style={{ color: "#8b948d", fontSize: 12 }}>Click × or drop city here</div>
                       ) : (
-                        <>
-                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                            {plan.selectedCityIds.map(cityId => (
-                              <div
-                                key={`pod-editor-city-${plan.id}-${cityId}`}
-                                draggable
-                                onDragStart={() =>
-                                  setDraggedPodCity({
-                                    corridorId: group.corridorId,
-                                    routeId: plan.id,
-                                    cityId,
-                                  })
-                                }
-                                onDragEnd={() => setDraggedPodCity(null)}
-                                style={{
-                                  border: "1px solid #d8dfd5",
-                                  borderRadius: 999,
-                                  padding: "4px 6px 4px 8px",
-                                  background: "#ffffff",
-                                  color: "#324236",
-                                  fontSize: 12,
-                                  cursor: "grab",
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: 6,
-                                }}
-                              >
-                                <span>
-                                  {(cityMap[cityId]?.name ?? cityId) +
-                                    ` (${cityMap[cityId]?.size ?? "?"})`}
-                                </span>
-                                {!plan.isDisconnected && disconnectedPlan && (
-                                  <button
-                                    type="button"
-                                    onClick={event => {
-                                      event.preventDefault()
-                                      event.stopPropagation()
-                                      handleMoveServiceCity(
-                                        group.corridorId,
-                                        cityId,
-                                        disconnectedPlan.id,
-                                        plan.id,
-                                      )
-                                    }}
-                                    title="Remove this city from this route only"
-                                    style={{
-                                      border: "none",
-                                      background: "transparent",
-                                      color: "#9b1c1c",
-                                      cursor: "pointer",
-                                      fontSize: 12,
-                                      fontWeight: 700,
-                                      lineHeight: 1,
-                                      padding: 0,
-                                    }}
-                                  >
-                                    ×
-                                  </button>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                          {plan.selectedCityIds.length >= 2 && plan.populationPerMile !== null && (
-                            <div style={{ color: "#56635a", fontSize: 11, marginTop: 2 }}>
-                              {Math.round(plan.populationPerMile).toLocaleString()} pax/mi
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                          {plan.selectedCityIds.map(cityId => (
+                            <div
+                              key={`disc-city-${cityId}`}
+                              draggable
+                              onDragStart={() => setDraggedPodCity({ corridorId: group.corridorId, routeId: plan.id, cityId })}
+                              onDragEnd={() => setDraggedPodCity(null)}
+                              style={{
+                                border: "1px solid #d8dfd5",
+                                borderRadius: 999,
+                                padding: "3px 5px 3px 7px",
+                                background: "#ffffff",
+                                color: "#324236",
+                                fontSize: 11,
+                                cursor: "grab",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 4,
+                              }}
+                            >
+                              <span>{(cityMap[cityId]?.name ?? cityId)} ({cityMap[cityId]?.size ?? "?"})</span>
                             </div>
-                          )}
-                        </>
+                          ))}
+                        </div>
                       )}
                     </div>
                   )
-                })}
+                })()}
               </div>
             </div>
             )
@@ -3832,6 +4208,165 @@ export default function Board({
     }
   }
 
+  function renderPodVehicleCard(
+    plan: BureaucracyRoutePlan,
+    onRemove?: (() => void) | null,
+    corridorId?: string,
+    hasSiblings?: boolean,
+  ) {
+    const card = plan.vehicleCard
+    const accentColor = currentPlayer?.color ?? "#457b9d"
+    if (!card) return null
+    const cardBackground = `linear-gradient(180deg, ${colorWithOpacity(accentColor, 0.12)} 0%, #ffffff 42%)`
+    const cardShadow = `0 0 0 1px ${colorWithOpacity(accentColor, 0.18)}, 0 0 18px ${colorWithOpacity(accentColor, 0.2)}, 0 10px 22px ${colorWithOpacity(accentColor, 0.18)}`
+    const cardBorderColor = colorWithOpacity(accentColor, 0.55)
+    const fleetCount = plan.selectedFleetSize
+    const isDemandShortfall = fleetCount < plan.demandFleetSize
+    const stackedDiceValues = [fleetCount, fleetCount - 6, fleetCount - 12]
+      .filter(v => v > 0)
+      .map(v => Math.min(v, 6))
+    return (
+      <div
+        key={`pod-vehicle-${card.id}-${plan.id}`}
+        draggable
+        onDragStart={() => setDraggedVehicleCard({
+          planId: plan.id,
+          cardId: card.id,
+          corridorId: corridorId ?? "",
+          selectedCityIds: plan.selectedCityIds,
+          hasSiblings: hasSiblings ?? false,
+        })}
+        onDragEnd={() => setDraggedVehicleCard(null)}
+        style={{
+          position: "relative",
+          border: `1.5px solid ${draggedVehicleCard?.planId === plan.id ? colorWithOpacity(accentColor, 0.85) : cardBorderColor}`,
+          borderRadius: 14,
+          padding: 10,
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+          background: cardBackground,
+          boxShadow: cardShadow,
+          fontSize: 12,
+          minWidth: 156,
+          maxWidth: 176,
+          flexShrink: 0,
+          cursor: "grab",
+          opacity: draggedVehicleCard?.planId === plan.id ? 0.5 : 1,
+        }}
+      >
+        {onRemove && (
+          <button
+            type="button"
+            onClick={onRemove}
+            title="Remove this vehicle from the route"
+            style={{
+              position: "absolute",
+              top: 6,
+              right: 6,
+              border: "none",
+              background: "transparent",
+              color: "#9b1c1c",
+              cursor: "pointer",
+              fontSize: 13,
+              fontWeight: 700,
+              lineHeight: 1,
+              padding: 0,
+              zIndex: 1,
+            }}
+          >×</button>
+        )}
+        <strong style={{ lineHeight: 1.2, fontSize: 11, paddingRight: onRemove ? 14 : 0 }}>
+          #{card.number} {getVehicleTypeIcon(card.type)} {getVehicleTypeLabel(card.type)}
+        </strong>
+        <div style={{ fontWeight: 700, color: "#223024", fontSize: 12, lineHeight: 1.25 }}>
+          {card.name}
+        </div>
+        {/* Fleet Size / Demand badge */}
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
+          color: accentColor,
+          fontSize: 11,
+          fontWeight: 700,
+        }}>
+          <span>Fleet Size/Demand</span>
+          <span style={{
+            padding: "2px 6px",
+            borderRadius: 999,
+            background: colorWithOpacity(
+              isDemandShortfall ? "#b42318" : plan.demandFleetSize > 0 ? accentColor : "#7d8d80",
+              isDemandShortfall ? 0.14 : 0.16,
+            ),
+            color: isDemandShortfall ? "#b42318" : plan.demandFleetSize > 0 ? accentColor : "#5d6c61",
+          }}>
+            {fleetCount}/{plan.demandFleetSize}
+          </span>
+        </div>
+        {/* Stats */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 8px", color: "#324236", fontSize: 11, lineHeight: 1.25 }}>
+          <span>👥 {card.totalPassengerCapacity.toLocaleString()} seats</span>
+          <span>{card.speed}mph</span>
+          <span>⚙️{card.operatingCostMultiplier}</span>
+        </div>
+        {/* Dice + count badge */}
+        {fleetCount > 0 && (
+          <div style={{ display: "flex", alignItems: "flex-end", gap: 6, marginTop: 2 }}>
+            <div style={{ position: "relative", width: 36, height: 34 }}>
+              {stackedDiceValues.map((dieValue, index) => (
+                <div
+                  key={`pod-die-${plan.id}-${index}`}
+                  style={{
+                    position: "absolute",
+                    right: index * 7,
+                    top: Math.max(0, 10 - index * 5),
+                    width: 22,
+                    height: 22,
+                    borderRadius: 6,
+                    border: `1px solid ${colorWithOpacity(accentColor, 0.45)}`,
+                    background: "#ffffff",
+                    boxShadow: `0 4px 10px ${colorWithOpacity(accentColor, 0.18)}`,
+                  }}
+                >
+                  {getDiePipPositions(dieValue).map((pip, pipIndex) => (
+                    <span
+                      key={`pod-die-${plan.id}-${index}-pip-${pipIndex}`}
+                      style={{
+                        position: "absolute",
+                        top: pip.top,
+                        left: pip.left,
+                        width: 4,
+                        height: 4,
+                        borderRadius: "50%",
+                        background: accentColor,
+                        transform: "translate(-50%, -50%)",
+                      }}
+                    />
+                  ))}
+                </div>
+              ))}
+            </div>
+            <div style={{
+              minWidth: 26,
+              padding: "2px 6px",
+              borderRadius: 999,
+              background: accentColor,
+              color: "#ffffff",
+              fontSize: 11,
+              fontWeight: 800,
+              textAlign: "center",
+              boxShadow: `0 4px 10px ${colorWithOpacity(accentColor, 0.24)}`,
+            }}>
+              {fleetCount}
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
   function renderVehiclePurchaseCard(card: VehicleCard, section: "owned" | "market") {
     const isOwnedModel = currentPlayerOwnedVehicleCards.some(ownedCard => ownedCard.id === card.id)
     const ownedCount = currentPlayerOwnedVehicleCountsByCardId[card.id] ?? 0
@@ -3841,19 +4376,52 @@ export default function Board({
       (demandCoverage?.selectedFleetSize ?? 0) < (demandCoverage?.demandFleetSize ?? 0)
     const accentColor = currentPlayer?.color ?? "#457b9d"
     const isOwnedSection = section === "owned"
+    const weeksOwned = currentPlayer?.vehicleWeeksOwnedByCardId[card.id] ?? 0
+    const tradeInValue = isOwnedSection ? getVehicleTradeInValue(card, weeksOwned) : 0
+    const canUpgrade = isOwnedSection && canBuyVehiclesInPipeline && !hasUsedVehiclePurchase
+    const isBeingUpgraded = pendingExchangeOldCardId === card.id
+
+    // For market cards shown while upgrade mode is active
+    const upgradingOldCard = !isOwnedSection && pendingExchangeOldCardId ? vehicleCardMap[pendingExchangeOldCardId] : null
+    const upgradingWeeksOwned = upgradingOldCard
+      ? (currentPlayer?.vehicleWeeksOwnedByCardId[pendingExchangeOldCardId!] ?? 0)
+      : 0
+    const upgradingTradeInValue = upgradingOldCard
+      ? getVehicleTradeInValue(upgradingOldCard, upgradingWeeksOwned)
+      : 0
+    const upgradeNetCost = upgradingOldCard ? Math.max(0, card.purchasePrice - upgradingTradeInValue) : 0
+
     const canBuy =
       canBuyVehiclesInPipeline &&
       !hasUsedVehiclePurchase &&
+      !pendingExchangeOldCardId &&
       (currentPlayer?.money ?? 0) >= card.purchasePrice &&
       (isOwnedSection ? isOwnedModel : visibleVehicleCards.some(visibleCard => visibleCard.id === card.id))
+    const canReplace =
+      !isOwnedSection &&
+      Boolean(upgradingOldCard) &&
+      canBuyVehiclesInPipeline &&
+      !hasUsedVehiclePurchase &&
+      (currentPlayer?.money ?? 0) >= upgradeNetCost &&
+      visibleVehicleCards.some(visibleCard => visibleCard.id === card.id)
+
     const buyLabel = isOwnedSection || isOwnedModel ? "Buy more" : "Buy model"
-    const cardBorderColor = isOwnedSection ? colorWithOpacity(accentColor, 0.55) : "#d8dfd5"
-    const cardBackground = isOwnedSection
-      ? `linear-gradient(180deg, ${colorWithOpacity(accentColor, 0.12)} 0%, #ffffff 42%)`
-      : "#ffffff"
-    const cardShadow = isOwnedSection
-      ? `0 0 0 1px ${colorWithOpacity(accentColor, 0.18)}, 0 0 18px ${colorWithOpacity(accentColor, 0.2)}, 0 10px 22px ${colorWithOpacity(accentColor, 0.18)}`
-      : "0 4px 12px rgba(0, 0, 0, 0.06)"
+
+    // Appearance changes when this owned card is selected for upgrade
+    const cardBorderColor = isBeingUpgraded
+      ? "#c0392b"
+      : isOwnedSection ? colorWithOpacity(accentColor, 0.55) : "#d8dfd5"
+    const cardBorderWidth = isBeingUpgraded ? 2 : 1
+    const cardBackground = isBeingUpgraded
+      ? "#f5f0f0"
+      : isOwnedSection
+        ? `linear-gradient(180deg, ${colorWithOpacity(accentColor, 0.12)} 0%, #ffffff 42%)`
+        : "#ffffff"
+    const cardShadow = isBeingUpgraded
+      ? `0 0 0 1px rgba(192,57,43,0.25), 0 4px 12px rgba(192,57,43,0.14)`
+      : isOwnedSection
+        ? `0 0 0 1px ${colorWithOpacity(accentColor, 0.18)}, 0 0 18px ${colorWithOpacity(accentColor, 0.2)}, 0 10px 22px ${colorWithOpacity(accentColor, 0.18)}`
+        : "0 4px 12px rgba(0, 0, 0, 0.06)"
     const stackedDiceValues = [ownedCount, ownedCount - 6, ownedCount - 12]
       .filter(value => value > 0)
       .map(value => Math.min(value, 6))
@@ -3862,7 +4430,7 @@ export default function Board({
       <div
         key={`${section}-${card.id}`}
         style={{
-          border: `1px solid ${cardBorderColor}`,
+          border: `${cardBorderWidth}px solid ${cardBorderColor}`,
           borderRadius: 14,
           padding: 10,
           display: "flex",
@@ -4060,23 +4628,92 @@ export default function Board({
             {`${demandCoverage?.selectedFleetSize ?? 0}/${demandCoverage?.demandFleetSize ?? 0} demand`}
           </div>
         )}
-        <button
-          type="button"
-          disabled={!canBuy}
-          onClick={() => handleBuyVehicleCardClick(card.id)}
-          style={{
-            marginTop: "auto",
-            padding: "6px 10px",
-            borderRadius: 999,
-            border: "1px solid #c7d0c4",
-            cursor: canBuy ? "pointer" : "not-allowed",
-            background: canBuy ? "#ffffff" : "#f2f2f2",
-            fontWeight: 700,
-            fontSize: 12,
-          }}
-        >
-          {buyLabel}
-        </button>
+        {isOwnedSection && weeksOwned > 0 && (
+          <div style={{ color: "#7a6830", fontSize: 11, lineHeight: 1.35 }}>
+            <strong>Trade-in:</strong> {formatCurrency(tradeInValue)}{" "}
+            <span style={{ color: "#9b7720" }}>({weeksOwned}mo old)</span>
+          </div>
+        )}
+        <div style={{ marginTop: "auto", display: "flex", gap: 4 }}>
+        {isOwnedSection ? (
+          <>
+            <button
+              type="button"
+              disabled={!canBuy}
+              onClick={() => handleBuyVehicleCardClick(card.id)}
+              style={{
+                flex: 1,
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: "1px solid #c7d0c4",
+                cursor: canBuy ? "pointer" : "not-allowed",
+                background: canBuy ? "#ffffff" : "#f2f2f2",
+                fontWeight: 700,
+                fontSize: 12,
+              }}
+            >
+              Buy more
+            </button>
+            <button
+              type="button"
+              disabled={!canUpgrade}
+              onClick={() =>
+                setPendingExchangeOldCardId(current => (current === card.id ? null : card.id))
+              }
+              title={canUpgrade ? "Trade in this vehicle and replace it with a market vehicle" : "Upgrade only available during purchase phase"}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: `1px solid ${isBeingUpgraded ? "#c0392b" : canUpgrade ? "#b3966a" : "#d8dfd5"}`,
+                cursor: canUpgrade ? "pointer" : "not-allowed",
+                background: isBeingUpgraded ? "#fde8e5" : canUpgrade ? "#fffbf0" : "#f2f2f2",
+                fontWeight: 700,
+                fontSize: 12,
+                color: isBeingUpgraded ? "#c0392b" : canUpgrade ? "#7a6830" : "#9ba59d",
+              }}
+            >
+              {isBeingUpgraded ? "Cancel" : "Upgrade"}
+            </button>
+          </>
+        ) : upgradingOldCard ? (
+          <button
+            type="button"
+            disabled={!canReplace}
+            onClick={() => handleBuyVehicleCardClick(card.id)}
+            style={{
+              flex: 1,
+              padding: "6px 10px",
+              borderRadius: 999,
+              border: `1px solid ${canReplace ? "#c0392b" : "#d8dfd5"}`,
+              cursor: canReplace ? "pointer" : "not-allowed",
+              background: canReplace ? "#fde8e5" : "#f2f2f2",
+              fontWeight: 700,
+              fontSize: 12,
+              color: canReplace ? "#c0392b" : "#9ba59d",
+            }}
+          >
+            Replace {upgradingOldCard.name}
+          </button>
+        ) : (
+          <button
+            type="button"
+            disabled={!canBuy}
+            onClick={() => handleBuyVehicleCardClick(card.id)}
+            style={{
+              flex: 1,
+              padding: "6px 10px",
+              borderRadius: 999,
+              border: "1px solid #c7d0c4",
+              cursor: canBuy ? "pointer" : "not-allowed",
+              background: canBuy ? "#ffffff" : "#f2f2f2",
+              fontWeight: 700,
+              fontSize: 12,
+            }}
+          >
+            {buyLabel}
+          </button>
+        )}
+        </div>
       </div>
     )
   }
@@ -4112,6 +4749,20 @@ export default function Board({
     setPendingVehiclePurchaseQuantity(1)
   }
 
+  async function handleConfirmUpgradeVehicleCard() {
+    if (!pendingVehiclePurchaseCardId || !pendingExchangeOldCardId) return
+    const result = await onExchangeVehicleCard(pendingVehiclePurchaseCardId, pendingExchangeOldCardId)
+    if (!result.ok) {
+      setStatusMessage(result.error)
+    } else {
+      setStatusMessage(
+        `Upgraded to #${result.newCard.number} ${result.newCard.name} (traded in #${result.oldCard.number} ${result.oldCard.name}). Net cost: ${formatCurrency(result.cost)}.`,
+      )
+    }
+    setPendingVehiclePurchaseCardId(null)
+    setPendingExchangeOldCardId(null)
+  }
+
   async function handleSetBureaucracyVehicleCard(routeId: string, vehicleCardId: string | null) {
     const result = await onSetBureaucracyRouteVehicleCard(routeId, vehicleCardId)
 
@@ -4136,6 +4787,17 @@ export default function Board({
     }
 
     setStatusMessage("Added another service slot on that corridor.")
+  }
+
+  async function handleAddVehicleToRoute(corridorId: string, currentCityIds: string[]) {
+    const result = await onAddBureaucracyServiceSplit(corridorId, currentCityIds)
+
+    if (!result.ok) {
+      setStatusMessage(result.error)
+      return
+    }
+
+    setStatusMessage("Added another vehicle to that route.")
   }
 
   async function handleMoveServiceCity(
@@ -4195,21 +4857,8 @@ export default function Board({
       return "That city does not belong to this route group."
     }
 
-    if (targetPlan.isDisconnected) {
-      return null
-    }
-
-    const nextTargetCityIds = [
-      ...new Set([
-        ...targetPlan.selectedCityIds.filter(selectedCityId => selectedCityId !== cityId),
-        cityId,
-      ]),
-    ]
-
-    if (!isValidServicePodSelection(nextTargetCityIds, targetPlan.corridorSegmentPairs)) {
-      return "That destination route would be disconnected."
-    }
-
+    // Allow the drop even if it would create a disconnected/invalid pod.
+    // The pod will show in red and the player cannot save until it's resolved.
     return null
   }
 
@@ -4226,6 +4875,78 @@ export default function Board({
 
   return (
     <div style={BOARD_SHELL_STYLE}>
+      {game.autoPlayUntilWeek > 0 && game.currentWeek <= game.autoPlayUntilWeek && !game.isGameOver && (
+        <div style={{
+          position: "fixed",
+          top: 0,
+          left: "50%",
+          transform: "translateX(-50%)",
+          zIndex: 20,
+          background: "#1a1a2e",
+          color: "#e8e4d8",
+          padding: "8px 16px",
+          borderRadius: "0 0 12px 12px",
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          fontSize: 13,
+          boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
+        }}>
+          <span>🤖 Bot preview — month {game.currentWeek} of {game.autoPlayUntilWeek}</span>
+          <button
+            type="button"
+            onClick={() => void onStopAutoPlay()}
+            style={{
+              padding: "4px 12px",
+              borderRadius: 999,
+              border: "1px solid #7d8fa8",
+              background: "#2a3f5f",
+              color: "#e8e4d8",
+              cursor: "pointer",
+              fontWeight: 700,
+              fontSize: 12,
+            }}
+          >
+            Take over →
+          </button>
+        </div>
+      )}
+      {autoPlayCompleteMonths > 0 && !hasDismissedAutoPlayBanner && (
+        <div style={{
+          position: "fixed",
+          top: 0,
+          left: "50%",
+          transform: "translateX(-50%)",
+          zIndex: 20,
+          background: "#1e3a1e",
+          color: "#c8efc8",
+          padding: "8px 16px",
+          borderRadius: "0 0 12px 12px",
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          fontSize: 13,
+          boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
+        }}>
+          <span>✅ Bot preview complete — bots played {autoPlayCompleteMonths === 1 ? "month 1" : `months 1–${autoPlayCompleteMonths}`}. You're now in control.</span>
+          <button
+            type="button"
+            onClick={() => setHasDismissedAutoPlayBanner(true)}
+            style={{
+              padding: "4px 12px",
+              borderRadius: 999,
+              border: "1px solid #4a7a4a",
+              background: "#2a5a2a",
+              color: "#c8efc8",
+              cursor: "pointer",
+              fontWeight: 700,
+              fontSize: 12,
+            }}
+          >
+            Got it
+          </button>
+        </div>
+      )}
       <div style={TOP_BAR_STYLE}>
         <div style={TOP_BAR_PLAYERS_STYLE}>
         {playerSummaries.map(
@@ -4463,6 +5184,28 @@ export default function Board({
               )}
             </div>
           )}
+          {/* Activity log */}
+          {game.actionLog.length > 0 && (() => {
+            const filteredLog = game.actionLog.filter(entry => {
+              if (entry.phase === "operations" && !entry.message.includes("finished operations planning")) return false
+              if (!game.chanceCardsEnabled && entry.message.toLowerCase().includes("chance")) return false
+              return true
+            }).slice(-6).toReversed()
+            return filteredLog.length > 0 ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, overflow: "hidden" }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "#56635a", letterSpacing: "0.08em", textTransform: "uppercase" }}>Recent activity</div>
+                {filteredLog.map(entry => {
+                  const p = game.players.find(pl => pl.id === entry.playerId)
+                  return (
+                    <div key={entry.id} style={{ fontSize: 12, color: "#223024", lineHeight: 1.35, display: "flex", gap: 4, alignItems: "baseline" }}>
+                      <span style={{ color: p?.color ?? "#56635a", fontWeight: 700, flexShrink: 0 }}>{entry.playerName}</span>
+                      <span style={{ color: "#56635a", flexShrink: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{entry.message}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : null
+          })()}
           <div
             style={{
               marginTop: "auto",
@@ -4566,27 +5309,31 @@ export default function Board({
               const a = latLngToWorld(segment.cityA)
               const b = latLngToWorld(segment.cityB)
               const d = buildSegmentPath(a, b, segment.curve)
+              const noRailColor = "rgba(120, 130, 160, 0.5)"
+              const railColor = "rgba(221, 155, 87, 0.42)"
 
               return (
                 <g key={segment.id}>
                   <path
                     d={d}
-                    stroke="rgba(221, 155, 87, 0.42)"
+                    stroke={segment.allowRail ? railColor : noRailColor}
                     strokeWidth={2}
                     fill="none"
                     strokeLinecap="round"
-                    strokeDasharray={segment.allowRail ? undefined : "10 7"}
+                    strokeDasharray={segment.allowRail ? undefined : "6 6"}
                     opacity={0.9}
                   />
-                  <path
-                    d={d}
-                    stroke="rgba(255, 221, 177, 0.72)"
-                    strokeWidth={0.9}
-                    fill="none"
-                    strokeLinecap="round"
-                    strokeDasharray={segment.allowRail ? "8 8" : "3 9"}
-                    opacity={0.85}
-                  />
+                  {segment.allowRail && (
+                    <path
+                      d={d}
+                      stroke="rgba(255, 221, 177, 0.72)"
+                      strokeWidth={0.9}
+                      fill="none"
+                      strokeLinecap="round"
+                      strokeDasharray="8 8"
+                      opacity={0.85}
+                    />
+                  )}
                 </g>
               )
             })}
@@ -4687,6 +5434,17 @@ export default function Board({
 
               return (
                 <g key={id}>
+                  {/* Rail: ballast bed (brownish-gray background) */}
+                  {route.mode === "rail" && (
+                    <path
+                      d={d}
+                      stroke="#6b5c48"
+                      strokeWidth={10}
+                      fill="none"
+                      strokeLinecap="butt"
+                      opacity={finalRouteOpacity * 0.28}
+                    />
+                  )}
                   {isElectricRail && (
                     <path
                       d={d}
@@ -4706,6 +5464,29 @@ export default function Board({
                     strokeDasharray={finalRouteDasharray}
                     opacity={finalRouteOpacity}
                   />
+                  {/* Rail: cross-ties — wider and more frequent than before */}
+                  {route.mode === "rail" && (
+                    <path
+                      d={d}
+                      stroke="#2c2014"
+                      strokeWidth={11}
+                      fill="none"
+                      strokeLinecap="butt"
+                      strokeDasharray="4 7"
+                      opacity={finalRouteOpacity * 0.52}
+                    />
+                  )}
+                  {/* Rail: thin center gap to suggest two parallel rails */}
+                  {route.mode === "rail" && (
+                    <path
+                      d={d}
+                      stroke="rgba(255,255,255,0.55)"
+                      strokeWidth={1.5}
+                      fill="none"
+                      strokeLinecap="round"
+                      opacity={finalRouteOpacity}
+                    />
+                  )}
                 </g>
               )
             })}
@@ -4745,8 +5526,9 @@ export default function Board({
                   return priorityDifference
                 }
 
+                // Render large cities first (underneath) so small nearby cities remain clickable
                 if (cityA.size !== cityB.size) {
-                  return cityA.size - cityB.size
+                  return cityB.size - cityA.size
                 }
 
                 return cityA.name.localeCompare(cityB.name)
@@ -5053,6 +5835,25 @@ export default function Board({
                 >
                   Undo
                 </button>
+                {onGoHome && (
+                  <button
+                    type="button"
+                    onClick={() => onGoHome()}
+                    style={{
+                      padding: "8px 10px",
+                      borderRadius: 10,
+                      border: "1px solid #c7d0c4",
+                      cursor: "pointer",
+                      background: "#ffffff",
+                      fontWeight: 600,
+                      textAlign: "left",
+                      fontSize: 13,
+                      color: "#324236",
+                    }}
+                  >
+                    ← Home
+                  </button>
+                )}
                 {/* Panel resize controls for touch/mobile */}
                 <div style={{ borderTop: "1px solid #d8dfd5", paddingTop: 6, display: "grid", gap: 4 }}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: "#56635a", letterSpacing: "0.06em", textTransform: "uppercase", paddingLeft: 2 }}>Resize panels</div>
@@ -5145,6 +5946,30 @@ export default function Board({
                        }}
                      />
                    )}
+                   {/* Player phase dots on current week */}
+                   {isCurrent && game.players.map(p => {
+                     const playerPhaseIdx = getTopBarPhaseIndex(p.phase)
+                     const phaseSlotCount = TOP_BAR_PHASE_ORDER.length
+                     const leftPct = ((playerPhaseIdx + 0.5) / phaseSlotCount) * 100
+                     return (
+                       <div
+                         key={p.id}
+                         title={`${p.name}: ${formatPhaseLabel(p.phase)}`}
+                         style={{
+                           position: "absolute",
+                           bottom: 2,
+                           left: `${leftPct}%`,
+                           transform: "translateX(-50%)",
+                           width: 6,
+                           height: 6,
+                           borderRadius: "50%",
+                           background: p.color,
+                           border: "1px solid rgba(255,255,255,0.8)",
+                           pointerEvents: "none",
+                         }}
+                       />
+                     )
+                   })}
                    <div
                      style={{
                        position: "absolute",
@@ -5182,8 +6007,10 @@ export default function Board({
                   fontWeight: 700,
                   fontSize: 13,
                   display: "flex",
+                  flexDirection: "column",
                   alignItems: "center",
                   justifyContent: "center",
+                  gap: 2,
                   overflow: "visible",
                 }}
                 title={advanceTurnLabel}
@@ -5191,6 +6018,16 @@ export default function Board({
                 <span style={{ display: "inline-block", whiteSpace: "nowrap", transform: "rotate(90deg)" }}>
                   Next
                 </span>
+                {turnTimerSecondsLeft !== null && (
+                  <span style={{
+                    fontSize: 10,
+                    fontWeight: 700,
+                    color: turnTimerSecondsLeft <= 10 ? "#c0392b" : "#56635a",
+                    lineHeight: 1,
+                  }}>
+                    {turnTimerSecondsLeft}s
+                  </span>
+                )}
               </button>
           </div>
         </div>
@@ -5217,7 +6054,7 @@ export default function Board({
             position: "absolute",
             inset: 0,
             background: "rgba(10, 18, 12, 0.35)",
-            zIndex: 3,
+            zIndex: 10,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -5243,25 +6080,27 @@ export default function Board({
               <div>
                 <strong>End of month {completedPeriod} summary</strong>
                 <div style={{ color: "#56635a", fontSize: 13 }}>
-                  {game.bureaucracyReadyPlayerIds.length > 0 && game.currentPhase !== "purchase-equipment"
+                  {game.bureaucracyReadyPlayerIds.includes(activeViewingPlayerId) && game.currentPhase !== "purchase-equipment"
                     ? "Waiting for other players to finish…"
                     : "Revenue, costs, and passenger totals from the month that just finished."}
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setIsPeriodSummaryOpen(false)}
-                style={{
-                  padding: "8px 12px",
-                  borderRadius: 999,
-                  border: "1px solid #c7d0c4",
-                  background: "#ffffff",
-                  cursor: "pointer",
-                  fontWeight: 600,
-                }}
-              >
-                Close
-              </button>
+              {!(game.bureaucracyReadyPlayerIds.includes(activeViewingPlayerId) && game.currentPhase !== "purchase-equipment") && (
+                <button
+                  type="button"
+                  onClick={() => setIsPeriodSummaryOpen(false)}
+                  style={{
+                    padding: "8px 12px",
+                    borderRadius: 999,
+                    border: "1px solid #c7d0c4",
+                    background: "#ffffff",
+                    cursor: "pointer",
+                    fontWeight: 600,
+                  }}
+                >
+                  Close
+                </button>
+              )}
             </div>
               <div style={{ display: "grid", gap: 10 }}>
                 {playerSummaries.map(({ player, connectedCities }) => {
@@ -6479,8 +7318,32 @@ export default function Board({
                                 </div>
                               ))
                           )}
+                          {/* Unused vehicles — owned but not assigned to any active plan */}
+                          {(() => {
+                           const assignedCardIds = new Set(
+                             currentPlayerActiveBureaucracyPlans
+                               .filter(p => p.vehicleCard !== null)
+                               .map(p => p.vehicleCard!.id)
+                           )
+                           const unusedCards = currentPlayerOwnedVehicleCards.filter(c => !assignedCardIds.has(c.id))
+                           if (unusedCards.length === 0) return null
+                           return (
+                             <div style={{ borderTop: "1px solid #e1e6df", paddingTop: 8, display: "grid", gap: 4 }}>
+                               <div style={{ fontSize: 11, fontWeight: 700, color: "#7d8d80", textTransform: "uppercase", letterSpacing: "0.05em" }}>Unused vehicles</div>
+                               {unusedCards.map(card => (
+                                 <div key={card.id} style={{ border: "1px solid #e8dfd5", borderRadius: 8, padding: "6px 10px", background: "#fdf8f4", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: 12 }}>
+                                   <span>
+                                     {card.type === "bus" ? "🚌" : card.type === "train" ? "🚂" : "✈️"}
+                                     {" "}#{card.number} {card.name}
+                                   </span>
+                                   <span style={{ color: "#b45309", fontWeight: 600, fontSize: 11 }}>not assigned</span>
+                                 </div>
+                               ))}
+                             </div>
+                           )
+                          })()}
                         </div>
-                            )
+                           )
                           })()}
                         </div>
                         {/* Per-network modules: map on top, pairing cards below */}
@@ -6543,8 +7406,12 @@ export default function Board({
                                 const rawMaxX = Math.max(...worldPts.map(p => p.x))
                                 const rawMinY = Math.min(...worldPts.map(p => p.y))
                                 const rawMaxY = Math.max(...worldPts.map(p => p.y))
-                                const rangeX = Math.max(rawMaxX - rawMinX, 1)
-                                const rangeY = Math.max(rawMaxY - rawMinY, 1)
+                                // Enforce minimum geographic range to prevent over-zoom on short routes
+                                const MIN_RANGE_X = 130, MIN_RANGE_Y = 90
+                                const centerX = (rawMinX + rawMaxX) / 2
+                                const centerY = (rawMinY + rawMaxY) / 2
+                                const rangeX = Math.max(rawMaxX - rawMinX, MIN_RANGE_X)
+                                const rangeY = Math.max(rawMaxY - rawMinY, MIN_RANGE_Y)
 
                                 // Grid sizing: card cell dimensions + default map span from aspect ratio
                                 const CELL_W = 230, CELL_H = 76, CELL_GAP = 6
@@ -6565,8 +7432,8 @@ export default function Board({
                                 const drawW = SVG_W - SVG_PAD * 2
                                 const drawH = SVG_H - SVG_PAD * 2
                                 const scale = Math.min(drawW / rangeX, drawH / rangeY)
-                                const toSvgX = (wx: number) => SVG_PAD + (drawW - rangeX * scale) / 2 + (wx - rawMinX) * scale
-                                const toSvgY = (wy: number) => SVG_PAD + (drawH - rangeY * scale) / 2 + (wy - rawMinY) * scale
+                                const toSvgX = (wx: number) => SVG_PAD + drawW / 2 + (wx - centerX) * scale
+                                const toSvgY = (wy: number) => SVG_PAD + drawH / 2 + (wy - centerY) * scale
                                 const pts = worldPts.map(p => ({ ...p, x: toSvgX(p.x), y: toSvgY(p.y) }))
                                 const ptById = new Map(pts.map(p => [p.id, p]))
 
@@ -6619,7 +7486,6 @@ export default function Board({
                                 ]
 
                                 const clipId = `nmap-clip-${ni}`
-                                const blurId = `nmap-blur-${ni}`
 
                                 const planColors = planSegs.map(s => s.color)
                                 const modeSet = new Set(plans.map(p => p.route.mode))
@@ -6652,7 +7518,7 @@ export default function Board({
                                       ))}
                                     </div>
                                     {/* CSS Grid: map spans mapCols×mapRows cells, cards auto-fill remaining cells */}
-                                    <div style={{ display: "grid", gridTemplateColumns: `repeat(auto-fill, ${CELL_W}px)`, gridAutoRows: `minmax(${CELL_H}px, auto)`, gap: CELL_GAP, alignItems: "start" }}>
+                                    <div style={{ display: "grid", gridTemplateColumns: `repeat(auto-fill, ${CELL_W}px)`, gridAutoRows: `minmax(${CELL_H}px, auto)`, gap: CELL_GAP, alignItems: "stretch" }}>
                                       {/* Map spanning mapCols × mapRows */}
                                       <div
                                         style={{
@@ -6670,9 +7536,6 @@ export default function Board({
                                             <clipPath id={clipId}>
                                               <rect x="0" y="0" width={SVG_W} height={SVG_H} rx="7" />
                                             </clipPath>
-                                            <filter id={blurId} x="-80%" y="-80%" width="260%" height="260%">
-                                              <feGaussianBlur stdDeviation="20" />
-                                            </filter>
                                             {planSegs.map(({ color }, pi) => (
                                               <marker key={pi} id={`na${ni}p${pi}`} markerWidth="2.5" markerHeight="2.5" refX="2" refY="1.25" orient="auto">
                                                 <path d="M0,0 L0,2.5 L2.5,1.25 z" fill={color} />
@@ -6680,31 +7543,19 @@ export default function Board({
                                             ))}
                                           </defs>
 
-                                          {/* Land background */}
-                                          <rect x="0" y="0" width={SVG_W} height={SVG_H} fill={MAP_OUTLINE_STYLE.fill} />
+                                          {/* Ocean background */}
+                                          <rect x="0" y="0" width={SVG_W} height={SVG_H} fill="#c8dff0" />
 
                                           {/* US outline + region blobs, clipped to viewBox */}
                                           <g clipPath={`url(#${clipId})`}>
                                             <path
                                               d={outlinePathD}
-                                              fill={MAP_OUTLINE_STYLE.fill}
-                                              stroke={MAP_OUTLINE_STYLE.stroke}
-                                              strokeWidth={1.5}
-                                              opacity={MAP_OUTLINE_STYLE.opacity}
+                                             fill="#f0ece0"
+                                             stroke="#ccc5b4"
+                                             strokeWidth={1}
+                                             opacity={0.95}
                                             />
-                                            <g filter={`url(#${blurId})`}>
-                                              {netRegionBlobs.map(blob => (
-                                                <circle
-                                                  key={blob.key}
-                                                  cx={blob.cx}
-                                                  cy={blob.cy}
-                                                  r={blob.r}
-                                                  fill={colorWithOpacity(REGION_STYLES[blob.region].fill, 0.32)}
-                                                />
-                                              ))}
-                                            </g>
-
-                                            {/* Route infrastructure lines (faint) */}
+                                           {/* Route infrastructure lines (faint) */}
                                             {planSegs.flatMap(({ color, routeLines }, pi) =>
                                               routeLines.map((r, ri) => (
                                                 <line key={`rl-${pi}-${ri}`} x1={r.ax} y1={r.ay} x2={r.bx} y2={r.by} stroke={color} strokeWidth="2" strokeLinecap="round" opacity="0.2" />
@@ -6760,7 +7611,7 @@ export default function Board({
                                         return (
                                           <div
                                             key={pair.key}
-                                            style={{ border: "1px solid #e1e6df", borderRadius: 8, padding: "7px 14px", background: "#fafcf9", display: "grid", gap: 3, alignSelf: "start", overflow: "hidden" }}
+                                            style={{ border: "1px solid #e1e6df", borderRadius: 8, padding: "7px 14px", background: "#fafcf9", display: "flex", flexDirection: "column", gap: 3, overflow: "hidden" }}
                                           >
                                             <div style={{ fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 4 }}>
                                               {pairColors.map((c, i) => <span key={i} style={{ display: "inline-block", width: 9, height: 9, borderRadius: "50%", background: c, flexShrink: 0 }} />)}
@@ -6868,142 +7719,276 @@ export default function Board({
           )}
         </div>
       )}
-      {pendingVehiclePurchaseCard && (
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            background: "rgba(10, 18, 12, 0.35)",
-            zIndex: 4,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 24,
-            fontFamily: "system-ui, sans-serif",
-          }}
-        >
+      {pendingVehiclePurchaseCard && (() => {
+        const isUpgradeMode = Boolean(pendingExchangeOldCardId)
+        const upgradeOldCard = isUpgradeMode ? vehicleCardMap[pendingExchangeOldCardId!] : null
+        const upgradeWeeksOwned = upgradeOldCard
+          ? (currentPlayer?.vehicleWeeksOwnedByCardId[pendingExchangeOldCardId!] ?? 0)
+          : 0
+        const upgradeTradeInValue = upgradeOldCard
+          ? getVehicleTradeInValue(upgradeOldCard, upgradeWeeksOwned)
+          : 0
+        const upgradeDepreciationPct = upgradeOldCard
+          ? Math.round((1 - upgradeTradeInValue / upgradeOldCard.purchasePrice) * 100)
+          : 0
+        const upgradeDepreciationAmount = upgradeOldCard
+          ? upgradeOldCard.purchasePrice - upgradeTradeInValue
+          : 0
+        const upgradeNetCost = upgradeOldCard
+          ? Math.max(0, pendingVehiclePurchaseCard.purchasePrice - upgradeTradeInValue)
+          : 0
+
+        return (
           <div
             style={{
-              width: "min(520px, calc(100vw - 32px))",
-              background: "#ffffff",
-              borderRadius: 16,
-              boxShadow: "0 16px 40px rgba(0, 0, 0, 0.2)",
-              padding: 18,
+              position: "absolute",
+              inset: 0,
+              background: "rgba(10, 18, 12, 0.35)",
+              zIndex: 4,
               display: "flex",
-              flexDirection: "column",
-              gap: 12,
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 24,
+              fontFamily: "system-ui, sans-serif",
             }}
           >
-            <div>
-              <strong>Confirm vehicle purchase</strong>
-              <div style={{ color: "#56635a", fontSize: 13 }}>
-                {currentPlayer?.name ?? "Current player"} is about to buy vehicle card #
-                {pendingVehiclePurchaseCard.number}.
-              </div>
-            </div>
             <div
               style={{
-                border: "1px solid #d8dfd5",
-                borderRadius: 12,
-                padding: 12,
-                display: "grid",
-                gap: 6,
-                background: "#f7faf6",
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                <strong>
-                  #{pendingVehiclePurchaseCard.number} {pendingVehiclePurchaseCard.name}
-                </strong>
-                <span>{formatCurrency(pendingVehiclePurchaseCard.purchasePrice)}</span>
-              </div>
-              <div style={{ color: "#324236", fontSize: 13 }}>
-                {getVehicleTypeIcon(pendingVehiclePurchaseCard.type)}{" "}
-                {getVehicleTypeLabel(pendingVehiclePurchaseCard.type)} • 👥{" "}
-                {pendingVehiclePurchaseCard.totalPassengerCapacity.toLocaleString()} seats •{" "}
-                {pendingVehiclePurchaseCard.speed}mph
-              </div>
-            </div>
-            <div style={{ color: "#56635a", fontSize: 13 }}>
-              After confirmation, the turn will automatically move to{" "}
-              {shouldAdvancePhase
-                ? formatPhaseLabel(getNextPhase(game.currentPhase)).toLowerCase()
-                : nextPlayer?.name ?? "the next player"}
-              .
-            </div>
-            <label
-              style={{
+                width: "min(520px, calc(100vw - 32px))",
+                background: "#ffffff",
+                borderRadius: 16,
+                boxShadow: "0 16px 40px rgba(0, 0, 0, 0.2)",
+                padding: 18,
                 display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
+                flexDirection: "column",
                 gap: 12,
-                color: "#324236",
-                fontSize: 13,
               }}
             >
-              <span>
-                Quantity (max {pendingVehiclePurchaseMaxQuantity} for this{" "}
-                {getVehiclePurchaseLabel(pendingVehiclePurchaseCard.type, 1)})
-              </span>
-              <select
-                value={pendingVehiclePurchaseQuantity}
-                onChange={event => setPendingVehiclePurchaseQuantity(Number(event.target.value))}
-                style={{
-                  minWidth: 96,
-                  padding: "6px 8px",
-                  borderRadius: 8,
-                  border: "1px solid #c7d0c4",
-                  background: "#ffffff",
-                }}
-              >
-                {Array.from({ length: pendingVehiclePurchaseMaxQuantity }, (_, index) => index + 1).map(
-                  quantity => (
-                    <option key={quantity} value={quantity}>
-                      {quantity}
-                    </option>
-                  ),
-                )}
-              </select>
-            </label>
-            <div style={{ color: "#56635a", fontSize: 13 }}>
-              Total cost: <strong>{formatCurrency(pendingVehiclePurchaseTotalCost)}</strong>
-            </div>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
-              <button
-                type="button"
-                onClick={() => {
-                  setPendingVehiclePurchaseCardId(null)
-                  setPendingVehiclePurchaseQuantity(1)
-                }}
-                style={{
-                  padding: "8px 12px",
-                  borderRadius: 999,
-                  border: "1px solid #c7d0c4",
-                  background: "#ffffff",
-                  cursor: "pointer",
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleConfirmBuyVehicleCard}
-                style={{
-                  padding: "8px 12px",
-                  borderRadius: 999,
-                  border: "1px solid #223024",
-                  background: "#223024",
-                  color: "#ffffff",
-                  cursor: "pointer",
-                  fontWeight: 700,
-                }}
-              >
-                Confirm purchase
-              </button>
+              {isUpgradeMode && upgradeOldCard ? (
+                <>
+                  <div>
+                    <strong>Confirm vehicle upgrade</strong>
+                    <div style={{ color: "#56635a", fontSize: 13 }}>
+                      {currentPlayer?.name ?? "Current player"} is trading in{" "}
+                      <strong>#{upgradeOldCard.number} {upgradeOldCard.name}</strong> for{" "}
+                      <strong>#{pendingVehiclePurchaseCard.number} {pendingVehiclePurchaseCard.name}</strong>.
+                    </div>
+                  </div>
+                  {/* Trade-in breakdown */}
+                  <div
+                    style={{
+                      border: "1px solid #f0d8d5",
+                      borderRadius: 12,
+                      padding: 12,
+                      display: "grid",
+                      gap: 5,
+                      background: "#fdf5f4",
+                    }}
+                  >
+                    <div style={{ fontWeight: 700, fontSize: 12, color: "#6b2929", marginBottom: 2 }}>
+                      🔴 Trading in: #{upgradeOldCard.number} {upgradeOldCard.name}
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", color: "#56635a", fontSize: 12 }}>
+                      <span>Original price</span>
+                      <span>{formatCurrency(upgradeOldCard.purchasePrice)}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", color: "#9b7720", fontSize: 12 }}>
+                      <span>Depreciation ({upgradeWeeksOwned}mo old, {upgradeDepreciationPct}%)</span>
+                      <span>−{formatCurrency(upgradeDepreciationAmount)}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: 12, color: "#324236", borderTop: "1px solid #e8d4d2", paddingTop: 5, marginTop: 2 }}>
+                      <span>Trade-in value</span>
+                      <span style={{ color: "#2d6a35" }}>+{formatCurrency(upgradeTradeInValue)}</span>
+                    </div>
+                  </div>
+                  {/* New vehicle */}
+                  <div
+                    style={{
+                      border: "1px solid #d8dfd5",
+                      borderRadius: 12,
+                      padding: 12,
+                      display: "grid",
+                      gap: 5,
+                      background: "#f7faf6",
+                    }}
+                  >
+                    <div style={{ fontWeight: 700, fontSize: 12, color: "#223024", marginBottom: 2 }}>
+                      🟢 Replacing with: #{pendingVehiclePurchaseCard.number} {pendingVehiclePurchaseCard.name}
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", color: "#56635a", fontSize: 12 }}>
+                      <span>
+                        {getVehicleTypeIcon(pendingVehiclePurchaseCard.type)}{" "}
+                        {getVehicleTypeLabel(pendingVehiclePurchaseCard.type)} • 👥{" "}
+                        {pendingVehiclePurchaseCard.totalPassengerCapacity.toLocaleString()} seats •{" "}
+                        {pendingVehiclePurchaseCard.speed}mph
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", color: "#56635a", fontSize: 12 }}>
+                      <span>Market price</span>
+                      <span>{formatCurrency(pendingVehiclePurchaseCard.purchasePrice)}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", color: "#2d6a35", fontSize: 12 }}>
+                      <span>Trade-in discount</span>
+                      <span>−{formatCurrency(upgradeTradeInValue)}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: 13, color: "#223024", borderTop: "1px solid #d8dfd5", paddingTop: 5, marginTop: 2 }}>
+                      <span>Net cost</span>
+                      <span>{formatCurrency(upgradeNetCost)}</span>
+                    </div>
+                  </div>
+                  <div style={{ color: "#56635a", fontSize: 13 }}>
+                    After confirmation, the turn will automatically move to{" "}
+                    {shouldAdvancePhase
+                      ? formatPhaseLabel(getNextPhase(game.currentPhase)).toLowerCase()
+                      : nextPlayer?.name ?? "the next player"}
+                    .
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
+                    <button
+                      type="button"
+                      onClick={() => setPendingVehiclePurchaseCardId(null)}
+                      style={{
+                        padding: "8px 12px",
+                        borderRadius: 999,
+                        border: "1px solid #c7d0c4",
+                        background: "#ffffff",
+                        cursor: "pointer",
+                      }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleConfirmUpgradeVehicleCard}
+                      style={{
+                        padding: "8px 12px",
+                        borderRadius: 999,
+                        border: "1px solid #c0392b",
+                        background: "#c0392b",
+                        color: "#ffffff",
+                        cursor: "pointer",
+                        fontWeight: 700,
+                      }}
+                    >
+                      Confirm upgrade
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <strong>Confirm vehicle purchase</strong>
+                    <div style={{ color: "#56635a", fontSize: 13 }}>
+                      {currentPlayer?.name ?? "Current player"} is about to buy vehicle card #
+                      {pendingVehiclePurchaseCard.number}.
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      border: "1px solid #d8dfd5",
+                      borderRadius: 12,
+                      padding: 12,
+                      display: "grid",
+                      gap: 6,
+                      background: "#f7faf6",
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                      <strong>
+                        #{pendingVehiclePurchaseCard.number} {pendingVehiclePurchaseCard.name}
+                      </strong>
+                      <span>{formatCurrency(pendingVehiclePurchaseCard.purchasePrice)}</span>
+                    </div>
+                    <div style={{ color: "#324236", fontSize: 13 }}>
+                      {getVehicleTypeIcon(pendingVehiclePurchaseCard.type)}{" "}
+                      {getVehicleTypeLabel(pendingVehiclePurchaseCard.type)} • 👥{" "}
+                      {pendingVehiclePurchaseCard.totalPassengerCapacity.toLocaleString()} seats •{" "}
+                      {pendingVehiclePurchaseCard.speed}mph
+                    </div>
+                  </div>
+                  <div style={{ color: "#56635a", fontSize: 13 }}>
+                    After confirmation, the turn will automatically move to{" "}
+                    {shouldAdvancePhase
+                      ? formatPhaseLabel(getNextPhase(game.currentPhase)).toLowerCase()
+                      : nextPlayer?.name ?? "the next player"}
+                    .
+                  </div>
+                  <label
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 12,
+                      color: "#324236",
+                      fontSize: 13,
+                    }}
+                  >
+                    <span>
+                      Quantity (max {pendingVehiclePurchaseMaxQuantity} for this{" "}
+                      {getVehiclePurchaseLabel(pendingVehiclePurchaseCard.type, 1)})
+                    </span>
+                    <select
+                      value={pendingVehiclePurchaseQuantity}
+                      onChange={event => setPendingVehiclePurchaseQuantity(Number(event.target.value))}
+                      style={{
+                        minWidth: 96,
+                        padding: "6px 8px",
+                        borderRadius: 8,
+                        border: "1px solid #c7d0c4",
+                        background: "#ffffff",
+                      }}
+                    >
+                      {Array.from({ length: pendingVehiclePurchaseMaxQuantity }, (_, index) => index + 1).map(
+                        quantity => (
+                          <option key={quantity} value={quantity}>
+                            {quantity}
+                          </option>
+                        ),
+                      )}
+                    </select>
+                  </label>
+                  <div style={{ color: "#56635a", fontSize: 13 }}>
+                    Total cost: <strong>{formatCurrency(pendingVehiclePurchaseTotalCost)}</strong>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPendingVehiclePurchaseCardId(null)
+                        setPendingVehiclePurchaseQuantity(1)
+                      }}
+                      style={{
+                        padding: "8px 12px",
+                        borderRadius: 999,
+                        border: "1px solid #c7d0c4",
+                        background: "#ffffff",
+                        cursor: "pointer",
+                      }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleConfirmBuyVehicleCard}
+                      style={{
+                        padding: "8px 12px",
+                        borderRadius: 999,
+                        border: "1px solid #223024",
+                        background: "#223024",
+                        color: "#ffffff",
+                        cursor: "pointer",
+                        fontWeight: 700,
+                      }}
+                    >
+                      Confirm purchase
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
       {isEconomicsOpen && (
         <div style={resourceMarketPanelStyle}>
           <strong>Economics</strong>
@@ -8058,10 +9043,36 @@ export default function Board({
                         gap: 10,
                       }}
                     >
+                      {unassignedVehicleCards.length > 0 && (
+                        <div style={{ display: "grid", gap: 6 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: "#9b4a1c" }}>⚠ Unassigned vehicles</div>
+                            <div style={{ fontSize: 11, color: "#9b4a1c" }}>({unassignedVehicleCards.length} need a route)</div>
+                          </div>
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            {unassignedVehicleCards.map(card => (
+                              <div key={card.id} style={{
+                                border: "1px solid #f0c080",
+                                borderRadius: 8,
+                                padding: "4px 8px",
+                                background: "#fffbf0",
+                                fontSize: 12,
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 4,
+                                color: "#5a3a10",
+                              }}>
+                                <span>{card.type === "bus" ? "🚌" : card.type === "train" ? "🚆" : "✈️"}</span>
+                                <span>#{card.number} {card.name}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                       <div style={{ display: "grid", gap: 4 }}>
-                        <strong>Service routes</strong>
+                        <strong>Routes editor</strong>
                         <div style={{ color: "#56635a", fontSize: 12 }}>
-                          Split routes here by mode, drag cities between route boxes, and assign vehicles before running Bureaucracy.
+                          Split routes by mode, drag cities between pods, use disconnected/× to remove a city from one pod, and assign vehicles before running Bureaucracy.
                         </div>
                       </div>
                       {BUREAUCRACY_MODE_ORDER.map(mode => {

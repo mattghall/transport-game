@@ -348,6 +348,11 @@ export const SCRIPTED_BOT_LEVER_METADATA: Record<keyof ScriptedBotWeights, Scrip
     minimum: 0,
     enabled: true,
   },
+  buyFleetScaleBonus: {
+    mutationStep: 8,
+    minimum: 0,
+    enabled: true,
+  },
 }
 
 export const MUTABLE_SCRIPTED_BOT_WEIGHT_KEYS = SCRIPTED_BOT_WEIGHT_KEYS.filter(

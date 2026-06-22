@@ -1,0 +1,13 @@
+# docker-compose for local testing of the production Docker image.
+# For AWS, deploy the session server container directly (ECS, App Runner, etc.)
+services:
+  session-server:
+    build: .
+    ports:
+      - "8787:8787"
+    environment:
+      PORT: 8787
+    restart: unless-stopped
+    # Mount training-results so bot weights persist across container restarts.
+    volumes:
+      - ./public/training-results:/app/dist/training-results

@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "preview:lan": "vite preview --host",
     "session-server": "node --import tsx/esm server/sessionServer.mjs",
+    "test": "node --import tsx/esm --test tests/*.test.ts",
     "simulate:bots": "tsx scripts/runBotSimulation.ts",
     "train:bots": "tsx scripts/trainBotWeights.ts",
     "autotune:bots": "tsx scripts/autotuneBots.ts",

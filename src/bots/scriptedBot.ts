@@ -76,6 +76,10 @@ export type ScriptedBotWeights = {
   // Penalty per opponent route that already touches either endpoint of the claimed route.
   // Discourages claiming into heavily contested areas.
   claimOpponentBlockPenalty: number
+  // Reward for buying more of a vehicle card you already have assigned to a pod.
+  // Models fleet scaling: if pod with vehicle X earns $Y/month, buying another X adds ~$Y/month.
+  // Score += (existingNetRevenue / 1_000_000) * buyFleetScaleBonus
+  buyFleetScaleBonus: number
 }
 
 export const DEFAULT_SCRIPTED_BOT_WEIGHTS: ScriptedBotWeights = {
@@ -141,6 +145,7 @@ export const DEFAULT_SCRIPTED_BOT_WEIGHTS: ScriptedBotWeights = {
   keepCityAdjacencyPotentialScore: 5,
   claimAdjacentNetworkBonus: 8,
   claimOpponentBlockPenalty: 4,
+  buyFleetScaleBonus: 30,
 }
 
 export function mergeScriptedBotWeights(
@@ -522,6 +527,18 @@ function scoreBotAction(
     .filter(vehicleCard => vehicleCard.type === card.type).length
   const potentialRailClaims = countPotentialClaims(game, playerId, "rail")
   const potentialAirClaims = countPotentialClaims(game, playerId, "air")
+
+  // Fleet scaling bonus: if this exact card is already owned and assigned to a productive pod,
+  // buying another directly scales revenue (fleet size × capacity). Score the expected delta.
+  let fleetScaleBonus = 0
+  if (player.ownedVehicleCardIds.includes(card.id)) {
+    const summary = currentSummary ?? getCachedBureaucracySummary(game, playerId)
+    const netRevenueFromCard = summary?.routePlans
+      .filter(p => !p.isDisconnected && p.vehicleCard?.id === card.id && (p.netRevenue ?? 0) > 0)
+      .reduce((sum, p) => sum + (p.netRevenue ?? 0), 0) ?? 0
+    fleetScaleBonus = (netRevenueFromCard / 1_000_000) * weights.buyFleetScaleBonus
+  }
+
   const cityBonus =
     card.type === "bus"
       ? Math.min(ownedCityCount, 6) * weights.buyBusOwnedCityBonus
@@ -547,7 +564,8 @@ function scoreBotAction(
     getVehiclePriority(card.type, weights) +
     cityBonus -
     ownedVehicleCount * weights.buyDuplicateVehiclePenalty +
-    firstOfTypeBonus -
+    firstOfTypeBonus +
+    fleetScaleBonus -
     card.purchasePrice / 1_000_000
   )
 }
@@ -575,13 +593,14 @@ export function createScriptedBot(id: string, weights: Partial<ScriptedBotWeight
         return { type: "ready-operations" }
       }
 
-      // Only compute the bureaucracy summary when there are pod/removal actions to score —
-      // those are the only action types that need it. This avoids expensive calls on every
-      // claim-route, buy-vehicle, add-city, and bureaucracy step.
+      // Compute the bureaucracy summary when there are pod/removal actions to score, or when
+      // there are buy-vehicle actions (to enable fleet scaling bonuses for already-owned cards).
       const hasPodActions = availableActions.some(
         a => a.type === "create-service-pod" || a.type === "remove-pod-city",
       )
-      const precomputedSummary = hasPodActions ? getCachedBureaucracySummary(game, playerId) : undefined
+      const hasBuyVehicleActions = availableActions.some(a => a.type === "buy-vehicle")
+      const needsSummary = hasPodActions || hasBuyVehicleActions
+      const precomputedSummary = needsSummary ? getCachedBureaucracySummary(game, playerId) : undefined
       const bestAction = availableActions.reduce<{ action: BotAction; score: number } | null>(
         (best, action) => {
           const score = scoreBotAction(action, game, playerId, resolvedWeights, precomputedSummary)

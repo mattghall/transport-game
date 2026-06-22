@@ -859,6 +859,30 @@ function buildPersistedServiceSlotStates(
           ? serviceSlot.serviceGroup.cityIds
           : []
 
+    const storedCityIds = game.bureaucracyServiceCityIdsByRouteId[serviceSlot.id]
+    const isSmallNetwork = serviceSlot.serviceGroup.cityIds.length === 2
+    // For 2-city networks: slot 0 always auto-assigns both cities when they're all
+    // sitting in DISCONNECTED (i.e. the stored disconnected list has both).
+    let effectiveCityIds = storedCityIds ?? defaultSelectedCityIds
+    if (isSmallNetwork) {
+      if (!serviceSlot.isDisconnected && serviceSlot.slotIndex === 0 && (storedCityIds === undefined || storedCityIds.length === 0)) {
+        const discId = buildDisconnectedServiceSlotId(serviceSlot.corridorId)
+        const discCities = game.bureaucracyServiceCityIdsByRouteId[discId]
+        if (!discCities || discCities.length >= serviceSlot.serviceGroup.cityIds.length) {
+          effectiveCityIds = [...serviceSlot.serviceGroup.cityIds]
+        }
+      }
+      if (serviceSlot.isDisconnected) {
+        // If slot 0 is going to auto-fill both cities, clear the disconnected display
+        const slot0Id = buildServiceSlotId(serviceSlot.corridorId, 0)
+        const slot0Cities = game.bureaucracyServiceCityIdsByRouteId[slot0Id]
+        const discCities = storedCityIds
+        if ((!slot0Cities || slot0Cities.length === 0) && (!discCities || discCities.length >= serviceSlot.serviceGroup.cityIds.length)) {
+          effectiveCityIds = []
+        }
+      }
+    }
+
     return {
       corridorId: serviceSlot.corridorId,
       slotIndex: serviceSlot.slotIndex,
@@ -867,7 +891,7 @@ function buildPersistedServiceSlotStates(
       availableCityIds: serviceSlot.serviceGroup.cityIds,
       selectedCityIds: normalizeSelectedCityIds(
         serviceSlot.serviceGroup.cityIds,
-        game.bureaucracyServiceCityIdsByRouteId[serviceSlot.id] ?? defaultSelectedCityIds,
+        effectiveCityIds,
       ),
       assignedVehicleCardId: game.bureaucracyVehicleCardIdsByRouteId[serviceSlot.id] ?? null,
     }
@@ -924,6 +948,21 @@ export function migrateBureaucracyServiceState(
           ?.sort((slotA, slotB) => slotA.slotIndex - slotB.slotIndex) ?? []
 
       if (matchingPreviousSlots.length === 0) {
+        // Brand-new corridor with no previous state.
+        if (nextGame.currentWeek > 1) {
+          const nextSlotId = buildServiceSlotId(nextServiceGroup.id, 0)
+          bureaucracyServiceSlotCountsByCorridorId[nextServiceGroup.id] = 1
+          if (nextServiceGroup.cityIds.length === 2) {
+            // 2-city networks: auto-assign both cities to slot 0
+            bureaucracyServiceCityIdsByRouteId[nextSlotId] = [...nextServiceGroup.cityIds]
+            bureaucracyServiceCityIdsByRouteId[buildDisconnectedServiceSlotId(nextServiceGroup.id)] = []
+          } else {
+            // After round 1, explicitly store an empty slot so the UI doesn't auto-populate it.
+            bureaucracyServiceCityIdsByRouteId[nextSlotId] = []
+            bureaucracyServiceCityIdsByRouteId[buildDisconnectedServiceSlotId(nextServiceGroup.id)] =
+              [...nextServiceGroup.cityIds]
+          }
+        }
         continue
       }
 
@@ -951,16 +990,19 @@ export function migrateBureaucracyServiceState(
           continue
         }
 
-        // Fill any pod that has fewer than 2 cities first (a pod needs ≥2 cities to be active).
-        // Only send new cities to disconnected once all existing pods are already valid.
-        const underflowSlot = migratedSlots.find(
-          slot =>
-            slot.selectedCityIds.length < 2 &&
-            isValidServicePodSelection(
-              [...slot.selectedCityIds, cityId],
-              corridorSegmentPairs,
-            ),
-        )
+        // After round 1, new cities always land in disconnected — the player must
+        // explicitly drag them into a pod. Only in round 1 do we auto-fill underflow pods.
+        const shouldAutoFill = nextGame.currentWeek <= 1
+        const underflowSlot = shouldAutoFill
+          ? migratedSlots.find(
+              slot =>
+                slot.selectedCityIds.length < 2 &&
+                isValidServicePodSelection(
+                  [...slot.selectedCityIds, cityId],
+                  corridorSegmentPairs,
+                ),
+            )
+          : undefined
 
         if (underflowSlot) {
           underflowSlot.selectedCityIds = [...underflowSlot.selectedCityIds, cityId]
