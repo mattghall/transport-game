@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react"
+import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react"
 import {
   type RailUpgradeResult,
   type BureaucracyServiceCityMoveResult,
@@ -1096,7 +1096,7 @@ function renderCityDemandTokens(
 
   return (
     <g pointerEvents="none">
-      <title>{`${cityName}: ${roundedPassengers} passengers of monthly demand (${DEMAND_POINTS_PER_MAP_CUBE} demand points per cube)`}</title>
+      <title>{`${cityName}: ${roundedPassengers} passengers of annual demand (${DEMAND_POINTS_PER_MAP_CUBE} demand points per cube)`}</title>
       {layers}
     </g>
   )
@@ -1191,7 +1191,7 @@ function getPhaseStatusMessage(phase: WeeklyPhase) {
     case "add-city":
       return "Draw 4 city cards and keep exactly 2, then go straight into Operations for this turn."
     case "operations":
-      return "Build tracks, assign vehicles, and split service routes before running the month."
+      return "Build tracks, assign vehicles, and split service routes before running the year."
     case "bureaucracy":
       return "Review passenger flow and operating ledgers, then advance."
   }
@@ -1329,7 +1329,7 @@ export default function Board({
   const [showCityNames, setShowCityNames] = useState(true)
   const [showCitySizeBubbles, setShowCitySizeBubbles] = useState(false)
   const [pendingExchangeOldCardId, setPendingExchangeOldCardId] = useState<string | null>(null)
-  const [autoPlayCompleteMonths] = useState<number>(() =>
+  const [autoPlayCompleteYears] = useState<number>(() =>
     game.autoPlayUntilWeek > 0 && game.currentWeek > game.autoPlayUntilWeek ? game.autoPlayUntilWeek : 0,
   )
   const [hasDismissedAutoPlayBanner, setHasDismissedAutoPlayBanner] = useState(false)
@@ -4630,7 +4630,7 @@ export default function Board({
         {isOwnedSection && weeksOwned > 0 && (
           <div style={{ color: "#7a6830", fontSize: 11, lineHeight: 1.35 }}>
             <strong>Trade-in:</strong> {formatCurrency(tradeInValue)}{" "}
-            <span style={{ color: "#9b7720" }}>({weeksOwned}mo old)</span>
+            <span style={{ color: "#9b7720" }}>({weeksOwned}yr old)</span>
           </div>
         )}
         <div style={{ marginTop: "auto", display: "flex", gap: 4 }}>
@@ -4891,7 +4891,7 @@ export default function Board({
           fontSize: 13,
           boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
         }}>
-          <span>🤖 Bot preview — month {game.currentWeek} of {game.autoPlayUntilWeek}</span>
+          <span>🤖 Bot preview — year {game.currentWeek} of {game.autoPlayUntilWeek}</span>
           <button
             type="button"
             onClick={() => void onStopAutoPlay()}
@@ -4910,7 +4910,7 @@ export default function Board({
           </button>
         </div>
       )}
-      {autoPlayCompleteMonths > 0 && !hasDismissedAutoPlayBanner && (
+      {autoPlayCompleteYears > 0 && !hasDismissedAutoPlayBanner && (
         <div style={{
           position: "fixed",
           top: 0,
@@ -4927,7 +4927,7 @@ export default function Board({
           fontSize: 13,
           boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
         }}>
-          <span>✅ Bot preview complete — bots played {autoPlayCompleteMonths === 1 ? "month 1" : `months 1–${autoPlayCompleteMonths}`}. You're now in control.</span>
+          <span>✅ Bot preview complete — bots played {autoPlayCompleteYears === 1 ? "year 1" : `years 1–${autoPlayCompleteYears}`}. You're now in control.</span>
           <button
             type="button"
             onClick={() => setHasDismissedAutoPlayBanner(true)}
@@ -5092,7 +5092,7 @@ export default function Board({
             }}
           >
             <div>
-              <strong>Goal:</strong> Move the most passengers in {game.operatingConfig.totalWeeks} months.
+              <strong>Goal:</strong> Move the most passengers in {game.operatingConfig.totalWeeks} years.
             </div>
             <div style={{ color: "#56635a", fontSize: 13 }}>
               Ties break on connected cities, then cash.
@@ -5108,7 +5108,7 @@ export default function Board({
               }}
             >
               <div>
-                <strong>Monthly chance:</strong> {activeChanceCard.title}
+                <strong>Annual chance:</strong> {activeChanceCard.title}
               </div>
               <div style={{ color: "#5f5482", fontSize: 13 }}>
                 {activeChanceCard.description}
@@ -5162,7 +5162,7 @@ export default function Board({
                     ? "Draw 4 city cards and keep exactly 2. This step only adds cities to your hand."
                     : game.currentPhase === "operations"
                       ? "Build tracks, split routes, assign service, and set up routes."
-                      : "Review passenger flow and route ledgers before ending the month."}
+                      : "Review passenger flow and route ledgers before ending the year."}
               </div>
               {game.currentPhase === "purchase-equipment" && hasUsedVehiclePurchase && (
                 <div style={{ color: "#9b1c1c", fontSize: 13 }}>
@@ -5907,7 +5907,7 @@ export default function Board({
                 return (
                   <div
                    key={`week-tracker-${weekNum}`}
-                   title={`Month ${weekNum}${isCurrent ? `: ${formatPhaseLabel(game.currentPhase)}` : ""}`}
+                   title={`Year ${weekNum}${isCurrent ? `: ${formatPhaseLabel(game.currentPhase)}` : ""}`}
                    style={{
                      flex: "1 1 0%",
                      minHeight: 0,
@@ -6077,11 +6077,11 @@ export default function Board({
           >
             <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
               <div>
-                <strong>End of month {completedPeriod} summary</strong>
+                <strong>End of year {completedPeriod} summary</strong>
                 <div style={{ color: "#56635a", fontSize: 13 }}>
                   {game.bureaucracyReadyPlayerIds.includes(activeViewingPlayerId) && game.currentPhase !== "purchase-equipment"
                     ? "Waiting for other players to finish…"
-                    : "Revenue, costs, and passenger totals from the month that just finished."}
+                    : "Revenue, costs, and passenger totals from the year that just finished."}
                 </div>
               </div>
               {!(game.bureaucracyReadyPlayerIds.includes(activeViewingPlayerId) && game.currentPhase !== "purchase-equipment") && (
@@ -6495,7 +6495,7 @@ export default function Board({
                     }}
                   >
                     {[
-                      "Month",
+                      "Year",
                       "Money made",
                       "Pods by type",
                       "Passengers moved",
@@ -6517,7 +6517,7 @@ export default function Board({
                     {periodHistory.length > 0 ? (
                       periodHistory.flatMap(entry => [
                         <div key={`${standing.player.id}-${entry.period}-period`} style={{ color: "#223024", fontWeight: 700 }}>
-                          Month {entry.period}
+                          Year {entry.period}
                         </div>,
                         <div
                           key={`${standing.player.id}-${entry.period}-net`}
@@ -6553,7 +6553,7 @@ export default function Board({
                           fontSize: 13,
                         }}
                       >
-                        No month history recorded for this player.
+                        No year history recorded for this player.
                       </div>
                     )}
                   </div>
@@ -6580,7 +6580,7 @@ export default function Board({
               {formatCurrency(expandedPlayerSummary.player.operatingCosts)}
             </div>
             <div>
-              <strong>Monthly revenue:</strong>{" "}
+              <strong>Annual revenue:</strong>{" "}
               {formatCurrency(expandedPlayerSummary.player.weeklyPayout)}
             </div>
             <div>
@@ -7777,7 +7777,7 @@ export default function Board({
                       <span>{formatCurrency(upgradeOldCard.purchasePrice)}</span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", color: "#9b7720", fontSize: 12 }}>
-                      <span>Depreciation ({upgradeWeeksOwned}mo old, {upgradeDepreciationPct}%)</span>
+                      <span>Depreciation ({upgradeWeeksOwned}yr old, {upgradeDepreciationPct}%)</span>
                       <span>−{formatCurrency(upgradeDepreciationAmount)}</span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: 12, color: "#324236", borderTop: "1px solid #e8d4d2", paddingTop: 5, marginTop: 2 }}>
@@ -7977,13 +7977,13 @@ export default function Board({
         <div style={resourceMarketPanelStyle}>
           <strong>Economics</strong>
           <div style={{ color: "#56635a" }}>
-            Route pricing, operating costs, fuel pricing, and infrastructure costs for the current month.
+            Route pricing, operating costs, fuel pricing, and infrastructure costs for the current year.
           </div>
           <div style={{ color: "#56635a", fontSize: 13 }}>
             Crew assumptions use {formatDecimal(game.operatingConfig.hoursPerDay)}h/day for{" "}
             {formatDecimal(game.operatingConfig.daysPerWeek, 0)} days/week across{" "}
-            {formatDecimal(game.operatingConfig.weeksPerPeriod, 0)} weeks/month ={" "}
-            {formatDecimal(getHoursPerWeek(game), 0)}h/month per fully utilized vehicle.
+            {formatDecimal(game.operatingConfig.weeksPerPeriod, 0)} weeks/year ={" "}
+            {formatDecimal(getHoursPerWeek(game), 0)}h/year per fully utilized vehicle.
           </div>
           <div style={{ color: "#56635a", fontSize: 13 }}>
             Actual crew cost scales with trips run; the table below shows the full-utilization ceiling for each vehicle.
@@ -8038,8 +8038,8 @@ export default function Board({
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Mode</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Ticket / mile</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Crew / hr</th>
-                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Crew / max month / vehicle</th>
-                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Maint / month / vehicle</th>
+                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Crew / max year / vehicle</th>
+                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Maint / year / vehicle</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Balance / trip</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Loading</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Fuel</th>
@@ -8170,7 +8170,7 @@ export default function Board({
             >
               <strong>How to win</strong>
               <div style={{ color: "#324236", fontSize: 13 }}>
-                The game lasts <strong>{game.operatingConfig.totalWeeks} months</strong>. Winner is the
+                The game lasts <strong>{game.operatingConfig.totalWeeks} years</strong>. Winner is the
                 player with the most passengers served.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
@@ -8201,7 +8201,7 @@ export default function Board({
                 1. <strong>Purchase Equipment</strong>: make 1 vehicle purchase on your turn, either from the face-up market lineup or from a vehicle model you already own, buying up to 6 buses, 3 trains, or 1 plane.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
-                At month end, each vehicle deck with no purchases discards its lowest-number remaining card before the next phase.
+                At year end, each vehicle deck with no purchases discards its lowest-number remaining card before the next phase.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
                 2. <strong>Claim Routes</strong>: each turn draw 4 city cards and keep exactly 2 to grow your hand.
@@ -8213,12 +8213,12 @@ export default function Board({
                 Use <strong>Build Track</strong> in Operations to click highlighted adjacent segments on the map and lay rail.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
-                4. <strong>Bureaucracy</strong>: review passenger flow and monthly operating results after services auto-run.
+                4. <strong>Bureaucracy</strong>: review passenger flow and annual operating results after services auto-run.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
                 Real-world crew math uses <strong>{formatDecimal(game.operatingConfig.hoursPerDay)}</strong> hours/day for{" "}
                 <strong>{formatDecimal(game.operatingConfig.daysPerWeek, 0)}</strong> days/week across{" "}
-                <strong>{formatDecimal(game.operatingConfig.weeksPerPeriod, 0)}</strong> weeks/month at full utilization; actual crew cost scales with trips run.
+                <strong>{formatDecimal(game.operatingConfig.weeksPerPeriod, 0)}</strong> weeks/year at full utilization; actual crew cost scales with trips run.
               </div>
             </div>
             <div
@@ -8280,29 +8280,29 @@ export default function Board({
               <div style={{ color: "#324236", fontSize: 13 }}>
                 Bus crew:{" "}
                 <strong>{formatUnitRate(game.operatingConfig.realWorldOperatingCosts.crewHourlyCostPerVehicle.bus, 0)}/h</strong>{" "}
-                • up to {formatCurrency(getCrewCostPerWeekPerVehicle(game, "bus"))}/month/vehicle
+                • up to {formatCurrency(getCrewCostPerWeekPerVehicle(game, "bus"))}/year/vehicle
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
                 Train crew:{" "}
                 <strong>{formatUnitRate(game.operatingConfig.realWorldOperatingCosts.crewHourlyCostPerVehicle.train, 0)}/h</strong>{" "}
-                • up to {formatCurrency(getCrewCostPerWeekPerVehicle(game, "train"))}/month/vehicle
+                • up to {formatCurrency(getCrewCostPerWeekPerVehicle(game, "train"))}/year/vehicle
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
                 Air crew:{" "}
                 <strong>{formatUnitRate(game.operatingConfig.realWorldOperatingCosts.crewHourlyCostPerVehicle.air, 0)}/h</strong>{" "}
-                • up to {formatCurrency(getCrewCostPerWeekPerVehicle(game, "air"))}/month/vehicle
+                • up to {formatCurrency(getCrewCostPerWeekPerVehicle(game, "air"))}/year/vehicle
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
                 Bus maintenance:{" "}
-                <strong>{formatCurrency(game.operatingConfig.realWorldOperatingCosts.maintenanceCostPerWeekPerVehicle.bus * game.operatingConfig.weeksPerPeriod)}</strong>/month/vehicle
+                <strong>{formatCurrency(game.operatingConfig.realWorldOperatingCosts.maintenanceCostPerWeekPerVehicle.bus * game.operatingConfig.weeksPerPeriod)}</strong>/year/vehicle
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
                 Train maintenance:{" "}
-                <strong>{formatCurrency(game.operatingConfig.realWorldOperatingCosts.maintenanceCostPerWeekPerVehicle.train * game.operatingConfig.weeksPerPeriod)}</strong>/month/vehicle
+                <strong>{formatCurrency(game.operatingConfig.realWorldOperatingCosts.maintenanceCostPerWeekPerVehicle.train * game.operatingConfig.weeksPerPeriod)}</strong>/year/vehicle
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
                 Air maintenance:{" "}
-                <strong>{formatCurrency(game.operatingConfig.realWorldOperatingCosts.maintenanceCostPerWeekPerVehicle.air * game.operatingConfig.weeksPerPeriod)}</strong>/month/vehicle
+                <strong>{formatCurrency(game.operatingConfig.realWorldOperatingCosts.maintenanceCostPerWeekPerVehicle.air * game.operatingConfig.weeksPerPeriod)}</strong>/year/vehicle
               </div>
             </div>
           </div>
@@ -8331,8 +8331,8 @@ export default function Board({
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Mode</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Ticket / mile</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Crew / hr</th>
-                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Crew / max month / vehicle</th>
-                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Maint / month / vehicle</th>
+                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Crew / max year / vehicle</th>
+                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Maint / year / vehicle</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Balance / trip</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Loading</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Fuel</th>
@@ -8474,7 +8474,7 @@ export default function Board({
                   )}
                   {activeChanceCard?.id === card.id && (
                     <div style={{ color: "#5f5482", fontSize: 12, fontWeight: 600 }}>
-                      Active this month
+                      Active this year
                     </div>
                   )}
                 </div>
@@ -8611,7 +8611,7 @@ export default function Board({
                   >
                     <div style={{ fontSize: 12, color: "#56635a" }}>
                       <span style={{ color: playerColor, fontWeight: 700 }}>{entry.playerName}</span>
-                      {" • "}Month {entry.week}
+                      {" • "}Year {entry.week}
                       {" • "}{formatPhaseLabel(entry.phase)}
                     </div>
                     <div style={{ color: "#223024", fontSize: 13 }}>{entry.message}</div>
@@ -8656,13 +8656,13 @@ export default function Board({
                     : "No owned vehicle models yet."}
                   {" "}
                   Remaining deck: {remainingVehicleCardCount} card{remainingVehicleCardCount === 1 ? "" : "s"}.
-                  If nobody buys this month, the most expensive visible card is burned.
+                  If nobody buys this year, the most expensive visible card is burned.
                 </div>
               )}
             </div>
               <div style={{ color: "#56635a", fontSize: 13 }}>
               {game.isGameOver
-                ? "Final month pod results ranked by passengers moved."
+                ? "Final year pod results ranked by passengers moved."
                 : game.currentPhase === "purchase-equipment"
                 ? "Your current vehicle models appear first in one row, followed by market purchase options."
                 : game.currentPhase === "add-city"
@@ -8729,7 +8729,7 @@ export default function Board({
                       fontSize: 12,
                     }}
                   >
-                    No vehicle-assigned pods recorded for the final month.
+                    No vehicle-assigned pods recorded for the final year.
                   </div>
                 )}
               </div>
@@ -9604,7 +9604,7 @@ export default function Board({
                 </div>
                 <strong>
                   {finalRouteLeaderboard[0]
-                    ? `${finalRouteLeaderboard[0].plan.serviceLabel} led the final month`
+                    ? `${finalRouteLeaderboard[0].plan.serviceLabel} led the final year`
                     : "No final pod results"}
                 </strong>
               </div>
@@ -9628,7 +9628,7 @@ export default function Board({
                     </div>
                   </>
                 ) : (
-                  <div>No vehicle-assigned pods were active in the final month.</div>
+                  <div>No vehicle-assigned pods were active in the final year.</div>
                 )}
               </div>
             </>

@@ -66,6 +66,11 @@ export function normalizeGameState(game: LegacyGameState): GameState {
     turnTimerSeconds: game.turnTimerSeconds ?? 0,
     turnTimerExpiresAt: game.turnTimerExpiresAt ?? null,
     autoPlayUntilWeek: game.autoPlayUntilWeek ?? 0,
+    operatingConfig: {
+      ...game.operatingConfig,
+      simulationTicksPerPeriod: game.operatingConfig.simulationTicksPerPeriod ?? 4,
+      weeksPerPeriod: game.operatingConfig.weeksPerPeriod ?? 52,
+    },
     actionLog: game.actionLog.map(entry => ({
       ...entry,
       phase: normalizeWeeklyPhase(entry.phase),

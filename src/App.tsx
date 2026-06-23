@@ -1701,7 +1701,7 @@ export default function App() {
                     style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid #c7d0c4", fontSize: 14 }}
                   >
                     <option value={0}>No auto-play</option>
-                    <option value={1}>Auto-play month 1</option>
+                    <option value={1}>Auto-play year 1</option>
                     <option value={2}>Auto-play months 1–2</option>
                     <option value={3}>Auto-play months 1–3</option>
                     <option value={5}>Auto-play months 1–5</option>

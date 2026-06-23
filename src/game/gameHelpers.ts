@@ -63,7 +63,7 @@ export function getAdvanceTurnLogMessage(previousGame: GameState, nextGame: Game
   }
 
   return nextGame.currentWeek !== previousGame.currentWeek
-    ? `advanced to month ${nextGame.currentWeek} ${formatPhaseLabel(nextGame.currentPhase)}`
+    ? `advanced to year ${nextGame.currentWeek} ${formatPhaseLabel(nextGame.currentPhase)}`
     : nextGame.currentPhase !== previousGame.currentPhase
       ? `advanced to ${formatPhaseLabel(nextGame.currentPhase)}`
       : `ended turn, next player ${nextPlayer?.name ?? nextGame.currentPlayerId}`
@@ -83,7 +83,7 @@ export function getPhaseDiscardLogMessage(previousGame: GameState, nextGame: Gam
   const messages = [
     ...burnedVehicleCards.map(
       card =>
-        `removed vehicle #${card.number} ${card.name} from the ${card.type} deck because nobody bought a ${card.type === "air" ? "plane" : card.type} this month`,
+        `removed vehicle #${card.number} ${card.name} from the ${card.type} deck because nobody bought a ${card.type === "air" ? "plane" : card.type} this year`,
     ),
   ]
 

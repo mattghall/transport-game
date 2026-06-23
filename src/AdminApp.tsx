@@ -900,7 +900,7 @@ export default function AdminApp() {
                 <strong>Current player:</strong> {currentPlayer?.name ?? game.currentPlayerId}
               </div>
               <div>
-                <strong>Month:</strong> {game.currentWeek}
+                <strong>Year:</strong> {game.currentWeek}
               </div>
               <div>
                 <strong>Phase:</strong> {game.currentPhase}

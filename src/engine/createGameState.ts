@@ -43,8 +43,9 @@ const INITIAL_RESOURCE_SUPPLY: ResourceSupply = {
 const INITIAL_OPERATING_CONFIG: OperatingConfig = {
   hoursPerDay: 14,
   daysPerWeek: 7,
-  weeksPerPeriod: 4,
+  weeksPerPeriod: 52,
   totalWeeks: 10,
+  simulationTicksPerPeriod: 12, // overridden to 4 for all-bot games
   loadingHours: {
     air: 1,
     train: 0.5,
@@ -279,6 +280,9 @@ export function createGameState(
   const players = openingSetup.players
   const cityDeckShuffle = shuffleCityDecks(map, chanceShuffle.randomState)
 
+  const hasHumanPlayers = !options.players || options.players.some(p => !p.isBot)
+  const simulationTicksPerPeriod = hasHumanPlayers ? 12 : 4
+
   return {
     map,
     cities: map.cities,
@@ -287,7 +291,7 @@ export function createGameState(
     currentWeek: 1,
     currentPhase: "add-city",
     isGameOver: false,
-    operatingConfig: INITIAL_OPERATING_CONFIG,
+    operatingConfig: { ...INITIAL_OPERATING_CONFIG, simulationTicksPerPeriod },
     chanceCardsEnabled,
     chanceCatalog: chanceCards,
     activeChanceCardId: activeChanceCard?.id ?? null,

@@ -91,6 +91,7 @@ export type OperatingConfig = {
   daysPerWeek: number
   weeksPerPeriod: number
   totalWeeks: number
+  simulationTicksPerPeriod: number
   loadingHours: Record<VehicleType, number>
   demandPointsPerCitySize: number
   passengersPerDemandPoint: number

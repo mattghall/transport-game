@@ -260,10 +260,11 @@ function getOwnedVehicleCards(game: GameState, player: Player) {
 // NEW BUREAUCRACY ENGINE
 // ========================
 
-const WORKING_HOURS_PER_WEEK_BY_TYPE: Record<VehicleType, number> = {
-  bus: 60,
-  train: 80,
-  air: 70,
+// Annual working hours per vehicle type (60/80/70 hrs/week × 52 weeks)
+const ANNUAL_WORKING_HOURS_BY_TYPE: Record<VehicleType, number> = {
+  bus: 3120,
+  train: 4160,
+  air: 3640,
 }
 
 const BASE_FUEL_BURN_PER_HOUR_LOCAL: Record<VehicleType, number> = {
@@ -467,9 +468,10 @@ function runNetworkSimulation(
 ): PodWeekResult[][] {
   const weeklyResults: PodWeekResult[][] = []
 
-  for (let week = 0; week < 4; week++) {
+  const numTicks = game.operatingConfig.simulationTicksPerPeriod
+  for (let tick = 0; tick < numTicks; tick++) {
     const weekResults: PodWeekResult[] = []
-    debugLog("simulation", `── Week ${week + 1} ──────────────────────`)
+    debugLog("simulation", `── Tick ${tick + 1} / ${numTicks} ──────────────────────`)
 
     for (const pod of sortedPods) {
       const { vehicleCard, fleetSize, activeSegments, serviceSlotId, mode } = pod
@@ -483,8 +485,9 @@ function runNetworkSimulation(
         continue
       }
 
-      const totalWeeklyMiles =
-        vehicleCard.speed * WORKING_HOURS_PER_WEEK_BY_TYPE[vehicleCard.type] * fleetSize
+      const hoursPerTick = ANNUAL_WORKING_HOURS_BY_TYPE[vehicleCard.type] / numTicks
+      const totalTickMiles =
+        vehicleCard.speed * hoursPerTick * fleetSize
       const cubesPerTrip =
         Math.max(
           1,
@@ -494,9 +497,9 @@ function runNetworkSimulation(
           ),
         ) * fleetSize
 
-      debugLog("simulation", `  Budget: ${totalWeeklyMiles.toFixed(0)} mi/wk | ${cubesPerTrip} cubes/trip | speed ${vehicleCard.speed}mph`)
+      debugLog("simulation", `  Budget: ${totalTickMiles.toFixed(0)} mi/tick | ${cubesPerTrip} cubes/trip | speed ${vehicleCard.speed}mph`)
 
-      let remainingMiles = totalWeeklyMiles
+      let remainingMiles = totalTickMiles
       const segResults: SegmentWeekResult[] = []
 
       const segsWithDemand = activeSegments
@@ -1203,7 +1206,7 @@ export function buildPlayerBureaucracySummary(
     })
   }
 
-  // Run 4-week network simulation (mutates cubeState in place)
+  // Run network simulation (12 monthly ticks for human games, 4 quarterly for bot-only)
   const weeklyResults = runNetworkSimulation(game, cubeState, nextHopTable, podSimInputs)
 
   // Aggregate segment results across 4 weeks, keyed by serviceSlotId
@@ -1231,8 +1234,6 @@ export function buildPlayerBureaucracySummary(
       }
     }
   }
-
-  const passengersPerDemandPoint = game.operatingConfig.passengersPerDemandPoint
 
   const routePlans = assignments
     .sort((a, b) => {
@@ -1281,7 +1282,9 @@ export function buildPlayerBureaucracySummary(
       const totalCubeMoves = aggSegs.reduce(
         (s, seg) => s + seg.cubesAtoB + seg.cubesBtoA, 0,
       )
-      const passengersServed = totalCubeMoves * passengersPerDemandPoint
+      // Passengers = trips × full vehicle capacity (supply-side model)
+      const passengersServed = vehicleCard === null ? 0 :
+        aggSegs.reduce((s, seg) => s + seg.tripsRun * vehicleCard.totalPassengerCapacity * ownedFleetSize, 0)
 
       // Per-city departure counts (for city status fill display)
       const departedByCityId = new Map<string, number>()
@@ -1316,48 +1319,59 @@ export function buildPlayerBureaucracySummary(
         const farePerPassenger = getPayoutFarePerPassengerForDistance(distMiles)
         const cityAName = getCityName(game, seg.cityAId)
         const cityBName = getCityName(game, seg.cityBId)
+        const segCapacity = vehicleCard === null ? 0 : vehicleCard.totalPassengerCapacity * ownedFleetSize
+        const totalSegPassengers = seg.tripsRun * segCapacity
+        const totalSegCubes = seg.cubesAtoB + seg.cubesBtoA
 
         if (seg.cubesAtoB > 0) {
-          const passengers = seg.cubesAtoB * passengersPerDemandPoint
-          simplifiedLedgerEntries.push({
-            id: `${serviceSlot.id}:${seg.cityAId}:${seg.cityBId}`,
-            originCityId: seg.cityAId,
-            originCityName: cityAName,
-            destinationCityId: seg.cityBId,
-            destinationCityName: cityBName,
-            cubeCount: seg.cubesAtoB,
-            finalDestinationCubeCount: seg.cubesAtoBFinal,
-            passengers,
-            payoutMultiplier: multiplier,
-            farePerPassenger,
-            payout: passengers * farePerPassenger,
-            pathCityIds: [seg.cityAId, seg.cityBId],
-            pathLabels: [
-              `${cityAName} -> ${cityBName} (${Math.round(distMiles)}mi x${multiplier} = $${farePerPassenger.toFixed(0)})`,
-            ],
-            mode: serviceSlot.serviceGroup.mode,
-          })
+          const passengers = totalSegCubes > 0
+            ? Math.round((seg.cubesAtoB / totalSegCubes) * totalSegPassengers)
+            : 0
+          if (passengers > 0) {
+            simplifiedLedgerEntries.push({
+              id: `${serviceSlot.id}:${seg.cityAId}:${seg.cityBId}`,
+              originCityId: seg.cityAId,
+              originCityName: cityAName,
+              destinationCityId: seg.cityBId,
+              destinationCityName: cityBName,
+              cubeCount: seg.cubesAtoB,
+              finalDestinationCubeCount: seg.cubesAtoBFinal,
+              passengers,
+              payoutMultiplier: multiplier,
+              farePerPassenger,
+              payout: passengers * farePerPassenger,
+              pathCityIds: [seg.cityAId, seg.cityBId],
+              pathLabels: [
+                `${cityAName} -> ${cityBName} (${Math.round(distMiles)}mi x${multiplier} = $${farePerPassenger.toFixed(0)})`,
+              ],
+              mode: serviceSlot.serviceGroup.mode,
+            })
+          }
         }
         if (seg.cubesBtoA > 0) {
-          const passengers = seg.cubesBtoA * passengersPerDemandPoint
-          simplifiedLedgerEntries.push({
-            id: `${serviceSlot.id}:${seg.cityBId}:${seg.cityAId}`,
-            originCityId: seg.cityBId,
-            originCityName: cityBName,
-            destinationCityId: seg.cityAId,
-            destinationCityName: cityAName,
-            cubeCount: seg.cubesBtoA,
-            finalDestinationCubeCount: seg.cubesBtoAFinal,
-            passengers,
-            payoutMultiplier: multiplier,
-            farePerPassenger,
-            payout: passengers * farePerPassenger,
-            pathCityIds: [seg.cityBId, seg.cityAId],
-            pathLabels: [
-              `${cityBName} -> ${cityAName} (${Math.round(distMiles)}mi x${multiplier} = $${farePerPassenger.toFixed(0)})`,
-            ],
-            mode: serviceSlot.serviceGroup.mode,
-          })
+          const passengers = totalSegCubes > 0
+            ? Math.round((seg.cubesBtoA / totalSegCubes) * totalSegPassengers)
+            : 0
+          if (passengers > 0) {
+            simplifiedLedgerEntries.push({
+              id: `${serviceSlot.id}:${seg.cityBId}:${seg.cityAId}`,
+              originCityId: seg.cityBId,
+              originCityName: cityBName,
+              destinationCityId: seg.cityAId,
+              destinationCityName: cityAName,
+              cubeCount: seg.cubesBtoA,
+              finalDestinationCubeCount: seg.cubesBtoAFinal,
+              passengers,
+              payoutMultiplier: multiplier,
+              farePerPassenger,
+              payout: passengers * farePerPassenger,
+              pathCityIds: [seg.cityBId, seg.cityAId],
+              pathLabels: [
+                `${cityBName} -> ${cityAName} (${Math.round(distMiles)}mi x${multiplier} = $${farePerPassenger.toFixed(0)})`,
+              ],
+              mode: serviceSlot.serviceGroup.mode,
+            })
+          }
         }
       }
 
@@ -1552,7 +1566,7 @@ export function buildPlayerBureaucracySummary(
     .sort((planA, planB) => planA.originalIndex - planB.originalIndex)
     .map(({ originalIndex: _idx, ...plan }) => plan)
 
-  // Stuck cubes: any cubes remaining in cubeState after all 4 simulation weeks
+  // Stuck cubes: any cubes remaining in cubeState after all simulation ticks
   const stuckCubesByCity: PlayerBureaucracySummary["stuckCubesByCity"] = []
   for (const [cityId, destMap] of cubeState) {
     if (destMap.size === 0) continue
