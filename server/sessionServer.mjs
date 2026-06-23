@@ -60,6 +60,7 @@ const TRAINING_CHRONICLE_PATH = resolve(PROJECT_ROOT, "public/training-results/t
 const TRAINING_LOG_LIMIT = 400
 const MANAGED_BOT_PRESET_STORAGE_IDS = ["bot-avg", "bot-best-1p", "bot-best-2p", "bot-best-3p", "bot-best-4p"]
 const DIST_DIR = resolve(PROJECT_ROOT, "dist")
+const PUBLIC_TRAINING_DIR = resolve(PROJECT_ROOT, "public/training-results")
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -112,6 +113,12 @@ function serveStaticOrSPA(response, pathname) {
   if (!existsSync(DIST_DIR)) {
     sendJson(response, 503, { error: "Game frontend not built. Run: npm run build" })
     return
+  }
+
+  // training-results/ files are written at runtime to public/ — serve them live, not from the stale dist/ copy
+  if (pathname.startsWith("/training-results/")) {
+    const liveFile = resolve(PUBLIC_TRAINING_DIR, pathname.replace(/^\/training-results\//, ""))
+    if (serveStaticFile(response, liveFile)) return
   }
 
   // Exact file match
@@ -1981,7 +1988,7 @@ const server = createServer(async (request, response) => {
     return
   }
 
-  if (url.pathname.startsWith("/training")) {
+  if (url.pathname === "/training" || url.pathname === "/manual-training" || url.pathname.startsWith("/training/") || url.pathname.startsWith("/manual-training/")) {
     if (!isLocalTrainingRequest(request)) {
       sendJson(response, 403, { error: "Training endpoints are local-only." })
       return
@@ -2235,6 +2242,12 @@ const server = createServer(async (request, response) => {
         sendJson(response, 500, { error: error instanceof Error ? error.message : "Could not add rule change." })
         return
       }
+    }
+
+    // GET /training and GET /manual-training are SPA pages — fall through to static serving
+    if (request.method === "GET" && (url.pathname === "/training" || url.pathname === "/manual-training")) {
+      serveStaticOrSPA(response, url.pathname)
+      return
     }
 
     sendJson(response, 405, { error: "Method not allowed for this training route." })

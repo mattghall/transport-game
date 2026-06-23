@@ -220,11 +220,16 @@ function getAvailableOperationsActions(game: GameState, playerId: string): BotAc
         )
     : []
 
-  // Assign unassigned vehicles to pods that have no vehicle yet
+  // Assign unassigned vehicles to pods that have no vehicle yet — prefer highest-capacity match
   const player = getPlayerById(game, playerId)
   const assignedVehicleCardIds = new Set(Object.values(game.bureaucracyVehicleCardIdsByRouteId))
   const unassignedOwnedVehicleCardIds = (player?.ownedVehicleCardIds ?? [])
     .filter(cardId => !assignedVehicleCardIds.has(cardId))
+    .sort((a, b) => {
+      const capA = game.vehicleCatalog.find(c => c.id === a)?.totalPassengerCapacity ?? 0
+      const capB = game.vehicleCatalog.find(c => c.id === b)?.totalPassengerCapacity ?? 0
+      return capB - capA
+    })
 
   const assignVehicleActions: BotAction[] = playerSummary
     ? playerSummary.routePlans
@@ -254,11 +259,12 @@ function getAvailableOperationsActions(game: GameState, playerId: string): BotAc
         .flatMap(plan => {
           const vehicleTypeForMode =
             plan.route.mode === "bus" ? "bus" : plan.route.mode === "rail" ? "train" : "air"
-          // Find an unassigned vehicle of same type (can be same or different card)
-          const compatibleCard = unassignedOwnedVehicleCardIds.find(cardId => {
+          // Prefer same card as the existing assignment (fleet uniformity), then highest capacity
+          const compatibleCards = unassignedOwnedVehicleCardIds.filter(cardId => {
             const card = game.vehicleCatalog.find(c => c.id === cardId)
             return card?.type === vehicleTypeForMode
           })
+          const compatibleCard = compatibleCards.find(id => id === plan.vehicleCard?.id) ?? compatibleCards[0]
           if (!compatibleCard) return []
           return [{
             type: "add-second-vehicle-to-pod" as const,

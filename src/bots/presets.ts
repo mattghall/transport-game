@@ -86,6 +86,10 @@ export const BEST_BOT_WEIGHTS: ScriptedBotWeights = {
   claimAdjacentNetworkBonus: 8,
   claimOpponentBlockPenalty: 4,
   buyFleetScaleBonus: 30,
+  buyVehicleCapacityScore: 1.5,
+  buyVehicleSpeedScore: 0.5,
+  buyVehicleForEmptyPodBonus: 25,
+  podHasCompatibleVehicleBonus: 15,
 }
 
 export const BOT_PRESETS: ReadonlyArray<{

@@ -353,6 +353,26 @@ export const SCRIPTED_BOT_LEVER_METADATA: Record<keyof ScriptedBotWeights, Scrip
     minimum: 0,
     enabled: true,
   },
+  buyVehicleCapacityScore: {
+    mutationStep: 0.5,
+    minimum: 0,
+    enabled: true,
+  },
+  buyVehicleSpeedScore: {
+    mutationStep: 0.25,
+    minimum: 0,
+    enabled: true,
+  },
+  buyVehicleForEmptyPodBonus: {
+    mutationStep: 6,
+    minimum: 0,
+    enabled: true,
+  },
+  podHasCompatibleVehicleBonus: {
+    mutationStep: 5,
+    minimum: 0,
+    enabled: true,
+  },
 }
 
 export const MUTABLE_SCRIPTED_BOT_WEIGHT_KEYS = SCRIPTED_BOT_WEIGHT_KEYS.filter(

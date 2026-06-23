@@ -80,6 +80,15 @@ export type ScriptedBotWeights = {
   // Models fleet scaling: if pod with vehicle X earns $Y/month, buying another X adds ~$Y/month.
   // Score += (existingNetRevenue / 1_000_000) * buyFleetScaleBonus
   buyFleetScaleBonus: number
+  // Reward per 100 passengers of vehicle capacity when buying.
+  // Helps the bot prefer higher-capacity vehicles within the same type.
+  buyVehicleCapacityScore: number
+  // Reward per 10 units of vehicle speed when buying.
+  buyVehicleSpeedScore: number
+  // Bonus when buying a vehicle that matches the type needed by an unserviced (empty) pod.
+  buyVehicleForEmptyPodBonus: number
+  // Bonus for creating a service pod when the player already owns a compatible unassigned vehicle.
+  podHasCompatibleVehicleBonus: number
 }
 
 export const DEFAULT_SCRIPTED_BOT_WEIGHTS: ScriptedBotWeights = {
@@ -146,6 +155,10 @@ export const DEFAULT_SCRIPTED_BOT_WEIGHTS: ScriptedBotWeights = {
   claimAdjacentNetworkBonus: 8,
   claimOpponentBlockPenalty: 4,
   buyFleetScaleBonus: 30,
+  buyVehicleCapacityScore: 1.5,
+  buyVehicleSpeedScore: 0.5,
+  buyVehicleForEmptyPodBonus: 25,
+  podHasCompatibleVehicleBonus: 15,
 }
 
 export function mergeScriptedBotWeights(
@@ -383,6 +396,21 @@ function scoreBotAction(
 
     const demandPerMile = distanceMiles > 0 ? podCombinedDemand / Math.max(distanceMiles / 100, 1) : 0
 
+    // Bonus when the player already owns a compatible unassigned vehicle for this corridor's mode.
+    const player = getPlayerById(game, playerId)
+    let compatibleVehicleBonus = 0
+    if (player && summary) {
+      const corridorMode = summary.routePlans.find(p => p.corridorId === action.corridorId)?.route.mode
+      const neededType = corridorMode === "bus" ? "bus" : corridorMode === "rail" ? "train" : "air"
+      const assignedCardIds = new Set(Object.values(game.bureaucracyVehicleCardIdsByRouteId))
+      const hasCompatible = player.ownedVehicleCardIds.some(cardId => {
+        if (assignedCardIds.has(cardId)) return false
+        const card = game.vehicleCatalog.find(c => c.id === cardId)
+        return card?.type === neededType
+      })
+      if (hasCompatible) compatibleVehicleBonus = weights.podHasCompatibleVehicleBonus
+    }
+
     return (
       weights.podSplitBaseScore +
       action.cityIds.length * weights.podCityCountScore +
@@ -390,7 +418,8 @@ function scoreBotAction(
       populationPerDistance * weights.podPopulationPerDistanceScore +
       podCombinedDemand * weights.podDemandScore +
       demandPerMile * weights.podDemandPerMileScore -
-      Math.max(0, activePodCount - 1) * weights.podAdditionalRoutePenalty
+      Math.max(0, activePodCount - 1) * weights.podAdditionalRoutePenalty +
+      compatibleVehicleBonus
     )
   }
 
@@ -585,14 +614,22 @@ function scoreBotAction(
 
   // Fleet scaling bonus: if this exact card is already owned and assigned to a productive pod,
   // buying another directly scales revenue (fleet size × capacity). Score the expected delta.
+  const summary = currentSummary ?? getCachedBureaucracySummary(game, playerId)
   let fleetScaleBonus = 0
   if (player.ownedVehicleCardIds.includes(card.id)) {
-    const summary = currentSummary ?? getCachedBureaucracySummary(game, playerId)
     const netRevenueFromCard = summary?.routePlans
       .filter(p => !p.isDisconnected && p.vehicleCard?.id === card.id && (p.netRevenue ?? 0) > 0)
       .reduce((sum, p) => sum + (p.netRevenue ?? 0), 0) ?? 0
     fleetScaleBonus = (netRevenueFromCard / 1_000_000) * weights.buyFleetScaleBonus
   }
+
+  // Bonus when an unserviced pod of this vehicle type already exists — buying fills it immediately.
+  const vehicleTypeForMode = card.type === "bus" ? "bus" : card.type === "train" ? "train" : "air"
+  const unservicedPodCount = summary?.routePlans.filter(
+    p => !p.isDisconnected && p.selectedCityIds.length >= 2 && !p.vehicleCard &&
+      (p.route.mode === "bus" ? "bus" : p.route.mode === "rail" ? "train" : "air") === vehicleTypeForMode,
+  ).length ?? 0
+  const emptyPodBonus = unservicedPodCount > 0 ? weights.buyVehicleForEmptyPodBonus : 0
 
   const cityBonus =
     card.type === "bus"
@@ -620,7 +657,10 @@ function scoreBotAction(
     cityBonus -
     ownedVehicleCount * weights.buyDuplicateVehiclePenalty +
     firstOfTypeBonus +
-    fleetScaleBonus -
+    fleetScaleBonus +
+    emptyPodBonus +
+    (card.totalPassengerCapacity / 100) * weights.buyVehicleCapacityScore +
+    (card.speed / 10) * weights.buyVehicleSpeedScore -
     card.purchasePrice / 1_000_000
   )
 }

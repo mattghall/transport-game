@@ -35,3 +35,4 @@ public/training-results/champion-*-importance.json
 
 scripts/transit-config.json
 start-transit.ps1
+public/training-results/autotune-stop-requested
