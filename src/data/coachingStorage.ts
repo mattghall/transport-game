@@ -1,7 +1,16 @@
 import type { BotAction } from "../bots/types"
-import type { ScriptedBotWeights, ClaimRouteScoreBreakdown, KeepCityScoreBreakdown, BuyVehicleScoreBreakdown, DrawCityScoreBreakdown } from "../bots/scriptedBot"
+import type {
+  ScriptedBotWeights,
+  ClaimRouteScoreBreakdown,
+  KeepCityScoreBreakdown,
+  BuyVehicleScoreBreakdown,
+  DrawCityScoreBreakdown,
+} from "../bots/scriptedBot"
+import type { OperationsReviewComparison } from "./coachingReview"
 
-export type CoachingDecisionRating = "accept" | "reject"
+export type TopChoiceCoachingRating = "fine" | "good" | "great"
+export type AlternativeCoachingRating = "slightly-better" | "better" | "way-better"
+export type CoachingDecisionRating = TopChoiceCoachingRating | AlternativeCoachingRating
 
 export type CoachingDecision = {
   id: string
@@ -19,9 +28,12 @@ export type CoachingDecision = {
     label: string
     breakdown: ClaimRouteScoreBreakdown | KeepCityScoreBreakdown | BuyVehicleScoreBreakdown | DrawCityScoreBreakdown | null
   }>
+  botChoiceIndex: number
   chosenIndex: number
   rating: CoachingDecisionRating
   preferredIndex: number | null
+  reviewEdits?: string[]
+  operationsReviewComparison?: OperationsReviewComparison
 }
 
 export type CoachingSession = {
@@ -63,10 +75,14 @@ export function clearCurrentCoachingSession(): void {
   sessionStorage.removeItem(SESSION_STORAGE_KEY)
 }
 
-/** Persists a completed coaching session to the server (training-results endpoint). */
-export async function persistCoachingSession(session: CoachingSession): Promise<void> {
+/** Persists a coaching session to the server (training-results endpoint). */
+export async function persistCoachingSession(
+  session: CoachingSession,
+  options?: { fallbackDownload?: boolean },
+): Promise<void> {
   const filename = `coaching-sessions/${session.id}.json`
   const body = JSON.stringify(session, null, 2)
+  const shouldFallbackDownload = options?.fallbackDownload ?? true
 
   try {
     await fetch(`/api/training-results/${filename}`, {
@@ -75,6 +91,9 @@ export async function persistCoachingSession(session: CoachingSession): Promise<
       body,
     })
   } catch {
+    if (!shouldFallbackDownload) {
+      return
+    }
     // Fallback: trigger download so the user can save manually
     const blob = new Blob([body], { type: "application/json" })
     const url = URL.createObjectURL(blob)
@@ -88,8 +107,7 @@ export async function persistCoachingSession(session: CoachingSession): Promise<
 
 export function summarizeCoachingSession(session: CoachingSession): string {
   const total = session.decisions.length
-  const accepted = session.decisions.filter(d => d.rating === "accept").length
-  const rejected = session.decisions.filter(d => d.rating === "reject").length
-  const withPreference = session.decisions.filter(d => d.preferredIndex !== null).length
-  return `${total} decisions rated: ${accepted} accepted, ${rejected} rejected (${withPreference} with preferred alternative)`
+  const topChoiceRatings = session.decisions.filter(d => d.preferredIndex === null).length
+  const alternativeRatings = session.decisions.filter(d => d.preferredIndex !== null).length
+  return `${total} decisions rated: ${topChoiceRatings} top-choice ratings, ${alternativeRatings} alternative picks`
 }

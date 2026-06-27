@@ -348,6 +348,16 @@ export const SCRIPTED_BOT_LEVER_METADATA: Record<keyof ScriptedBotWeights, Scrip
     minimum: 0,
     enabled: true,
   },
+  claimConnectorWastePenaltyMultiplier: {
+    mutationStep: 0.5,
+    minimum: 0,
+    enabled: true,
+  },
+  claimDisconnectedRailPenalty: {
+    mutationStep: 20,
+    minimum: 0,
+    enabled: true,
+  },
   buyFleetScaleBonus: {
     mutationStep: 8,
     minimum: 0,
@@ -370,6 +380,26 @@ export const SCRIPTED_BOT_LEVER_METADATA: Record<keyof ScriptedBotWeights, Scrip
   },
   podHasCompatibleVehicleBonus: {
     mutationStep: 5,
+    minimum: 0,
+    enabled: true,
+  },
+  podPassengerGainScore: {
+    mutationStep: 0.25,
+    minimum: 0,
+    enabled: true,
+  },
+  podDisconnectedCityReductionBonus: {
+    mutationStep: 4,
+    minimum: 0,
+    enabled: true,
+  },
+  podUnstaffedPodPenalty: {
+    mutationStep: 10,
+    minimum: 0,
+    enabled: true,
+  },
+  podExistingVehicleAssignedBonus: {
+    mutationStep: 6,
     minimum: 0,
     enabled: true,
   },

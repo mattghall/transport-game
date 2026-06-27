@@ -66,6 +66,8 @@ export type SessionServerHealth = {
   sessions: number
   activeSessionId: string | null
   lanAddresses: string[]
+  interfaceLanAddresses: string[]
+  preferredLanAddress: string | null
 }
 
 export type TrainingStartRequest = {
@@ -162,6 +164,13 @@ export type UpdateLanLobbyRequest = {
   isReady?: boolean
   playerName?: string
   startGame?: boolean
+  settings?: {
+    chanceCardsEnabled?: boolean
+    turnTimerSeconds?: number
+    autoPlayUntilWeek?: number
+    previewPlayerId?: string | null
+    previewBotPreset?: BotPresetId | null
+  }
 }
 
 export class LanSessionConflictError extends Error {
@@ -252,11 +261,20 @@ function getShareableSessionServerUrl(serverUrl: string, appUrl: string) {
   return normalizeSessionServerUrl(normalizedServerUrl.toString())
 }
 
-export function getSuggestedJoinAppUrl(health: Pick<SessionServerHealth, "lanAddresses">, href = getBrowserHref()) {
+export function getSuggestedJoinAppUrl(
+  health: Pick<SessionServerHealth, "lanAddresses" | "preferredLanAddress">,
+  href = getBrowserHref(),
+) {
   const location = new URL(href)
   const protocol = location.protocol === "https:" ? "https:" : "http:"
   const portSuffix = location.port ? `:${location.port}` : ""
-  const preferredHostname = health.lanAddresses[0] ?? location.hostname ?? "localhost"
+  const browserHostname = location.hostname || "localhost"
+  const preferredHostname =
+    typeof health.preferredLanAddress === "string" && health.preferredLanAddress.length > 0
+      ? health.preferredLanAddress
+      : !isLoopbackHostname(browserHostname) && health.lanAddresses.includes(browserHostname)
+        ? browserHostname
+        : health.lanAddresses[0] ?? browserHostname
   return normalizeJoinAppUrl(`${protocol}//${preferredHostname}${portSuffix}`)
 }
 

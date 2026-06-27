@@ -7,6 +7,7 @@ import {
   hasPlayerCompletedPurchaseEquipment,
 } from "../engine/actions"
 import { applyBotAction, getBotLegalActions, getPendingBotPlayerId } from "../bots/actions"
+import type { BotAction } from "../bots/types"
 import { createPresetBotController, DEFAULT_BOT_PRESET_ID, getPlayerBotPreset, normalizeBotPresetId } from "../bots/presets"
 import { MAX_SETUP_PLAYERS, PLAYER_SETUP_PRESETS } from "../gameSetup/defaultPlayers"
 import type { GameSetupPlayer } from "../engine/createGameState"
@@ -93,7 +94,7 @@ export function getPhaseDiscardLogMessage(previousGame: GameState, nextGame: Gam
 export function getBotActionLogMessage(
   previousGame: GameState,
   nextGame: GameState,
-  action: ReturnType<typeof getBotLegalActions>[number],
+  action: BotAction,
 ) {
   return action.type === "buy-vehicle"
     ? (() => {
@@ -118,6 +119,8 @@ export function getBotActionLogMessage(
                   .join(" - ")
                 return `created a service pod for ${cityLabel}`
               })()
+            : action.type === "delete-service-pod"
+              ? "deleted a service pod"
             : action.type === "ready-operations"
               ? nextGame.currentPhase === "bureaucracy"
                 ? "finished operations planning and advanced to bureaucracy"

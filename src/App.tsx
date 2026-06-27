@@ -39,7 +39,7 @@ import {
   hasPlayerCompletedPurchaseEquipment,
   markBureaucracyReady,
   markOperationsReady,
-  moveBureaucracyServiceCity,
+  setBureaucracyServicePodCities,
   setActiveCityOfferKeptCityIds,
   setBureaucracyRouteVehicleCard,
   upgradeRailRoute,
@@ -50,7 +50,11 @@ import {
   type BotPresetId,
   fetchManagedBotPresetWeightOverrides,
 } from "./bots/presets"
-import { findPlayerBureaucracyPlan } from "./engine/bureaucracy"
+import {
+  buildPlayerBureaucracySummary,
+  buildServiceSlotId,
+  findPlayerBureaucracyPlan,
+} from "./engine/bureaucracy"
 import {
   createGameState,
   DEFAULT_STARTING_MONEY,
@@ -101,6 +105,13 @@ type LanSessionConnection = {
 }
 
 type AppMode = "launcher" | "joining" | "waiting" | "lobby" | "ready"
+type LobbySettingsUpdate = {
+  chanceCardsEnabled?: boolean
+  turnTimerSeconds?: number
+  autoPlayUntilWeek?: number
+  previewPlayerId?: string | null
+  previewBotPreset?: BotPresetId | null
+}
 
 function createPlaceholderGame() {
   const initialUserDecks = loadUserDecks()
@@ -119,7 +130,9 @@ function isLegacyLobbyApiError(error: unknown) {
     (
       error.message.includes("Lobby updates must include playerId, clientId, and isReady.") ||
       error.message.includes("Lobby updates must include clientId and may include playerId, isReady, and playerName.") ||
-      error.message.includes("Lobby updates must include clientId and may include playerId, isReady, playerName, and startGame.")
+      error.message.includes("Lobby updates must include clientId and may include playerId, isReady, playerName, and startGame.") ||
+      error.message.includes("Lobby updates must include clientId and may include playerId, isReady, playerName, startGame, and setSeatBot.") ||
+      error.message.includes("Lobby updates must include clientId and may include playerId, isReady, playerName, startGame, settings, and setSeatBot.")
     )
   )
 }
@@ -131,9 +144,20 @@ function isLegacyGameApiError(error: unknown) {
   )
 }
 
-function shouldReplaceJoinAppUrl(rawUrl: string) {
+function shouldReplaceJoinAppUrl(
+  rawUrl: string,
+  health: Pick<SessionServerHealth, "lanAddresses">,
+  suggestedJoinAppUrl: string,
+) {
   try {
-    return isLocalJoinAppUrl(normalizeJoinAppUrl(rawUrl))
+    const currentUrl = new URL(normalizeJoinAppUrl(rawUrl))
+    const suggestedUrl = new URL(normalizeJoinAppUrl(suggestedJoinAppUrl))
+
+    if (isLocalJoinAppUrl(currentUrl.toString())) {
+      return true
+    }
+
+    return health.lanAddresses.includes(currentUrl.hostname) && currentUrl.hostname !== suggestedUrl.hostname
   } catch {
     return true
   }
@@ -201,6 +225,52 @@ function MapBackdrop() {
   )
 }
 
+const DEFAULT_LOBBY_CHANCE_CARDS_ENABLED = true
+const DEFAULT_LOBBY_TURN_TIMER_SECONDS = 60
+const DEFAULT_LOBBY_AUTO_PLAY_UNTIL_WEEK = 0
+
+function getVehicleTypeForMode(mode: GameState["routes"][number]["mode"]) {
+  switch (mode) {
+    case "rail":
+      return "train"
+    case "air":
+      return "air"
+    case "bus":
+      return "bus"
+  }
+}
+
+function getAutoAssignableVehicleCardId(
+  game: GameState,
+  playerId: string,
+  corridorId: string,
+) {
+  const player = game.players.find(candidate => candidate.id === playerId)
+  const summary = buildPlayerBureaucracySummary(game, playerId)
+  const routeMode =
+    summary?.routePlans.find(plan => !plan.isDisconnected && plan.corridorId === corridorId)?.route.mode ?? null
+
+  if (!player || !summary || routeMode === null) {
+    return null
+  }
+
+  const assignedVehicleCardIds = new Set(
+    summary.routePlans
+      .map(plan => plan.vehicleCard?.id)
+      .filter((cardId): cardId is string => cardId !== undefined),
+  )
+
+  return (
+    player.ownedVehicleCardIds.find(cardId => {
+      if (assignedVehicleCardIds.has(cardId)) {
+        return false
+      }
+
+      return game.vehicleCatalog.find(card => card.id === cardId)?.type === getVehicleTypeForMode(routeMode)
+    }) ?? null
+  )
+}
+
 export default function App() {
   const lobbyClientId = getLobbyClientId()
   const requestedLanSession = getRequestedLanSession()
@@ -236,16 +306,18 @@ export default function App() {
     () => pendingLocalLaunch?.selectedPlayerId ?? null,
   )
   const [lanSeatCount, setLanSeatCount] = useState(4)
-  const [chanceCardsEnabled, setChanceCardsEnabled] = useState(true)
-  const [turnTimerSeconds, setTurnTimerSeconds] = useState(60)
-  const [autoPlayUntilWeek, setAutoPlayUntilWeek] = useState(0)
+  const [chanceCardsEnabled, setChanceCardsEnabled] = useState(DEFAULT_LOBBY_CHANCE_CARDS_ENABLED)
+  const [turnTimerSeconds, setTurnTimerSeconds] = useState(DEFAULT_LOBBY_TURN_TIMER_SECONDS)
+  const [autoPlayUntilWeek, setAutoPlayUntilWeek] = useState(DEFAULT_LOBBY_AUTO_PLAY_UNTIL_WEEK)
   const [playerName, setPlayerName] = useState("")
   const [isUpdatingLobby, setIsUpdatingLobby] = useState(false)
   // Pending bot name edits keyed by playerId — sent on input blur
   const [pendingBotNames, setPendingBotNames] = useState<Record<string, string>>({})
   const [launcherSessions, setLauncherSessions] = useState<LanSessionSummary[]>([])
   const [launcherServerOnline, setLauncherServerOnline] = useState<boolean | null>(null)
+  const [serverHealth, setServerHealth] = useState<SessionServerHealth | null>(null)
   const [isLaunchingSession, setIsLaunchingSession] = useState(false)
+  const [isJoinLinkDiagnosticsVisible, setIsJoinLinkDiagnosticsVisible] = useState(false)
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null)
   const [isPeriodSummaryVisible, setIsPeriodSummaryVisible] = useState(false)
   const localBotTurnSignatureRef = useRef<string | null>(null)
@@ -257,6 +329,36 @@ export default function App() {
       return getDefaultJoinAppUrl()
     }
   }, [joinAppUrl])
+  const effectiveJoinAppUrl = useMemo(
+    () => (serverHealth ? getSuggestedJoinAppUrl(serverHealth) : null),
+    [serverHealth],
+  )
+  const joinLinkDiagnostics = useMemo(() => {
+    if (!serverHealth) {
+      return null
+    }
+
+    const browserHostname = window.location.hostname || "localhost"
+    const savedJoinHost = new URL(normalizedJoinAppUrl).host
+    const suggestedJoinHost = new URL(getSuggestedJoinAppUrl(serverHealth)).host
+    return {
+      browserHostname,
+      savedJoinHost,
+      suggestedJoinHost,
+      preferredLanAddress: serverHealth.preferredLanAddress,
+      lanAddresses: serverHealth.lanAddresses,
+      interfaceLanAddresses: serverHealth.interfaceLanAddresses,
+    }
+  }, [normalizedJoinAppUrl, serverHealth])
+  const currentShareableJoinLink = useMemo(() => {
+    if (!lanSession) {
+      return ""
+    }
+
+    return effectiveJoinAppUrl
+      ? buildLanSessionJoinUrl(lanSession.sessionId, lanSession.serverUrl, effectiveJoinAppUrl)
+      : "loading"
+  }, [effectiveJoinAppUrl, lanSession])
   const hasStarted = appMode === "ready"
 
   useEffect(() => { gameRef.current = game }, [game])
@@ -278,11 +380,11 @@ export default function App() {
     lanSessionRef.current = lanSession
   }, [lanSession])
 
-  const adoptSuggestedJoinAppUrl = useCallback((health: Pick<SessionServerHealth, "lanAddresses">) => {
+  const adoptSuggestedJoinAppUrl = useCallback((health: Pick<SessionServerHealth, "lanAddresses" | "preferredLanAddress">) => {
     const suggestedJoinAppUrl = getSuggestedJoinAppUrl(health)
 
     setJoinAppUrl(currentJoinAppUrl => {
-      if (!shouldReplaceJoinAppUrl(currentJoinAppUrl)) {
+      if (!shouldReplaceJoinAppUrl(currentJoinAppUrl, health, suggestedJoinAppUrl)) {
         return currentJoinAppUrl
       }
 
@@ -321,6 +423,9 @@ export default function App() {
     setLanSession(nextConnection)
     setLanLobby(snapshot.lobby)
     setGame(nextGame)
+    setChanceCardsEnabled(nextGame.chanceCardsEnabled)
+    setTurnTimerSeconds(nextGame.turnTimerSeconds)
+    setAutoPlayUntilWeek(nextGame.autoPlayUntilWeek)
     setHistory([])
     setSelectedPlayerId(nextSelectedPlayerId)
     setPlayerName(storedPlayerName ?? nextSelectedPlayer?.name ?? "")
@@ -405,9 +510,13 @@ export default function App() {
           return
         }
 
+        setServerHealth(health)
         adoptSuggestedJoinAppUrl(health)
       })
       .catch(() => {
+        if (isActive) {
+          setServerHealth(null)
+        }
         // Leave the stored join URL alone when the session server is unavailable.
       })
 
@@ -435,6 +544,7 @@ export default function App() {
         }
 
         adoptSuggestedJoinAppUrl(health)
+        setServerHealth(health)
         setLauncherServerOnline(health.ok)
         setLauncherSessions(sessions)
         setLanStatusTone("neutral")
@@ -448,6 +558,7 @@ export default function App() {
           return
         }
 
+        setServerHealth(null)
         setLauncherServerOnline(false)
         setLauncherSessions([])
         setLanStatusTone("error")
@@ -715,7 +826,7 @@ export default function App() {
   )
 
   const applyLobbyUpdate = useCallback(
-    async (updates: { isReady?: boolean; playerName?: string; startGame?: boolean }) => {
+    async (updates: { isReady?: boolean; playerName?: string; startGame?: boolean; settings?: LobbySettingsUpdate }) => {
       const activeLanSession = lanSessionRef.current
 
       if (!activeLanSession) {
@@ -741,6 +852,7 @@ export default function App() {
           isReady: updates.isReady,
           playerName: updates.playerName,
           startGame: updates.startGame,
+          settings: updates.settings,
         })
 
         applyLanSnapshot(snapshot, activeLanSession.serverUrl)
@@ -778,8 +890,15 @@ export default function App() {
   }, [appMode, applyLobbyUpdate, isUpdatingLobby, lanSession, selectedPlayerId])
 
   const handleUpdateLobby = useCallback(
-    async (updates: { isReady?: boolean; playerName?: string; startGame?: boolean }) => {
+    async (updates: { isReady?: boolean; playerName?: string; startGame?: boolean; settings?: LobbySettingsUpdate }) => {
       await applyLobbyUpdate(updates)
+    },
+    [applyLobbyUpdate],
+  )
+
+  const handleUpdateLobbySettings = useCallback(
+    async (settings: LobbySettingsUpdate) => {
+      await applyLobbyUpdate({ settings })
     },
     [applyLobbyUpdate],
   )
@@ -816,13 +935,7 @@ export default function App() {
     setIsLaunchingSession(true)
 
     try {
-      // When auto-play is enabled: seat 0 (p1) stays human so the player can take
-      // over after the preview months. Seats 1..N-1 are regular bots that keep
-      // playing after the preview period ends.
-      const botSeatIndexes = autoPlayUntilWeek > 0
-        ? Array.from({ length: Math.max(0, lanSeatCount - 1) }, (_, i) => i + 1)
-        : []
-      const players = createSetupPlayers(lanSeatCount, botSeatIndexes)
+      const players = createSetupPlayers(lanSeatCount)
       const initialUserDecks = loadUserDecks()
       const managedBotPresetWeights = await fetchManagedBotPresetWeightOverrides(players.length)
       const snapshot = await createLanSession(defaultSessionServerUrl, {
@@ -831,39 +944,28 @@ export default function App() {
           players,
           vehicleCards: initialUserDecks.vehicleCards,
           chanceCards: initialUserDecks.chanceCards,
-          chanceCardsEnabled,
+          chanceCardsEnabled: DEFAULT_LOBBY_CHANCE_CARDS_ENABLED,
           startingMoney: DEFAULT_STARTING_MONEY,
           botPresetWeightsById: managedBotPresetWeights,
-          turnTimerSeconds,
-          autoPlayUntilWeek,
+          turnTimerSeconds: DEFAULT_LOBBY_TURN_TIMER_SECONDS,
+          autoPlayUntilWeek: DEFAULT_LOBBY_AUTO_PLAY_UNTIL_WEEK,
         }),
       })
 
-      // When auto-play is configured, immediately claim the human seat, mark ready,
-      // and start the game so bots can run all seats through the preview months.
-      let finalSnapshot = snapshot
-      if (autoPlayUntilWeek > 0) {
-        finalSnapshot = await updateLanLobby(defaultSessionServerUrl, snapshot.sessionId, {
-          clientId: lobbyClientId,
-          isReady: true,
-          startGame: true,
-        })
-      }
-
       setLanStatusTone("neutral")
       setLanStatusMessage(
-        `Created ${finalSnapshot.sessionName}. Share the join link to invite others.`,
+        `Created ${snapshot.sessionName}. Share the join link to invite others.`,
       )
       setLauncherSessions(current => {
-        const nextSessions = current.filter(session => session.sessionId !== finalSnapshot.sessionId)
+        const nextSessions = current.filter(session => session.sessionId !== snapshot.sessionId)
         return [
           {
-            sessionId: finalSnapshot.sessionId,
-            sessionName: finalSnapshot.sessionName,
-            updatedAt: finalSnapshot.updatedAt,
-            lobbyStatus: finalSnapshot.lobby.status,
-            playerCount: finalSnapshot.game.players.length,
-            readyPlayerCount: finalSnapshot.lobby.players.filter(player => player.isReady).length,
+            sessionId: snapshot.sessionId,
+            sessionName: snapshot.sessionName,
+            updatedAt: snapshot.updatedAt,
+            lobbyStatus: snapshot.lobby.status,
+            playerCount: snapshot.game.players.length,
+            readyPlayerCount: snapshot.lobby.players.filter(player => player.isReady).length,
             isActive: true,
           },
           ...nextSessions.map(session => ({
@@ -872,14 +974,14 @@ export default function App() {
           })),
         ]
       })
-      applyLanSnapshot(finalSnapshot, defaultSessionServerUrl)
+      applyLanSnapshot(snapshot, defaultSessionServerUrl)
     } catch (error) {
       setLanStatusTone("error")
       setLanStatusMessage(error instanceof Error ? error.message : "Could not launch the LAN session.")
     } finally {
       setIsLaunchingSession(false)
     }
-  }, [applyLanSnapshot, autoPlayUntilWeek, chanceCardsEnabled, defaultSessionServerUrl, lanSeatCount, lobbyClientId, turnTimerSeconds])
+  }, [applyLanSnapshot, defaultSessionServerUrl, lanSeatCount])
 
   const handleToggleLobbyBotSeat = useCallback(async (playerId: string, isBot: boolean) => {
     const activeLanSession = lanSessionRef.current
@@ -943,7 +1045,13 @@ export default function App() {
   }, [defaultSessionServerUrl])
 
   const handleCopyJoinLink = useCallback(async (sessionId: string, serverUrl = defaultSessionServerUrl) => {
-    const joinUrl = buildLanSessionJoinUrl(sessionId, serverUrl, normalizedJoinAppUrl)
+    if (!effectiveJoinAppUrl) {
+      setLanStatusTone("neutral")
+      setLanStatusMessage("Join link loading...")
+      return
+    }
+
+    const joinUrl = buildLanSessionJoinUrl(sessionId, serverUrl, effectiveJoinAppUrl)
 
     try {
       await navigator.clipboard.writeText(joinUrl)
@@ -953,7 +1061,7 @@ export default function App() {
       setLanStatusTone("error")
       setLanStatusMessage(`Could not copy ${joinUrl}.`)
     }
-  }, [defaultSessionServerUrl, normalizedJoinAppUrl])
+  }, [defaultSessionServerUrl, effectiveJoinAppUrl])
 
   const handleClaimRouteAndAdvance = useCallback(
     async (mode: "bus" | "rail" | "air", cityIds: string[], segmentPairs?: Array<[string, string]>) =>
@@ -1266,41 +1374,64 @@ export default function App() {
       commitGameMutation(
         baseGame => {
           const actingPlayerId = resolveActingPlayerId(baseGame)
+          const nextSlotIndex = Math.max(
+            1,
+            baseGame.bureaucracyServiceSlotCountsByCorridorId[corridorId] ?? 1,
+          )
+          const newRouteId = buildServiceSlotId(corridorId, nextSlotIndex)
+          const autoAssignableVehicleCardId = getAutoAssignableVehicleCardId(
+            baseGame,
+            actingPlayerId,
+            corridorId,
+          )
           const result = addBureaucracyServiceSplit(baseGame, corridorId, actingPlayerId, initialCityIds)
 
-          return result.ok
-            ? {
-                ...result,
-                game: appendActionLog(
-                  baseGame,
-                  result.game,
-                  `added split service on corridor ${corridorId}`,
-                  actingPlayerId,
-                ),
-              }
-            : result
+          if (!result.ok) {
+            return result
+          }
+
+          let nextGame = result.game
+          let logMessage = `added split service on corridor ${corridorId}`
+
+          if (autoAssignableVehicleCardId) {
+            const vehicleAssignmentResult = setBureaucracyRouteVehicleCard(
+              nextGame,
+              newRouteId,
+              autoAssignableVehicleCardId,
+              actingPlayerId,
+            )
+
+            if (!vehicleAssignmentResult.ok) {
+              return vehicleAssignmentResult
+            }
+
+            nextGame = vehicleAssignmentResult.game
+            const vehicleCardName =
+              baseGame.vehicleCatalog.find(card => card.id === autoAssignableVehicleCardId)?.name ??
+              autoAssignableVehicleCardId
+            logMessage = `${logMessage} and assigned ${vehicleCardName}`
+          }
+
+          return {
+            ...result,
+            game: appendActionLog(baseGame, nextGame, logMessage, actingPlayerId),
+          }
         },
-        { type: "add-service-split", corridorId },
+        { type: "add-service-split", corridorId, initialCityIds },
       ),
     [commitGameMutation, resolveActingPlayerId],
   )
 
-  const handleMoveBureaucracyServiceCity = useCallback(
-    async (
-      corridorId: string,
-      cityId: string,
-      routeId: string,
-      sourceRouteId: string | null = null,
-    ) =>
+  const handleSetBureaucracyServicePodCities = useCallback(
+    async (corridorId: string, routeIds: string[], cityIds: string[]) =>
       commitGameMutation(
         baseGame => {
           const actingPlayerId = resolveActingPlayerId(baseGame)
-          const result = moveBureaucracyServiceCity(
+          const result = setBureaucracyServicePodCities(
             baseGame,
             corridorId,
-            cityId,
-            routeId,
-            sourceRouteId,
+            routeIds,
+            cityIds,
             actingPlayerId,
           )
 
@@ -1308,28 +1439,21 @@ export default function App() {
             return result
           }
 
-          const cityName = baseGame.cities.find(city => city.id === cityId)?.name ?? cityId
-          const plan = findPlayerBureaucracyPlan(baseGame, actingPlayerId, routeId)
-          const sourcePlan =
-            sourceRouteId === null
-              ? null
-              : findPlayerBureaucracyPlan(baseGame, actingPlayerId, sourceRouteId)
-          const actionLabel =
-            plan?.isDisconnected
-              ? `removed ${cityName} from ${sourcePlan?.serviceLabel ?? "that route"}`
-              : `copied ${cityName} into ${plan?.serviceLabel ?? routeId}`
+          const cityLabel = cityIds
+            .map(cityId => baseGame.cities.find(city => city.id === cityId)?.name ?? cityId)
+            .join(", ")
 
           return {
             ...result,
             game: appendActionLog(
               baseGame,
               result.game,
-              actionLabel,
+              `set pod cities on corridor ${corridorId} to ${cityLabel || "none"}`,
               actingPlayerId,
             ),
           }
         },
-        { type: "move-service-city", corridorId, cityId, routeId, sourceRouteId },
+        { type: "set-service-pod-cities", corridorId, routeIds, cityIds },
       ),
     [commitGameMutation, resolveActingPlayerId],
   )
@@ -1430,6 +1554,16 @@ export default function App() {
   const selectedLobbyPlayer = selectedPlayerId
     ? lanLobby?.players.find(player => player.playerId === selectedPlayerId) ?? null
     : null
+  const selectedPreviewBotPreset: BotPresetId =
+    selectedPlayer?.botPreset && BOT_PRESETS.some(preset => preset.id === selectedPlayer.botPreset)
+      ? selectedPlayer.botPreset
+      : "bot-avg"
+  const botPreviewEnabled =
+    Boolean(selectedPlayerId) &&
+    !selectedPlayer?.isBot &&
+    game.autoPlayUntilWeek > 0 &&
+    selectedPlayer?.botPreset === selectedPreviewBotPreset
+  const botPreviewTurnCount = Math.max(1, game.autoPlayUntilWeek || 1)
   const claimedLobbyPlayers = lanLobby?.players.filter(player => player.claimedBy) ?? []
   const readyLobbyPlayers = claimedLobbyPlayers.filter(player => player.isReady)
   const canStartLobby = claimedLobbyPlayers.length > 0 && claimedLobbyPlayers.every(player => player.isReady)
@@ -1643,7 +1777,7 @@ export default function App() {
                 <div style={{ display: "grid", gap: 6 }}>
                   <div style={{ fontSize: 32, fontWeight: 800, color: "#223024" }}>New game</div>
                   <div style={{ color: "#56635a" }}>
-                    Create a new game lobby, set up players and bots, then share the join link.
+                    Pick the number of seats and start a new lobby.
                   </div>
                 </div>
                 <label style={{ display: "grid", gap: 6, maxWidth: 180 }}>
@@ -1660,61 +1794,8 @@ export default function App() {
                     ))}
                   </select>
                 </label>
-                <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
-                  <input
-                    type="checkbox"
-                    checked={chanceCardsEnabled}
-                    onChange={e => setChanceCardsEnabled(e.target.checked)}
-                    style={{ width: 18, height: 18, cursor: "pointer" }}
-                  />
-                  <span>
-                    <strong>Chance cards</strong>
-                    <div style={{ fontSize: 12, color: "#56635a" }}>
-                      Random fuel & demand events each week
-                    </div>
-                  </span>
-                </label>
-                <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <select
-                    value={turnTimerSeconds}
-                    onChange={e => setTurnTimerSeconds(Number(e.target.value))}
-                    style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid #c7d0c4", fontSize: 14 }}
-                  >
-                    <option value={0}>No timer</option>
-                    <option value={30}>30 seconds</option>
-                    <option value={60}>1 minute</option>
-                    <option value={90}>90 seconds</option>
-                    <option value={120}>2 minutes</option>
-                    <option value={180}>3 minutes</option>
-                  </select>
-                  <span>
-                    <strong>Turn timer</strong>
-                    <div style={{ fontSize: 12, color: "#56635a" }}>
-                      Auto-advance when time runs out
-                    </div>
-                  </span>
-                </label>
-                <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <select
-                    value={autoPlayUntilWeek}
-                    onChange={e => setAutoPlayUntilWeek(Number(e.target.value))}
-                    style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid #c7d0c4", fontSize: 14 }}
-                  >
-                    <option value={0}>No auto-play</option>
-                    <option value={1}>Auto-play year 1</option>
-                    <option value={2}>Auto-play months 1–2</option>
-                    <option value={3}>Auto-play months 1–3</option>
-                    <option value={5}>Auto-play months 1–5</option>
-                  </select>
-                  <span>
-                    <strong>Bot preview</strong>
-                    <div style={{ fontSize: 12, color: "#56635a" }}>
-                      Bots play early months; take over when ready
-                    </div>
-                  </span>
-                </label>
                 <div style={{ color: "#56635a", fontSize: 13 }}>
-                  Share this machine&apos;s LAN address so others can join via the copied link.
+                  Start the lobby first, then finish game options and bot setup there.
                 </div>
                 <div style={{ color: launcherServerOnline === false ? "#9b1c1c" : "#56635a", fontSize: 14 }}>
                   Session server: {defaultSessionServerUrl}{" "}
@@ -1734,7 +1815,7 @@ export default function App() {
                     fontWeight: 700,
                   }}
                 >
-                  {isLaunchingSession ? "Creating..." : "Create game lobby"}
+                  {isLaunchingSession ? "Starting..." : "Start"}
                 </button>
               </div>
             </div>
@@ -1756,7 +1837,9 @@ export default function App() {
               ) : (
                 <div style={{ display: "grid", gap: 12 }}>
                   {launcherSessions.map(session => {
-                    const joinUrl = buildLanSessionJoinUrl(session.sessionId, defaultSessionServerUrl, normalizedJoinAppUrl)
+                    const joinUrl = effectiveJoinAppUrl
+                      ? buildLanSessionJoinUrl(session.sessionId, defaultSessionServerUrl, effectiveJoinAppUrl)
+                      : "loading"
 
                     return (
                       <div
@@ -1781,30 +1864,47 @@ export default function App() {
                             <div style={{ color: "#56635a", fontSize: 13 }}>{joinUrl}</div>
                           </div>
                           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                            <a
-                              href={joinUrl}
-                              style={{
-                                padding: "10px 16px",
-                                borderRadius: 999,
-                                border: "1px solid #223024",
-                                background: "#223024",
-                                color: "#ffffff",
-                                textDecoration: "none",
-                                fontWeight: 700,
-                              }}
-                            >
-                              Open game
-                            </a>
+                            {effectiveJoinAppUrl ? (
+                              <a
+                                href={joinUrl}
+                                style={{
+                                  padding: "10px 16px",
+                                  borderRadius: 999,
+                                  border: "1px solid #223024",
+                                  background: "#223024",
+                                  color: "#ffffff",
+                                  textDecoration: "none",
+                                  fontWeight: 700,
+                                }}
+                              >
+                                Open game
+                              </a>
+                            ) : (
+                              <span
+                                style={{
+                                  padding: "10px 16px",
+                                  borderRadius: 999,
+                                  border: "1px solid #c7d0c4",
+                                  background: "#edf2eb",
+                                  color: "#56635a",
+                                  fontWeight: 700,
+                                }}
+                              >
+                                Loading...
+                              </span>
+                            )}
                             <button
                               type="button"
                               onClick={() => void handleCopyJoinLink(session.sessionId)}
+                              disabled={!effectiveJoinAppUrl}
                               style={{
                                 padding: "10px 16px",
                                 borderRadius: 999,
                                 border: "1px solid #c7d0c4",
                                 background: "#ffffff",
-                                cursor: "pointer",
+                                cursor: effectiveJoinAppUrl ? "pointer" : "not-allowed",
                                 fontWeight: 700,
+                                opacity: effectiveJoinAppUrl ? 1 : 0.65,
                               }}
                             >
                               Copy link
@@ -1878,7 +1978,7 @@ export default function App() {
         >
           <div
             style={{
-              maxWidth: 520,
+              maxWidth: 760,
               width: "100%",
               borderRadius: 18,
               border: "1px solid #d8dfd5",
@@ -1980,7 +2080,7 @@ export default function App() {
                 <input
                   type="text"
                   readOnly
-                  value={buildLanSessionJoinUrl(lanSession.sessionId, lanSession.serverUrl, normalizedJoinAppUrl)}
+                  value={currentShareableJoinLink}
                   style={{
                     padding: "10px 12px",
                     borderRadius: 10,
@@ -1990,25 +2090,235 @@ export default function App() {
                     background: "#ffffff",
                   }}
                 />
-                <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                  {joinLinkDiagnostics && (
+                    <button
+                      type="button"
+                      onClick={() => setIsJoinLinkDiagnosticsVisible(current => !current)}
+                      title={isJoinLinkDiagnosticsVisible ? "Hide network diagnostics" : "Show network diagnostics"}
+                      aria-label={isJoinLinkDiagnosticsVisible ? "Hide network diagnostics" : "Show network diagnostics"}
+                      style={{
+                        width: 34,
+                        height: 34,
+                        borderRadius: 999,
+                        border: "1px solid #c7d0c4",
+                        background: "#ffffff",
+                        color: "#56635a",
+                        cursor: "pointer",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        fontSize: 16,
+                        lineHeight: 1,
+                        flexShrink: 0,
+                      }}
+                    >
+                      📶
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => void handleCopyJoinLink(lanSession.sessionId, lanSession.serverUrl)}
+                    disabled={!effectiveJoinAppUrl}
                     style={{
                       padding: "8px 12px",
                       borderRadius: 999,
                       border: "1px solid #86a889",
-                      background: "#f7faf6",
+                      background: effectiveJoinAppUrl ? "#f7faf6" : "#edf2eb",
                       color: "#1f5f2c",
-                      cursor: "pointer",
+                      cursor: effectiveJoinAppUrl ? "pointer" : "not-allowed",
                       fontWeight: 700,
+                      opacity: effectiveJoinAppUrl ? 1 : 0.65,
                     }}
                   >
-                    Copy link
+                    {effectiveJoinAppUrl ? "Copy link" : "Loading..."}
                   </button>
                 </div>
+                {joinLinkDiagnostics && isJoinLinkDiagnosticsVisible && (
+                  <div
+                    style={{
+                      display: "grid",
+                      gap: 2,
+                      paddingTop: 2,
+                      fontSize: 12,
+                      color: "#56635a",
+                      borderTop: "1px solid #e3e9e0",
+                    }}
+                  >
+                    <div>Saved app host: {joinLinkDiagnostics.savedJoinHost}</div>
+                    <div>Suggested app host: {joinLinkDiagnostics.suggestedJoinHost}</div>
+                    <div>Browser host: {joinLinkDiagnostics.browserHostname}</div>
+                    <div>Server preferred host: {joinLinkDiagnostics.preferredLanAddress ?? "none"}</div>
+                    <div>Server LAN order: {joinLinkDiagnostics.lanAddresses.join(", ") || "none detected"}</div>
+                    <div>Detected interface IPs: {joinLinkDiagnostics.interfaceLanAddresses.join(", ") || "none detected"}</div>
+                  </div>
+                )}
               </div>
             )}
+            <div
+              style={{
+                border: "1px solid #d8dfd5",
+                borderRadius: 10,
+                padding: "12px 14px",
+                background: "#fbfcfb",
+                display: "grid",
+                gap: 12,
+              }}
+            >
+              <div style={{ display: "grid", gap: 2 }}>
+                <div style={{ fontSize: 14, color: "#56635a", fontWeight: 700 }}>Game options</div>
+                <div style={{ color: "#56635a", fontSize: 13 }}>
+                  Adjust these before everyone readies up.
+                </div>
+              </div>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                  gap: 12,
+                }}
+              >
+                <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={chanceCardsEnabled}
+                    disabled={isUpdatingLobby}
+                    onChange={event => {
+                      const nextValue = event.target.checked
+                      setChanceCardsEnabled(nextValue)
+                      void handleUpdateLobbySettings({ chanceCardsEnabled: nextValue })
+                    }}
+                    style={{ width: 18, height: 18, cursor: isUpdatingLobby ? "not-allowed" : "pointer" }}
+                  />
+                  <span>
+                    <strong>Chance cards</strong>
+                    <div style={{ fontSize: 12, color: "#56635a" }}>
+                      Random fuel and demand events
+                    </div>
+                  </span>
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <select
+                    value={turnTimerSeconds}
+                    disabled={isUpdatingLobby}
+                    onChange={event => {
+                      const nextValue = Number(event.target.value)
+                      setTurnTimerSeconds(nextValue)
+                      void handleUpdateLobbySettings({ turnTimerSeconds: nextValue })
+                    }}
+                    style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid #c7d0c4", fontSize: 14 }}
+                  >
+                    <option value={0}>No timer</option>
+                    <option value={30}>30 seconds</option>
+                    <option value={60}>1 minute</option>
+                    <option value={90}>90 seconds</option>
+                    <option value={120}>2 minutes</option>
+                    <option value={180}>3 minutes</option>
+                  </select>
+                  <span>
+                    <strong>Turn timer</strong>
+                    <div style={{ fontSize: 12, color: "#56635a" }}>
+                      Auto-advance when time runs out
+                    </div>
+                  </span>
+                </label>
+              </div>
+              <div
+                style={{
+                  border: "1px solid #d8dfd5",
+                  borderRadius: 10,
+                  padding: "12px 14px",
+                  background: "#ffffff",
+                  display: "grid",
+                  gap: 10,
+                }}
+              >
+                <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={botPreviewEnabled}
+                    disabled={isUpdatingLobby || !selectedPlayerId || Boolean(selectedPlayer?.isBot)}
+                    onChange={event => {
+                      const nextEnabled = event.target.checked
+                      const nextTurns = nextEnabled ? Math.max(1, autoPlayUntilWeek || 1) : 0
+                      setAutoPlayUntilWeek(nextTurns)
+                      void handleUpdateLobbySettings({
+                        autoPlayUntilWeek: nextTurns,
+                        previewPlayerId: selectedPlayerId,
+                        previewBotPreset: nextEnabled ? selectedPreviewBotPreset : null,
+                      })
+                    }}
+                    style={{ width: 18, height: 18, cursor: isUpdatingLobby ? "not-allowed" : "pointer" }}
+                  />
+                  <span>
+                    <strong>Bot preview</strong>
+                    <div style={{ fontSize: 12, color: "#56635a" }}>
+                      Let a bot play the opening rounds for your seat before you take over.
+                    </div>
+                  </span>
+                </label>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "minmax(0, 1fr) minmax(160px, 220px)",
+                    gap: 10,
+                  }}
+                >
+                  <label style={{ display: "grid", gap: 4 }}>
+                    <span style={{ fontSize: 12, color: "#56635a", fontWeight: 700 }}>Preview bot</span>
+                    <select
+                      value={selectedPreviewBotPreset}
+                      disabled={!botPreviewEnabled || isUpdatingLobby || !selectedPlayerId || Boolean(selectedPlayer?.isBot)}
+                      onChange={event => {
+                        const nextPreset = event.target.value as BotPresetId
+                        void handleUpdateLobbySettings({
+                          autoPlayUntilWeek: Math.max(1, autoPlayUntilWeek || 1),
+                          previewPlayerId: selectedPlayerId,
+                          previewBotPreset: nextPreset,
+                        })
+                      }}
+                      style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #c7d0c4", fontSize: 14 }}
+                    >
+                      {BOT_PRESETS.map(preset => (
+                        <option key={preset.id} value={preset.id}>
+                          {preset.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label style={{ display: "grid", gap: 4 }}>
+                    <span style={{ fontSize: 12, color: "#56635a", fontWeight: 700 }}>Auto-play rounds (years)</span>
+                    <select
+                      value={botPreviewTurnCount}
+                      disabled={!botPreviewEnabled || isUpdatingLobby || !selectedPlayerId || Boolean(selectedPlayer?.isBot)}
+                      onChange={event => {
+                        const nextTurns = Number(event.target.value)
+                        setAutoPlayUntilWeek(nextTurns)
+                        void handleUpdateLobbySettings({
+                          autoPlayUntilWeek: nextTurns,
+                          previewPlayerId: selectedPlayerId,
+                          previewBotPreset: selectedPreviewBotPreset,
+                        })
+                      }}
+                      style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #c7d0c4", fontSize: 14 }}
+                    >
+                      {Array.from({ length: game.operatingConfig.totalWeeks }, (_, index) => index + 1).map(turnCount => (
+                        <option key={turnCount} value={turnCount}>
+                          {turnCount} round{turnCount === 1 ? "" : "s"} {turnCount === 1 ? "(year 1)" : `(years 1-${turnCount})`}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <div style={{ color: "#56635a", fontSize: 12 }}>
+                  {!selectedPlayerId
+                    ? "Claim a human seat to configure bot preview."
+                    : selectedPlayer?.isBot
+                      ? "Bot preview only applies to a human-controlled seat."
+                      : "Preview uses the selected bot preset for your claimed seat across the opening rounds."}
+                </div>
+              </div>
+            </div>
             <div
               style={{
                 display: "grid",
@@ -2185,7 +2495,7 @@ export default function App() {
               onUpgradeRailRoute={handleUpgradeRailRoute}
               onSetBureaucracyRouteVehicleCard={handleSetBureaucracyRouteVehicleCard}
               onAddBureaucracyServiceSplit={handleAddBureaucracyServiceSplit}
-              onMoveBureaucracyServiceCity={handleMoveBureaucracyServiceCity}
+              onSetBureaucracyServicePodCities={handleSetBureaucracyServicePodCities}
               onDeleteBureaucracyServicePod={handleDeleteBureaucracyServicePod}
               onAdvanceTurn={handleAdvanceTurn}
               onStopAutoPlay={handleStopAutoPlay}

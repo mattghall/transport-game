@@ -1,6 +1,5 @@
 import { getPlayerById, calculateClaimRouteCost, getVehicleTradeInValue, resolveRouteSelection } from "../engine/actions"
 import { getPayoutMultiplierForDistance } from "../engine/bureaucracy"
-import { getConnectedCityIds } from "../engine/economy"
 import { getPlayerOwnedNetworkRoutes } from "../engine/playerNetwork"
 import { CITY_DECK_REGIONS, type City, type CityDeckRegion, type VehicleType } from "../engine/types"
 import { calculateDistanceMiles } from "../engine/trips"
@@ -76,6 +75,11 @@ export type ScriptedBotWeights = {
   // Penalty per opponent route that already touches either endpoint of the claimed route.
   // Discourages claiming into heavily contested areas.
   claimOpponentBlockPenalty: number
+  // Extra penalty multiplier for the wasted portion of a rail build when a cheaper connector
+  // would have extended the same rail network more efficiently.
+  claimConnectorWastePenaltyMultiplier: number
+  // Penalty for starting a disconnected rail component when no spare train exists to service it.
+  claimDisconnectedRailPenalty: number
   // Reward for buying more of a vehicle card you already have assigned to a pod.
   // Models fleet scaling: if pod with vehicle X earns $Y/month, buying another X adds ~$Y/month.
   // Score += (existingNetRevenue / 1_000_000) * buyFleetScaleBonus
@@ -89,6 +93,14 @@ export type ScriptedBotWeights = {
   buyVehicleForEmptyPodBonus: number
   // Bonus for creating a service pod when the player already owns a compatible unassigned vehicle.
   podHasCompatibleVehicleBonus: number
+  // Reward per 100 passengers gained from a create-service-pod action.
+  podPassengerGainScore: number
+  // Bonus per disconnected city removed from a corridor through a create-service-pod action.
+  podDisconnectedCityReductionBonus: number
+  // Penalty per newly created staffed-but-unassigned pod in a corridor.
+  podUnstaffedPodPenalty: number
+  // Bonus for expanding/reconfiguring a pod that already has a vehicle assigned.
+  podExistingVehicleAssignedBonus: number
 }
 
 export const DEFAULT_SCRIPTED_BOT_WEIGHTS: ScriptedBotWeights = {
@@ -154,11 +166,17 @@ export const DEFAULT_SCRIPTED_BOT_WEIGHTS: ScriptedBotWeights = {
   keepCityAdjacencyPotentialScore: 5,
   claimAdjacentNetworkBonus: 8,
   claimOpponentBlockPenalty: 4,
+  claimConnectorWastePenaltyMultiplier: 3.5,
+  claimDisconnectedRailPenalty: 220,
   buyFleetScaleBonus: 30,
   buyVehicleCapacityScore: 1.5,
   buyVehicleSpeedScore: 0.5,
   buyVehicleForEmptyPodBonus: 25,
   podHasCompatibleVehicleBonus: 15,
+  podPassengerGainScore: 1,
+  podDisconnectedCityReductionBonus: 18,
+  podUnstaffedPodPenalty: 90,
+  podExistingVehicleAssignedBonus: 40,
 }
 
 export function mergeScriptedBotWeights(
@@ -253,6 +271,59 @@ function countPotentialClaims(
   }).length
 }
 
+function getRailConnectorWastePenalty(
+  action: Extract<BotAction, { type: "claim-route" }>,
+  game: Parameters<BotController["pickAction"]>[0]["game"],
+  playerId: string,
+  connectedCityIdSet: Set<string>,
+  cityMap: Map<string, City>,
+) {
+  if (action.mode !== "rail") {
+    return 0
+  }
+
+  const player = getPlayerById(game, playerId)
+
+  if (!player) {
+    return 0
+  }
+
+  const newCityIds = action.cityIds.filter(cityId => !connectedCityIdSet.has(cityId))
+
+  if (newCityIds.length !== 1) {
+    return 0
+  }
+
+  const newCityId = newCityIds[0]
+  const newCity = cityMap.get(newCityId)
+
+  if (!newCity) {
+    return 0
+  }
+
+  const currentCost = calculateClaimRouteCost(game, {
+    mode: action.mode,
+    cityIds: action.cityIds,
+  })
+  const connectedOwnedCityIds = player.ownedCityCardIds.filter(cityId => connectedCityIdSet.has(cityId))
+  let cheapestConnectorCost = Number.POSITIVE_INFINITY
+
+  for (const adjacentCity of newCity.adjacentCities ?? []) {
+    if (!connectedOwnedCityIds.includes(adjacentCity.id)) {
+      continue
+    }
+
+    cheapestConnectorCost = Math.min(
+      cheapestConnectorCost,
+      adjacentCity.distance * game.operatingConfig.railConstructionCostPerMile,
+    )
+  }
+
+  return Number.isFinite(cheapestConnectorCost)
+    ? Math.max(0, currentCost - cheapestConnectorCost)
+    : 0
+}
+
 function scoreClaimRouteAction(
   action: Extract<BotAction, { type: "claim-route" }>,
   game: Parameters<BotController["pickAction"]>[0]["game"],
@@ -261,9 +332,11 @@ function scoreClaimRouteAction(
 ) {
   const stage = getBotGameStage(game)
   const cityMap = new Map(game.cities.map(city => [city.id, city]))
-  const connectedCityIdSet = new Set(getConnectedCityIds(game, playerId))
   const existingRoutesOfMode = getPlayerOwnedNetworkRoutes(game, playerId).filter(
     route => route.mode === action.mode,
+  )
+  const connectedCityIdSet = new Set(
+    existingRoutesOfMode.flatMap(route => [route.cityA, route.cityB]),
   )
   const totalPopulation = action.cityIds.reduce(
     (total, cityId) => total + (cityMap.get(cityId)?.population ?? cityMap.get(cityId)?.size ?? 0),
@@ -322,6 +395,27 @@ function scoreClaimRouteAction(
   const opponentBlockCount = game.routes.filter(
     r => r.ownerId && r.ownerId !== playerId && (candidateCityIdSet.has(r.cityA) || candidateCityIdSet.has(r.cityB)),
   ).length
+  const connectorWastePenalty =
+    (getRailConnectorWastePenalty(action, game, playerId, connectedCityIdSet, cityMap) / 1_000_000) *
+    weights.claimConnectorWastePenaltyMultiplier
+  const summary = getCachedBureaucracySummary(game, playerId)
+  const assignedTrainCardIds = new Set(
+    summary?.routePlans
+      .filter(plan => !plan.isDisconnected && plan.route.mode === "rail" && plan.vehicleCard?.type === "train")
+      .map(plan => plan.vehicleCard!.id) ?? [],
+  )
+  const unassignedTrainCount = getPlayerById(game, playerId)?.ownedVehicleCardIds.filter(cardId => {
+    const card = game.vehicleCatalog.find(vehicleCard => vehicleCard.id === cardId)
+    return card?.type === "train" && !assignedTrainCardIds.has(cardId)
+  }).length ?? 0
+  const isDisconnectedRailExpansion =
+    action.mode === "rail" &&
+    existingRoutesOfMode.length > 0 &&
+    action.cityIds.every(cityId => !connectedCityIdSet.has(cityId))
+  const disconnectedRailPenalty =
+    isDisconnectedRailExpansion && unassignedTrainCount <= 0
+      ? weights.claimDisconnectedRailPenalty
+      : 0
 
   return (
     (action.mode === "rail" ? weights.claimRailBaseScore : weights.claimAirBaseScore) +
@@ -340,6 +434,8 @@ function scoreClaimRouteAction(
     newRegionCount * weights.claimNewRegionBonus * getStageWeight(stage, weights, "ExpansionMultiplier") +
     adjacentNetworkCount * weights.claimAdjacentNetworkBonus -
     opponentBlockCount * weights.claimOpponentBlockPenalty -
+    connectorWastePenalty -
+    disconnectedRailPenalty -
     (cost / 1_000_000) * weights.claimRailCostPenaltyPerMillion
   )
 }
@@ -357,8 +453,6 @@ function scoreBotAction(
   }
 
   if (action.type === "create-service-pod") {
-    // Score based on population and demand from the already-cached summary — no simulation needed.
-    // Using applyBotAction + nextSummary would be ~10x more expensive per candidate.
     const summary = currentSummary ?? getCachedBureaucracySummary(game, playerId)
     const cityMap = new Map(game.cities.map(city => [city.id, city]))
 
@@ -411,6 +505,40 @@ function scoreBotAction(
       if (hasCompatible) compatibleVehicleBonus = weights.podHasCompatibleVehicleBonus
     }
 
+    const currentCorridorPlans = summary?.routePlans.filter(plan => plan.corridorId === action.corridorId) ?? []
+    const currentTargetPlan = currentCorridorPlans.find(plan => plan.id === action.routeId) ?? null
+    let passengerGainScore = 0
+    let netRevenueGainScore = 0
+    let disconnectedReductionBonus = 0
+    let unstaffedPodPenalty = 0
+
+    const nextGame = applyBotAction(game, playerId, action)
+    const nextSummary = getCachedBureaucracySummary(nextGame, playerId)
+    const nextCorridorPlans = nextSummary?.routePlans.filter(plan => plan.corridorId === action.corridorId) ?? []
+    const currentPassengers = currentCorridorPlans.reduce((sum, plan) => sum + plan.passengersServed, 0)
+    const nextPassengers = nextCorridorPlans.reduce((sum, plan) => sum + plan.passengersServed, 0)
+    const currentNetRevenue = currentCorridorPlans.reduce((sum, plan) => sum + plan.netRevenue, 0)
+    const nextNetRevenue = nextCorridorPlans.reduce((sum, plan) => sum + plan.netRevenue, 0)
+    const currentDisconnectedCount =
+      currentCorridorPlans.find(plan => plan.isDisconnected)?.selectedCityIds.length ?? 0
+    const nextDisconnectedCount =
+      nextCorridorPlans.find(plan => plan.isDisconnected)?.selectedCityIds.length ?? 0
+    const currentUnstaffedPodCount = currentCorridorPlans.filter(
+      plan => !plan.isDisconnected && plan.selectedCityIds.length >= 2 && !plan.vehicleCard,
+    ).length
+    const nextUnstaffedPodCount = nextCorridorPlans.filter(
+      plan => !plan.isDisconnected && plan.selectedCityIds.length >= 2 && !plan.vehicleCard,
+    ).length
+
+    passengerGainScore =
+      (Math.max(0, nextPassengers - currentPassengers) / 100) * weights.podPassengerGainScore
+    netRevenueGainScore = ((nextNetRevenue - currentNetRevenue) / 1_000_000) * weights.podNetRevenueScore
+    disconnectedReductionBonus =
+      Math.max(0, currentDisconnectedCount - nextDisconnectedCount) *
+      weights.podDisconnectedCityReductionBonus
+    unstaffedPodPenalty =
+      Math.max(0, nextUnstaffedPodCount - currentUnstaffedPodCount) * weights.podUnstaffedPodPenalty
+
     return (
       weights.podSplitBaseScore +
       action.cityIds.length * weights.podCityCountScore +
@@ -419,7 +547,12 @@ function scoreBotAction(
       podCombinedDemand * weights.podDemandScore +
       demandPerMile * weights.podDemandPerMileScore -
       Math.max(0, activePodCount - 1) * weights.podAdditionalRoutePenalty +
-      compatibleVehicleBonus
+      compatibleVehicleBonus +
+      passengerGainScore +
+      netRevenueGainScore +
+      disconnectedReductionBonus -
+      unstaffedPodPenalty +
+      (currentTargetPlan?.vehicleCard ? weights.podExistingVehicleAssignedBonus : 0)
     )
   }
 
@@ -599,6 +732,7 @@ function scoreBotAction(
 
   const player = getPlayerById(game, playerId)
   const card = game.vehicleCatalog.find(vehicleCard => vehicleCard.id === action.cardId)
+  const quantity = Math.max(1, action.quantity)
 
   if (!player || !card) {
     return Number.NEGATIVE_INFINITY
@@ -611,10 +745,16 @@ function scoreBotAction(
     .filter(vehicleCard => vehicleCard.type === card.type).length
   const potentialRailClaims = countPotentialClaims(game, playerId, "rail")
   const potentialAirClaims = countPotentialClaims(game, playerId, "air")
+  const ownedRailRouteCount = getPlayerOwnedNetworkRoutes(game, playerId).filter(route => route.mode === "rail").length
 
   // Fleet scaling bonus: if this exact card is already owned and assigned to a productive pod,
   // buying another directly scales revenue (fleet size × capacity). Score the expected delta.
   const summary = currentSummary ?? getCachedBureaucracySummary(game, playerId)
+  const hasRailServiceOpportunity =
+    ownedRailRouteCount > 0 ||
+    (summary?.routePlans.some(
+      plan => !plan.isDisconnected && plan.route.mode === "rail" && plan.selectedCityIds.length >= 2,
+    ) ?? false)
   let fleetScaleBonus = 0
   if (player.ownedVehicleCardIds.includes(card.id)) {
     const netRevenueFromCard = summary?.routePlans
@@ -631,15 +771,19 @@ function scoreBotAction(
   ).length ?? 0
   const emptyPodBonus = unservicedPodCount > 0 ? weights.buyVehicleForEmptyPodBonus : 0
 
+  if (card.type === "train" && potentialRailClaims === 0 && !hasRailServiceOpportunity) {
+    return Number.NEGATIVE_INFINITY
+  }
+
   const cityBonus =
     card.type === "bus"
       ? Math.min(ownedCityCount, 6) * weights.buyBusOwnedCityBonus
       : card.type === "train"
         ? potentialRailClaims > 0
           ? weights.buyTrainPotentialClaimBonus
-          : ownedCityCount >= 4
+          : hasRailServiceOpportunity && ownedCityCount >= 4
             ? weights.buyTrainFallbackOwnedCityBonus
-            : -weights.buyTrainNoClaimPenalty
+            : -weights.buyTrainNoClaimPenalty * 4
         : potentialAirClaims > 0
           ? weights.buyAirPotentialClaimBonus
           : ownedCityCount >= 5
@@ -651,17 +795,22 @@ function scoreBotAction(
       : card.type === "air"
         ? ownedVehicleCount === 0 && potentialAirClaims > 0 ? weights.buyFirstAirBonus : 0
         : 0
+  const duplicatePenalty =
+    Array.from({ length: quantity }, (_, index) => ownedVehicleCount + index)
+      .reduce((sum, count) => sum + count * weights.buyDuplicateVehiclePenalty, 0)
+  const scalableScore =
+    (getVehiclePriority(card.type, weights) +
+      cityBonus +
+      fleetScaleBonus +
+      emptyPodBonus +
+      (card.totalPassengerCapacity / 100) * weights.buyVehicleCapacityScore +
+      (card.speed / 10) * weights.buyVehicleSpeedScore -
+      card.purchasePrice / 1_000_000) * quantity
 
   return (
-    getVehiclePriority(card.type, weights) +
-    cityBonus -
-    ownedVehicleCount * weights.buyDuplicateVehiclePenalty +
-    firstOfTypeBonus +
-    fleetScaleBonus +
-    emptyPodBonus +
-    (card.totalPassengerCapacity / 100) * weights.buyVehicleCapacityScore +
-    (card.speed / 10) * weights.buyVehicleSpeedScore -
-    card.purchasePrice / 1_000_000
+    scalableScore +
+    firstOfTypeBonus -
+    duplicatePenalty
   )
 }
 
@@ -692,8 +841,15 @@ export function createScriptedBot(id: string, weights: Partial<ScriptedBotWeight
         return { type: "ready-operations" }
       }
 
+      const prioritizedActions =
+        game.currentPhase === "operations" &&
+        claimedRouteCountThisTurn < stageClaimBudget &&
+        availableActions.some(action => action.type === "claim-route")
+          ? availableActions.filter(action => action.type === "claim-route")
+          : availableActions
+
       // Compute the bureaucracy summary when there are pod/vehicle/removal actions to score.
-      const hasPodActions = availableActions.some(
+      const hasPodActions = prioritizedActions.some(
         a =>
           a.type === "create-service-pod" ||
           a.type === "remove-pod-city" ||
@@ -701,10 +857,10 @@ export function createScriptedBot(id: string, weights: Partial<ScriptedBotWeight
           a.type === "add-second-vehicle-to-pod" ||
           a.type === "exchange-vehicle",
       )
-      const hasBuyVehicleActions = availableActions.some(a => a.type === "buy-vehicle")
+      const hasBuyVehicleActions = prioritizedActions.some(a => a.type === "buy-vehicle")
       const needsSummary = hasPodActions || hasBuyVehicleActions
       const precomputedSummary = needsSummary ? getCachedBureaucracySummary(game, playerId) : undefined
-      const bestAction = availableActions.reduce<{ action: BotAction; score: number } | null>(
+      const bestAction = prioritizedActions.reduce<{ action: BotAction; score: number } | null>(
         (best, action) => {
           const score = scoreBotAction(action, game, playerId, resolvedWeights, precomputedSummary)
           return best === null || score > best.score ? { action, score } : best
@@ -732,6 +888,8 @@ export type ClaimRouteScoreBreakdown = {
   adjacentNetworkBonus: number
   opponentBlockCount: number
   opponentBlockPenalty: number
+  connectorWastePenalty: number
+  disconnectedRailPenalty: number
   costPenalty: number
 }
 
@@ -798,9 +956,11 @@ function getClaimRouteBreakdown(
 ): ClaimRouteScoreBreakdown {
   const stage = getBotGameStage(game)
   const cityMap = new Map(game.cities.map(city => [city.id, city]))
-  const connectedCityIdSet = new Set(getConnectedCityIds(game, playerId))
   const existingRoutesOfMode = getPlayerOwnedNetworkRoutes(game, playerId).filter(
     route => route.mode === action.mode,
+  )
+  const connectedCityIdSet = new Set(
+    existingRoutesOfMode.flatMap(route => [route.cityA, route.cityB]),
   )
   const totalPopulation = action.cityIds.reduce(
     (total, cityId) => total + (cityMap.get(cityId)?.population ?? cityMap.get(cityId)?.size ?? 0),
@@ -852,6 +1012,27 @@ function getClaimRouteBreakdown(
   const newRegionBonus =
     newRegionCount * weights.claimNewRegionBonus * getStageWeight(stage, weights, "ExpansionMultiplier")
   const costPenalty = (cost / 1_000_000) * weights.claimRailCostPenaltyPerMillion
+  const connectorWastePenalty =
+    (getRailConnectorWastePenalty(action, game, playerId, connectedCityIdSet, cityMap) / 1_000_000) *
+    weights.claimConnectorWastePenaltyMultiplier
+  const summary = getCachedBureaucracySummary(game, playerId)
+  const assignedTrainCardIds = new Set(
+    summary?.routePlans
+      .filter(plan => !plan.isDisconnected && plan.route.mode === "rail" && plan.vehicleCard?.type === "train")
+      .map(plan => plan.vehicleCard!.id) ?? [],
+  )
+  const unassignedTrainCount = getPlayerById(game, playerId)?.ownedVehicleCardIds.filter(cardId => {
+    const card = game.vehicleCatalog.find(vehicleCard => vehicleCard.id === cardId)
+    return card?.type === "train" && !assignedTrainCardIds.has(cardId)
+  }).length ?? 0
+  const isDisconnectedRailExpansion =
+    action.mode === "rail" &&
+    existingRoutesOfMode.length > 0 &&
+    action.cityIds.every(cityId => !connectedCityIdSet.has(cityId))
+  const disconnectedRailPenalty =
+    isDisconnectedRailExpansion && unassignedTrainCount <= 0
+      ? weights.claimDisconnectedRailPenalty
+      : 0
 
   const candidateCityIdSetBreakdown = new Set(action.cityIds)
   const allPlayerRoutesBreakdown = getPlayerOwnedNetworkRoutes(game, playerId)
@@ -868,7 +1049,7 @@ function getClaimRouteBreakdown(
   return {
     total: modeBase + populationScore + newCityBonus + firstModeBonus + regionPreferenceScore +
       sameRegionLinkBonus + longDistancePreference + newRegionBonus +
-      adjacentNetworkBonus - opponentBlockPenalty - costPenalty,
+    adjacentNetworkBonus - opponentBlockPenalty - connectorWastePenalty - disconnectedRailPenalty - costPenalty,
     modeBase,
     populationScore,
     newCityBonus,
@@ -881,6 +1062,8 @@ function getClaimRouteBreakdown(
     adjacentNetworkBonus,
     opponentBlockCount,
     opponentBlockPenalty,
+    connectorWastePenalty,
+    disconnectedRailPenalty,
     costPenalty,
   }
 }
@@ -993,6 +1176,7 @@ function getBuyVehicleBreakdown(
 ): BuyVehicleScoreBreakdown {
   const player = getPlayerById(game, playerId)
   const card = game.vehicleCatalog.find(c => c.id === action.cardId)
+  const quantity = Math.max(1, action.quantity)
 
   if (!player || !card) {
     return {
@@ -1012,35 +1196,62 @@ function getBuyVehicleBreakdown(
 
   const potentialRailClaims = countPotentialClaims(game, playerId, "rail")
   const potentialAirClaims = countPotentialClaims(game, playerId, "air")
+  const ownedRailRouteCount = getPlayerOwnedNetworkRoutes(game, playerId).filter(route => route.mode === "rail").length
+  const routePlans = getCachedBureaucracySummary(game, playerId)?.routePlans ?? []
+  const hasRailServiceOpportunity =
+    ownedRailRouteCount > 0 ||
+    routePlans.some(
+      plan => !plan.isDisconnected && plan.route.mode === "rail" && plan.selectedCityIds.length >= 2,
+    )
 
-  let cityBonus = 0
-  let cityBonusReason = ""
-  if (card.type === "bus") {
-    cityBonus = Math.min(ownedCityCount, 6) * weights.buyBusOwnedCityBonus
-    cityBonusReason = `${Math.min(ownedCityCount, 6)} owned cities × ${weights.buyBusOwnedCityBonus}`
-  } else if (card.type === "train") {
-    if (potentialRailClaims > 0) {
-      cityBonus = weights.buyTrainPotentialClaimBonus
-      cityBonusReason = `${potentialRailClaims} rail claim opportunities`
-    } else if (ownedCityCount >= 4) {
-      cityBonus = weights.buyTrainFallbackOwnedCityBonus
-      cityBonusReason = "fallback: ≥4 owned cities, no rail claims yet"
-    } else {
-      cityBonus = -weights.buyTrainNoClaimPenalty
-      cityBonusReason = "penalty: no rail claims available"
+  const { cityBonus, cityBonusReason } = (() => {
+    if (card.type === "bus") {
+      return {
+        cityBonus: Math.min(ownedCityCount, 6) * weights.buyBusOwnedCityBonus,
+        cityBonusReason: `${Math.min(ownedCityCount, 6)} owned cities × ${weights.buyBusOwnedCityBonus}`,
+      }
     }
-  } else {
+
+    if (card.type === "train") {
+      if (potentialRailClaims > 0) {
+        return {
+          cityBonus: weights.buyTrainPotentialClaimBonus,
+          cityBonusReason: `${potentialRailClaims} rail claim opportunities`,
+        }
+      }
+
+      if (hasRailServiceOpportunity && ownedCityCount >= 4) {
+        return {
+          cityBonus: weights.buyTrainFallbackOwnedCityBonus,
+          cityBonusReason: "fallback: existing rail network/service pod can use another train",
+        }
+      }
+
+      return {
+        cityBonus: -weights.buyTrainNoClaimPenalty * 4,
+        cityBonusReason: "penalty: no rail claims or existing rail network to justify a train",
+      }
+    }
+
     if (potentialAirClaims > 0) {
-      cityBonus = weights.buyAirPotentialClaimBonus
-      cityBonusReason = `${potentialAirClaims} air claim opportunities`
-    } else if (ownedCityCount >= 5) {
-      cityBonus = weights.buyAirFallbackOwnedCityBonus
-      cityBonusReason = "fallback: ≥5 owned cities, no air claims yet"
-    } else {
-      cityBonus = -weights.buyAirNoClaimPenalty
-      cityBonusReason = "penalty: no air claims available"
+      return {
+        cityBonus: weights.buyAirPotentialClaimBonus,
+        cityBonusReason: `${potentialAirClaims} air claim opportunities`,
+      }
     }
-  }
+
+    if (ownedCityCount >= 5) {
+      return {
+        cityBonus: weights.buyAirFallbackOwnedCityBonus,
+        cityBonusReason: "fallback: ≥5 owned cities, no air claims yet",
+      }
+    }
+
+    return {
+      cityBonus: -weights.buyAirNoClaimPenalty,
+      cityBonusReason: "penalty: no air claims available",
+    }
+  })()
 
   const firstOfTypeBonus =
     card.type === "train"
@@ -1048,6 +1259,9 @@ function getBuyVehicleBreakdown(
       : card.type === "air"
         ? ownedVehicleCount === 0 && potentialAirClaims > 0 ? weights.buyFirstAirBonus : 0
         : 0
+  const duplicatePenalty =
+    Array.from({ length: quantity }, (_, index) => ownedVehicleCount + index)
+      .reduce((sum, count) => sum + count * weights.buyDuplicateVehiclePenalty, 0)
 
   return {
     kind: "buy-vehicle",
@@ -1055,14 +1269,14 @@ function getBuyVehicleBreakdown(
     cardName: card.name,
     vehicleType: card.type,
     typePriority: getVehiclePriority(card.type, weights),
-    totalPassengerCapacity: card.totalPassengerCapacity,
+    totalPassengerCapacity: card.totalPassengerCapacity * quantity,
     speed: card.speed,
     operatingCostMultiplier: card.operatingCostMultiplier,
-    purchasePriceM: card.purchasePrice / 1_000_000,
-    pricePenalty: card.purchasePrice / 1_000_000,
-    cityBonus,
+    purchasePriceM: (card.purchasePrice * quantity) / 1_000_000,
+    pricePenalty: (card.purchasePrice * quantity) / 1_000_000,
+    cityBonus: cityBonus * quantity,
     cityBonusReason,
-    duplicatePenalty: ownedVehicleCount * weights.buyDuplicateVehiclePenalty,
+    duplicatePenalty,
     duplicateCount: ownedVehicleCount,
     firstOfTypeBonus,
   }
@@ -1080,7 +1294,15 @@ function getBotActionLabel(
     }
     case "create-service-pod": {
       const cityNames = action.cityIds.map(id => cityMap.get(id)?.name ?? id).join(" – ")
-      return `Add to pod: ${cityNames}`
+      return `Proposed pod: ${cityNames}`
+    }
+    case "exchange-vehicle": {
+      const newCard = game.vehicleCatalog.find(c => c.id === action.newCardId)
+      const oldCard = game.vehicleCatalog.find(c => c.id === action.oldCardId)
+      if (newCard && oldCard) {
+        return `Replace #${oldCard.number} ${oldCard.name} with #${newCard.number} ${newCard.name}`
+      }
+      return `Replace vehicle ${action.oldCardId} with ${action.newCardId}`
     }
     case "buy-vehicle": {
       const card = game.vehicleCatalog.find(c => c.id === action.cardId)

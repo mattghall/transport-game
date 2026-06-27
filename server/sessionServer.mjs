@@ -1,5 +1,6 @@
 import { createServer } from "node:http"
 import { randomBytes } from "node:crypto"
+import { createSocket } from "node:dgram"
 import { networkInterfaces } from "node:os"
 import { spawn, spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
@@ -9,7 +10,8 @@ import { extname } from "node:path"
 import { usMap } from '../src/data/maps/usMap.ts'
 import { normalizeGameState } from '../src/engine/normalizeGameState.ts'
 import { applyBotAction, getBotLegalActions, getPendingBotPlayerId } from '../src/bots/actions.ts'
-import { createPresetBotController } from '../src/bots/presets.ts'
+import { createPresetBotController, normalizeBotPresetId } from '../src/bots/presets.ts'
+import { buildPlayerBureaucracySummary, buildServiceSlotId } from '../src/engine/bureaucracy.ts'
 import {
   buyVehicleCard,
   exchangeVehicleCard,
@@ -21,6 +23,7 @@ import {
   markOperationsReady,
   markBureaucracyReady,
   setBureaucracyRouteVehicleCard,
+  setBureaucracyServicePodCities,
   addBureaucracyServiceSplit,
   deleteBureaucracyServicePod,
   moveBureaucracyServiceCity,
@@ -35,6 +38,7 @@ import {
 const PORT = Number(process.env.PORT ?? 8787)
 const sessions = new Map()
 const sessionStreams = new Map()
+let lastLanAddressLogSignature = null
 // pending seat-release timeouts keyed by `${sessionId}:${clientId}`
 const pendingSeatReleases = new Map()
 // active SSE connection counts per client, keyed by `${sessionId}:${clientId}`
@@ -219,6 +223,44 @@ let autotuneControlStatus = {
 
 // --- Engine helpers ---
 
+function getVehicleTypeForMode(mode) {
+  switch (mode) {
+    case 'rail':
+      return 'train'
+    case 'air':
+      return 'air'
+    case 'bus':
+      return 'bus'
+  }
+}
+
+function getAutoAssignableVehicleCardId(game, playerId, corridorId) {
+  const player = game.players.find(candidate => candidate.id === playerId)
+  const summary = buildPlayerBureaucracySummary(game, playerId)
+  const routeMode =
+    summary?.routePlans.find(plan => !plan.isDisconnected && plan.corridorId === corridorId)?.route.mode ?? null
+
+  if (!player || !summary || routeMode === null) {
+    return null
+  }
+
+  const assignedVehicleCardIds = new Set(
+    summary.routePlans
+      .map(plan => plan.vehicleCard?.id)
+      .filter(cardId => cardId !== undefined),
+  )
+
+  return (
+    player.ownedVehicleCardIds.find(cardId => {
+      if (assignedVehicleCardIds.has(cardId)) {
+        return false
+      }
+
+      return game.vehicleCatalog.find(card => card.id === cardId)?.type === getVehicleTypeForMode(routeMode)
+    }) ?? null
+  )
+}
+
 function hydrateServerGame(session) {
   const map = session.staticData.mapId === 'us' ? usMap : null
   if (!map) throw new Error(`Unsupported map: ${session.staticData.mapId}`)
@@ -394,10 +436,35 @@ function applyGameAction(game, playerId, action) {
       if (!result.ok) throw new Error(result.error)
       return result.game
     }
-    case 'add-service-split': {
-      const result = addBureaucracyServiceSplit(game, action.corridorId, playerId, action.initialCityIds ?? undefined)
+    case 'set-service-pod-cities': {
+      const result = setBureaucracyServicePodCities(
+        game,
+        action.corridorId,
+        action.routeIds,
+        action.cityIds,
+        playerId,
+      )
       if (!result.ok) throw new Error(result.error)
       return result.game
+    }
+    case 'add-service-split': {
+      const nextSlotIndex = Math.max(1, game.bureaucracyServiceSlotCountsByCorridorId[action.corridorId] ?? 1)
+      const newRouteId = buildServiceSlotId(action.corridorId, nextSlotIndex)
+      const autoAssignableVehicleCardId = getAutoAssignableVehicleCardId(game, playerId, action.corridorId)
+      const result = addBureaucracyServiceSplit(game, action.corridorId, playerId, action.initialCityIds ?? undefined)
+      if (!result.ok) throw new Error(result.error)
+      if (!autoAssignableVehicleCardId) {
+        return result.game
+      }
+
+      const vehicleAssignmentResult = setBureaucracyRouteVehicleCard(
+        result.game,
+        newRouteId,
+        autoAssignableVehicleCardId,
+        playerId,
+      )
+      if (!vehicleAssignmentResult.ok) throw new Error(vehicleAssignmentResult.error)
+      return vehicleAssignmentResult.game
     }
     case 'move-service-city': {
       const result = moveBureaucracyServiceCity(game, action.corridorId, action.cityId, action.routeId, action.sourceRouteId, playerId)
@@ -1550,7 +1617,7 @@ function stopAutotuneProcess() {
   }
 }
 
-function getLanAddresses() {
+function getInterfaceLanAddresses() {
   const interfaces = networkInterfaces()
   const addresses = []
 
@@ -1567,7 +1634,74 @@ function getLanAddresses() {
     }
   }
 
-  return addresses.sort((addressA, addressB) => addressA.localeCompare(addressB))
+  return addresses
+}
+
+function getPreferredOutboundLanAddress(timeoutMs = 200) {
+  return new Promise(resolve => {
+    const socket = createSocket("udp4")
+    let settled = false
+
+    const finish = address => {
+      if (settled) {
+        return
+      }
+
+      settled = true
+      try {
+        socket.close()
+      } catch {
+        // ignore cleanup errors
+      }
+      resolve(address)
+    }
+
+    const timeoutId = setTimeout(() => finish(null), timeoutMs)
+
+    socket.once("error", () => {
+      clearTimeout(timeoutId)
+      finish(null)
+    })
+
+    socket.connect(53, "8.8.8.8", () => {
+      clearTimeout(timeoutId)
+      try {
+        const socketAddress = socket.address()
+        finish(
+          typeof socketAddress === "object" &&
+            socketAddress !== null &&
+            socketAddress.family === "IPv4" &&
+            typeof socketAddress.address === "string"
+            ? socketAddress.address
+            : null,
+        )
+      } catch {
+        finish(null)
+      }
+    })
+  })
+}
+
+async function getLanAddressDiagnostics() {
+  const interfaceLanAddresses = getInterfaceLanAddresses()
+  const preferredLanAddress = await getPreferredOutboundLanAddress()
+
+  if (!preferredLanAddress || !interfaceLanAddresses.includes(preferredLanAddress)) {
+    return {
+      interfaceLanAddresses,
+      preferredLanAddress,
+      lanAddresses: interfaceLanAddresses,
+    }
+  }
+
+  return {
+    interfaceLanAddresses,
+    preferredLanAddress,
+    lanAddresses: [
+      preferredLanAddress,
+      ...interfaceLanAddresses.filter(address => address !== preferredLanAddress),
+    ],
+  }
 }
 
 function createLobby(players) {
@@ -1611,6 +1745,76 @@ function getStartedGame(game, startedPlayerIds) {
     currentPlayerId: nextPlayers.some(player => player.id === game.currentPlayerId)
       ? game.currentPlayerId
       : nextPlayers[0].id,
+  }
+}
+
+function applyLobbySettingsToGame(game, settings, totalWeeks) {
+  if (!settings) {
+    return game
+  }
+
+  const maxAutoPlayWeeks =
+    typeof totalWeeks === "number" && Number.isFinite(totalWeeks) && totalWeeks > 0
+      ? Math.round(totalWeeks)
+      : null
+
+  const nextChanceCardsEnabled =
+    typeof settings.chanceCardsEnabled === "boolean"
+      ? settings.chanceCardsEnabled
+      : game.chanceCardsEnabled
+  const nextTurnTimerSeconds =
+    typeof settings.turnTimerSeconds === "number" && Number.isFinite(settings.turnTimerSeconds)
+      ? Math.max(0, Math.round(settings.turnTimerSeconds))
+      : game.turnTimerSeconds
+  const nextAutoPlayUntilWeek =
+    typeof settings.autoPlayUntilWeek === "number" && Number.isFinite(settings.autoPlayUntilWeek)
+      ? Math.max(
+          0,
+          maxAutoPlayWeeks === null
+            ? Math.round(settings.autoPlayUntilWeek)
+            : Math.min(Math.round(settings.autoPlayUntilWeek), maxAutoPlayWeeks),
+        )
+      : game.autoPlayUntilWeek
+
+  const shouldRewriteHumanPreviewPreset =
+    settings.previewPlayerId !== undefined ||
+    settings.previewBotPreset !== undefined ||
+    nextAutoPlayUntilWeek !== game.autoPlayUntilWeek
+
+  const nextPlayers = shouldRewriteHumanPreviewPreset
+    ? game.players.map(player => {
+        if (player.isBot) {
+          return player
+        }
+
+        const previewPlayerId =
+          typeof settings.previewPlayerId === "string" && settings.previewPlayerId.length > 0
+            ? settings.previewPlayerId
+            : null
+        const previewEnabled = nextAutoPlayUntilWeek > 0 && previewPlayerId !== null
+        const previewPreset =
+          previewEnabled
+            ? normalizeBotPresetId(
+                typeof settings.previewBotPreset === "string" && settings.previewBotPreset.length > 0
+                  ? settings.previewBotPreset
+                  : player.botPreset ?? "bot-avg",
+              )
+            : undefined
+
+        return {
+          ...player,
+          botPreset: previewEnabled && player.id === previewPlayerId ? previewPreset : undefined,
+        }
+      })
+    : game.players
+
+  return {
+    ...game,
+    chanceCardsEnabled: nextChanceCardsEnabled,
+    turnTimerSeconds: nextTurnTimerSeconds,
+    turnTimerExpiresAt: null,
+    autoPlayUntilWeek: nextAutoPlayUntilWeek,
+    players: nextPlayers,
   }
 }
 
@@ -1700,7 +1904,7 @@ function getNextLobbySession(session, lobbyUpdate) {
 
   const nextLobby = getNextLobby(session.lobby, lobbyUpdate.clientId, assignedPlayerId, lobbyUpdate.isReady)
   const trimmedPlayerName = lobbyUpdate.playerName?.trim() ?? ""
-  const nextGame =
+  const renamedGame =
     trimmedPlayerName.length === 0
       ? session.game
       : {
@@ -1714,6 +1918,11 @@ function getNextLobbySession(session, lobbyUpdate) {
               : player,
           ),
         }
+  const nextGame = applyLobbySettingsToGame(
+    renamedGame,
+    lobbyUpdate.settings,
+    session.staticData?.operatingConfig?.totalWeeks,
+  )
 
   const nextSession = {
     game: nextGame,
@@ -1791,7 +2000,23 @@ function setupTurnTimer(sessionId) {
   if (!session) return
 
   const game = session.game
-  if (!game || !game.turnTimerSeconds || game.turnTimerSeconds <= 0 || game.isGameOver) return
+  const clearStoredExpiry = () => {
+    if (!game || game.turnTimerExpiresAt === null) {
+      return
+    }
+
+    const nextSession = {
+      ...session,
+      game: { ...game, turnTimerExpiresAt: null },
+    }
+    sessions.set(sessionId, nextSession)
+    broadcastSession(sessionId)
+  }
+
+  if (!game || !game.turnTimerSeconds || game.turnTimerSeconds <= 0 || game.isGameOver) {
+    clearStoredExpiry()
+    return
+  }
 
   // Find a human player who still needs to act this phase
   const lobby = session.lobby
@@ -1802,7 +2027,10 @@ function setupTurnTimer(sessionId) {
     humanPlayerIds.has(p.id) && canPlayerAct(hydratedGame, p.id, session)
   )
 
-  if (!pendingHumanPlayer) return
+  if (!pendingHumanPlayer) {
+    clearStoredExpiry()
+    return
+  }
 
   const expiresAt = Date.now() + game.turnTimerSeconds * 1000
 
@@ -1941,6 +2169,15 @@ function isValidLobbyUpdate(value) {
     (value.isReady === undefined || typeof value.isReady === "boolean") &&
     (value.playerName === undefined || typeof value.playerName === "string") &&
     (value.startGame === undefined || typeof value.startGame === "boolean") &&
+    (value.settings === undefined || (
+      typeof value.settings === "object" &&
+      value.settings !== null &&
+      (value.settings.chanceCardsEnabled === undefined || typeof value.settings.chanceCardsEnabled === "boolean") &&
+      (value.settings.turnTimerSeconds === undefined || (typeof value.settings.turnTimerSeconds === "number" && Number.isFinite(value.settings.turnTimerSeconds))) &&
+      (value.settings.autoPlayUntilWeek === undefined || (typeof value.settings.autoPlayUntilWeek === "number" && Number.isFinite(value.settings.autoPlayUntilWeek))) &&
+      (value.settings.previewPlayerId === undefined || value.settings.previewPlayerId === null || typeof value.settings.previewPlayerId === "string") &&
+      (value.settings.previewBotPreset === undefined || value.settings.previewBotPreset === null || typeof value.settings.previewBotPreset === "string")
+    )) &&
     (value.setSeatBot === undefined || (
       typeof value.setSeatBot === "object" &&
       value.setSeatBot !== null &&
@@ -1979,11 +2216,19 @@ const server = createServer(async (request, response) => {
   }
 
   if (request.method === "GET" && url.pathname === "/health") {
+    const healthDiagnostics = await getLanAddressDiagnostics()
+    const lanAddressLogSignature = JSON.stringify(healthDiagnostics)
+
+    if (lanAddressLogSignature !== lastLanAddressLogSignature) {
+      lastLanAddressLogSignature = lanAddressLogSignature
+      console.info("[session-server] LAN address diagnostics", healthDiagnostics)
+    }
+
     sendJson(response, 200, {
       ok: true,
       sessions: sessions.size,
       activeSessionId,
-      lanAddresses: getLanAddresses(),
+      ...healthDiagnostics,
     })
     return
   }
@@ -2463,7 +2708,7 @@ const server = createServer(async (request, response) => {
 
       if (!isValidLobbyUpdate(body)) {
         sendJson(response, 400, {
-          error: "Lobby updates must include clientId and may include playerId, isReady, playerName, startGame, and setSeatBot.",
+          error: "Lobby updates must include clientId and may include playerId, isReady, playerName, startGame, settings, and setSeatBot.",
         })
         return
       }
@@ -2542,6 +2787,7 @@ const server = createServer(async (request, response) => {
       sessions.set(sessionPath.sessionId, nextSession)
       sendJson(response, 200, nextSession)
       broadcastSession(sessionPath.sessionId)
+      setupTurnTimer(sessionPath.sessionId)
       // If auto-play is configured, kick off bot continuation for all seats
       scheduleAutoPlayContinuation(sessionPath.sessionId)
       return

@@ -51,9 +51,20 @@ type LanSessionConnection = {
   version: number
 }
 
-function shouldReplaceJoinAppUrl(rawUrl: string) {
+function shouldReplaceJoinAppUrl(
+  rawUrl: string,
+  health: Pick<SessionServerHealth, "lanAddresses">,
+  suggestedJoinAppUrl: string,
+) {
   try {
-    return isLocalJoinAppUrl(normalizeJoinAppUrl(rawUrl))
+    const currentUrl = new URL(normalizeJoinAppUrl(rawUrl))
+    const suggestedUrl = new URL(normalizeJoinAppUrl(suggestedJoinAppUrl))
+
+    if (isLocalJoinAppUrl(currentUrl.toString())) {
+      return true
+    }
+
+    return health.lanAddresses.includes(currentUrl.hostname) && currentUrl.hostname !== suggestedUrl.hostname
   } catch {
     return true
   }
@@ -93,6 +104,10 @@ export default function AdminApp() {
       return getDefaultJoinAppUrl()
     }
   }, [joinAppUrl])
+  const effectiveJoinAppUrl = useMemo(
+    () => (serverHealth ? getSuggestedJoinAppUrl(serverHealth) : null),
+    [serverHealth],
+  )
   const hasValidJoinAppUrl = useMemo(() => {
     try {
       normalizeJoinAppUrl(joinAppUrl)
@@ -101,11 +116,28 @@ export default function AdminApp() {
       return false
     }
   }, [joinAppUrl])
-  const adoptSuggestedJoinAppUrl = useCallback((health: Pick<SessionServerHealth, "lanAddresses">) => {
+  const joinLinkDiagnostics = useMemo(() => {
+    if (!serverHealth) {
+      return null
+    }
+
+    const browserHostname = window.location.hostname || "localhost"
+    const savedJoinHost = new URL(normalizedJoinAppUrl).host
+    const suggestedJoinHost = new URL(getSuggestedJoinAppUrl(serverHealth)).host
+    return {
+      browserHostname,
+      savedJoinHost,
+      suggestedJoinHost,
+      preferredLanAddress: serverHealth.preferredLanAddress,
+      lanAddresses: serverHealth.lanAddresses,
+      interfaceLanAddresses: serverHealth.interfaceLanAddresses,
+    }
+  }, [normalizedJoinAppUrl, serverHealth])
+  const adoptSuggestedJoinAppUrl = useCallback((health: Pick<SessionServerHealth, "lanAddresses" | "preferredLanAddress">) => {
     const suggestedJoinAppUrl = getSuggestedJoinAppUrl(health)
 
     setJoinAppUrl(currentJoinAppUrl => {
-      if (!shouldReplaceJoinAppUrl(currentJoinAppUrl)) {
+      if (!shouldReplaceJoinAppUrl(currentJoinAppUrl, health, suggestedJoinAppUrl)) {
         return currentJoinAppUrl
       }
 
@@ -279,8 +311,14 @@ export default function AdminApp() {
     [game],
   )
   const joinUrl = useMemo(
-    () => (lanSession ? buildLanSessionJoinUrl(lanSession.sessionId, lanSession.serverUrl, normalizedJoinAppUrl) : ""),
-    [lanSession, normalizedJoinAppUrl],
+    () => (
+      lanSession
+        ? effectiveJoinAppUrl
+          ? buildLanSessionJoinUrl(lanSession.sessionId, lanSession.serverUrl, effectiveJoinAppUrl)
+          : "loading"
+        : ""
+    ),
+    [effectiveJoinAppUrl, lanSession],
   )
   const duplicateVehicleNumbers = useMemo(() => {
     const counts = new Map<string, number>()
@@ -416,7 +454,8 @@ export default function AdminApp() {
   }
 
   async function handleCopyJoinUrl() {
-    if (!joinUrl) {
+    if (!joinUrl || !effectiveJoinAppUrl) {
+      setStatus("Join URL loading...", "neutral")
       return
     }
 
@@ -728,7 +767,28 @@ export default function AdminApp() {
               Tracked sessions: {serverHealth.sessions}
             </div>
           )}
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            {joinLinkDiagnostics && (
+              <div
+                style={{
+                  color: "#56635a",
+                  fontSize: 12,
+                  display: "grid",
+                  gap: 2,
+                  padding: "10px 12px",
+                  borderRadius: 10,
+                  border: "1px solid #d8dfd5",
+                  background: "#fbfcfb",
+                }}
+              >
+                <div>Saved app host: {joinLinkDiagnostics.savedJoinHost}</div>
+                <div>Suggested app host: {joinLinkDiagnostics.suggestedJoinHost}</div>
+                <div>Browser host: {joinLinkDiagnostics.browserHostname}</div>
+                <div>Server preferred host: {joinLinkDiagnostics.preferredLanAddress ?? "none"}</div>
+                <div>Server LAN order: {joinLinkDiagnostics.lanAddresses.join(", ") || "none detected"}</div>
+                <div>Detected interface IPs: {joinLinkDiagnostics.interfaceLanAddresses.join(", ") || "none detected"}</div>
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
             <button
               type="button"
               onClick={handleReload}
@@ -747,17 +807,19 @@ export default function AdminApp() {
                 <button
                   type="button"
                   onClick={handleCopyJoinUrl}
+                  disabled={!effectiveJoinAppUrl}
                   style={{
                     padding: "8px 12px",
                     borderRadius: 999,
                     border: "1px solid #86a889",
-                    background: "#f7faf6",
+                    background: effectiveJoinAppUrl ? "#f7faf6" : "#edf2eb",
                     color: "#1f5f2c",
-                    cursor: "pointer",
+                    cursor: effectiveJoinAppUrl ? "pointer" : "not-allowed",
                     fontWeight: 700,
+                    opacity: effectiveJoinAppUrl ? 1 : 0.65,
                   }}
                 >
-                  Copy join URL
+                  {effectiveJoinAppUrl ? "Copy join URL" : "Loading..."}
                 </button>
                 <button
                   type="button"

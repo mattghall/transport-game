@@ -1,5 +1,6 @@
 import {
   getBalanceAdjustmentPerTrip,
+  getDemandCapacityForCityIds,
   getCityDemandAbsorptionSize,
   getCityDemandSize,
   getCrewCostForTrips,
@@ -1509,14 +1510,20 @@ export function buildPlayerBureaucracySummary(
         movedCubes: totalCubeMoves,
         vehicleCard,
         demandFleetSize: (() => {
-          const cubesPerTrip = getCubeCapacityPerTrip(game, statsVehicleCard)
-          const tripsPerPeriod = statsRouteTripSummary?.tripsPerWeek ?? 0
-          // Each end-to-end trip serves cubes across all segments simultaneously,
-          // so effective throughput scales with segment count
-          const numSegments = Math.max(1, selectedCityIds.length - 1)
-          const cubesPerVehiclePerPeriod = cubesPerTrip * tripsPerPeriod * numSegments
-          if (cubesPerVehiclePerPeriod <= 0) return ownedFleetSize
-          return Math.max(1, Math.ceil(combinedDemand / cubesPerVehiclePerPeriod))
+          if (statsVehicleCard === null) {
+            return ownedFleetSize
+          }
+
+          const passengerDemand = getDemandCapacityForCityIds(game, selectedCityIds)
+          const tripsPerVehiclePerPeriod = statsRouteTripSummary?.tripsPerWeek ?? 0
+          const passengerCapacityPerVehiclePerPeriod =
+            tripsPerVehiclePerPeriod * statsVehicleCard.totalPassengerCapacity
+
+          if (passengerCapacityPerVehiclePerPeriod <= 0) {
+            return ownedFleetSize
+          }
+
+          return Math.max(1, Math.ceil(passengerDemand / passengerCapacityPerVehiclePerPeriod))
         })(),
         selectedFleetSize: ownedFleetSize,
         statsFuelResource,

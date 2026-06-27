@@ -2,18 +2,40 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { usMap } from "./data/maps/usMap"
 import { loadUserDecks } from "./data/deckData"
 import {
+  type AlternativeCoachingRating,
+  clearCurrentCoachingSession,
+  type CoachingDecision,
+  type CoachingSession,
+  type TopChoiceCoachingRating,
   generateDecisionId,
   generateSessionId,
+  persistCoachingSession,
   saveCurrentCoachingSession,
   summarizeCoachingSession,
-  persistCoachingSession,
-  type CoachingSession,
-  type CoachingDecision,
 } from "./data/coachingStorage"
+import { selectVehicleCoachingCandidates } from "./data/coachingCandidates"
+import {
+  compareOperationsReviewOutcomes,
+  summarizeOperationsReviewOutcome,
+  type OperationsReviewComparison,
+  type OperationsReviewOutcome,
+} from "./data/coachingReview"
 import {
   createGameState,
   DEFAULT_STARTING_MONEY,
 } from "./engine/createGameState"
+import {
+  addBureaucracyServiceSplit,
+  advanceTurn,
+  buyVehicleCard,
+  claimRoute,
+  deleteBureaucracyServicePod,
+  exchangeVehicleCard,
+  markOperationsReady,
+  setBureaucracyRouteVehicleCard,
+  setBureaucracyServicePodCities,
+} from "./engine/actions"
+import { buildPlayerBureaucracySummary, findPlayerBureaucracyPlan } from "./engine/bureaucracy"
 import { getPendingBotPlayerId } from "./bots/actions"
 import { applyBotAction, getBotLegalActions } from "./bots/actions"
 import {
@@ -32,19 +54,23 @@ import {
   type BuyVehicleScoreBreakdown,
   type DrawCityScoreBreakdown,
 } from "./bots/scriptedBot"
+import type { BotAction } from "./bots/types"
 import {
   appendActionLog,
+  getAdvanceTurnLogMessage,
   getBotActionLogMessage,
   getPhaseDiscardLogMessage,
   getNextLocalViewingPlayerId,
 } from "./game/gameHelpers"
 import type { GameState } from "./engine/types"
+import { normalizeGameState } from "./engine/normalizeGameState"
 import Board from "./ui/Board"
 import { PLAYER_SETUP_PRESETS, MAX_SETUP_PLAYERS } from "./gameSetup/defaultPlayers"
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
 type DecisionTypeKey = "operations" | "vehicles" | "cities" | "end-turn"
+type PodAlternativeMode = "add-city" | "remove-city" | "delete-pod"
 
 const DECISION_TYPE_LABELS: Record<DecisionTypeKey, string> = {
   operations: "Operations (route claims, service pods)",
@@ -58,9 +84,13 @@ function getDecisionType(actionType: string): DecisionTypeKey {
     case "claim-route":
     case "create-service-pod":
     case "remove-pod-city":
+    case "delete-service-pod":
+    case "assign-pod-vehicle":
+    case "add-second-vehicle-to-pod":
     case "ready-operations":
       return "operations"
     case "buy-vehicle":
+    case "exchange-vehicle":
       return "vehicles"
     case "draw-city-offer":
     case "keep-city-offer":
@@ -68,6 +98,358 @@ function getDecisionType(actionType: string): DecisionTypeKey {
       return "cities"
     default:
       return "end-turn"
+  }
+}
+
+function getCandidateActionKey(candidate: ScoredBotCandidate) {
+  return JSON.stringify(candidate.action)
+}
+
+function getPodActionTargetRouteId(action: BotAction): string | null {
+  switch (action.type) {
+    case "create-service-pod":
+      return action.routeId
+    case "remove-pod-city":
+      return action.sourceRouteId
+    case "delete-service-pod":
+      return action.routeId
+    default:
+      return null
+  }
+}
+
+function getPodActionCorridorId(action: BotAction): string | null {
+  switch (action.type) {
+    case "create-service-pod":
+    case "remove-pod-city":
+    case "delete-service-pod":
+      return action.corridorId
+    default:
+      return null
+  }
+}
+
+function getPodActionFinalCityIds(
+  action: BotAction,
+  selectedCityIdsByRouteId: Record<string, string[]>,
+): string[] | null {
+  switch (action.type) {
+    case "create-service-pod":
+      return action.cityIds
+    case "remove-pod-city":
+      return (selectedCityIdsByRouteId[action.sourceRouteId] ?? []).filter(cityId => cityId !== action.cityId)
+    case "delete-service-pod":
+      return []
+    default:
+      return null
+  }
+}
+
+function isStrictSuperset(candidateCityIds: string[], baseCityIds: string[]) {
+  return candidateCityIds.length > baseCityIds.length && baseCityIds.every(cityId => candidateCityIds.includes(cityId))
+}
+
+function isStrictSubset(candidateCityIds: string[], baseCityIds: string[]) {
+  return candidateCityIds.length < baseCityIds.length && candidateCityIds.every(cityId => baseCityIds.includes(cityId))
+}
+
+function getPodVehicleTypeLabel(mode: "rail" | "air" | "bus") {
+  return mode === "rail" ? "train" : mode
+}
+
+function isPodBatchAction(action: BotAction) {
+  return action.type === "create-service-pod" ||
+    action.type === "remove-pod-city" ||
+    action.type === "assign-pod-vehicle" ||
+    action.type === "add-second-vehicle-to-pod"
+}
+
+type PendingPodProposal = {
+  vehicleTypeLabel: string
+  proposedCityIds: string[]
+  cityIdsByCandidateIndex: Record<number, string[]>
+  addOptionIndexes: number[]
+  removeOptionIndexes: number[]
+  deleteOptionIndex: number | null
+}
+
+type PendingPodReview = {
+  botPlayerId: string
+  botPlayerName: string
+  corridorId: string
+  routeId: string
+}
+
+function buildPodProposalDecision(
+  game: GameState,
+  playerId: string,
+  chosenAction: BotAction,
+  allCandidates: ScoredBotCandidate[],
+): { candidates: ScoredBotCandidate[]; podProposal: PendingPodProposal } | null {
+  const routeId = getPodActionTargetRouteId(chosenAction)
+  const corridorId = getPodActionCorridorId(chosenAction)
+  if (!routeId || !corridorId) {
+    return null
+  }
+
+  const summary = buildPlayerBureaucracySummary(game, playerId)
+  const routePlans = summary?.routePlans ?? []
+  const corridorPlans = routePlans.filter(plan => plan.corridorId === corridorId)
+  const selectedCityIdsByRouteId = Object.fromEntries(
+    routePlans.map(plan => [plan.id, plan.selectedCityIds]),
+  )
+  const routePlan = routePlans.find(plan => plan.id === routeId) ?? null
+  const representativePlan = routePlan ?? corridorPlans[0] ?? null
+  if (!representativePlan) {
+    return null
+  }
+
+  const proposedCityIds = getPodActionFinalCityIds(chosenAction, selectedCityIdsByRouteId)
+  if (!proposedCityIds) {
+    return null
+  }
+
+  const relatedCandidates = allCandidates.filter(candidate => {
+    if (candidate.action.type !== "create-service-pod" && candidate.action.type !== "remove-pod-city") {
+      return false
+    }
+    return (
+      getPodActionCorridorId(candidate.action) === corridorId &&
+      getPodActionTargetRouteId(candidate.action) === routeId
+    )
+  })
+
+  const orderedCandidates: ScoredBotCandidate[] = []
+  const seenCityKeys = new Set<string>()
+  const chosenKey = JSON.stringify(chosenAction)
+
+  const pushCandidate = (candidate: ScoredBotCandidate | null) => {
+    if (!candidate) return
+    const cityIds = getPodActionFinalCityIds(candidate.action, selectedCityIdsByRouteId)
+    if (!cityIds) return
+    const cityKey = cityIds.join("|")
+    if (seenCityKeys.has(cityKey)) return
+    orderedCandidates.push(candidate)
+    seenCityKeys.add(cityKey)
+  }
+
+  pushCandidate(
+    relatedCandidates.find(candidate => JSON.stringify(candidate.action) === chosenKey) ??
+      allCandidates.find(candidate => JSON.stringify(candidate.action) === chosenKey) ??
+      {
+        action: chosenAction,
+        label: `Proposed pod: ${proposedCityIds.join(" – ")}`,
+        score: relatedCandidates[0]?.score ?? 0,
+        breakdown: null,
+      },
+  )
+
+  relatedCandidates
+    .filter(candidate => JSON.stringify(candidate.action) !== chosenKey)
+    .sort((a, b) => b.score - a.score)
+    .forEach(pushCandidate)
+
+  if (routePlan) {
+    const deleteCandidate: ScoredBotCandidate = {
+      action: { type: "delete-service-pod", corridorId, routeId },
+      label: "Delete pod",
+      score: (orderedCandidates[0]?.score ?? 0) - 25,
+      breakdown: null,
+    }
+    pushCandidate(deleteCandidate)
+  }
+
+  const cityIdsByCandidateIndex: Record<number, string[]> = {}
+  const addOptionIndexes: number[] = []
+  const removeOptionIndexes: number[] = []
+  let deleteOptionIndex: number | null = null
+
+  orderedCandidates.forEach((candidate, index) => {
+    const cityIds = getPodActionFinalCityIds(candidate.action, selectedCityIdsByRouteId) ?? []
+    cityIdsByCandidateIndex[index] = cityIds
+    if (candidate.action.type === "delete-service-pod") {
+      deleteOptionIndex = index
+      return
+    }
+    if (isStrictSuperset(cityIds, proposedCityIds)) {
+      addOptionIndexes.push(index)
+    } else if (isStrictSubset(cityIds, proposedCityIds)) {
+      removeOptionIndexes.push(index)
+    }
+  })
+
+  return {
+    candidates: orderedCandidates,
+    podProposal: {
+      vehicleTypeLabel: getPodVehicleTypeLabel(representativePlan.route.mode),
+      proposedCityIds,
+      cityIdsByCandidateIndex,
+      addOptionIndexes,
+      removeOptionIndexes,
+      deleteOptionIndex,
+    },
+  }
+}
+
+function buildPendingPodReviewDecision(
+  game: GameState,
+  review: PendingPodReview,
+  weights: Partial<Record<string, number>>,
+): PendingDecision | null {
+  const summary = buildPlayerBureaucracySummary(game, review.botPlayerId)
+  const plan = summary?.routePlans.find(
+    candidate =>
+      candidate.id === review.routeId &&
+      candidate.corridorId === review.corridorId &&
+      !candidate.isDisconnected &&
+      candidate.selectedCityIds.length >= 2,
+  ) ?? null
+  if (!plan) {
+    return null
+  }
+
+  const legalActions = getBotLegalActions(game, review.botPlayerId)
+  const allCandidates = getTopScoredBotCandidates(game, review.botPlayerId, weights, Math.max(legalActions.length, 1))
+  const podProposalDecision = buildPodProposalDecision(
+    game,
+    review.botPlayerId,
+    {
+      type: "create-service-pod",
+      corridorId: plan.corridorId,
+      routeId: plan.id,
+      cityIds: plan.selectedCityIds,
+    },
+    allCandidates,
+  )
+  if (!podProposalDecision) {
+    return null
+  }
+
+  return {
+    botPlayerId: review.botPlayerId,
+    botPlayerName: review.botPlayerName,
+    decisionType: "operations",
+    candidates: podProposalDecision.candidates,
+    chosenIndex: 0,
+    nextPlannedLabel: null,
+    operationsPlan: null,
+    podProposal: podProposalDecision.podProposal,
+    operationsReview: false,
+    vehicleReview: false,
+    operationsReviewBaseline: null,
+    operationsReviewEdits: [],
+  }
+}
+
+function selectCoachingCandidates(
+  allCandidates: ScoredBotCandidate[],
+  decisionType: DecisionTypeKey,
+): ScoredBotCandidate[] {
+  if (decisionType === "vehicles") {
+    return selectVehicleCoachingCandidates(
+      allCandidates.filter(candidate => {
+        const candidateType = getDecisionType(candidate.action.type)
+        return candidateType === "vehicles" || candidate.action.type === "end-turn"
+      }),
+    )
+  }
+
+  if (decisionType === "operations") {
+    const operationsCandidates = allCandidates.filter(
+      candidate => getDecisionType(candidate.action.type) === "operations",
+    )
+    const topScore = operationsCandidates[0]?.score ?? 0
+    const shortlisted = operationsCandidates.filter((candidate, index) =>
+      index === 0 ||
+      (isFinite(candidate.score) &&
+        candidate.score > Number.NEGATIVE_INFINITY &&
+        candidate.score > topScore - 200),
+    )
+    const representatives = [
+      operationsCandidates.find(
+        candidate => candidate.action.type === "claim-route" && candidate.action.mode === "rail",
+      ),
+      operationsCandidates.find(
+        candidate => candidate.action.type === "claim-route" && candidate.action.mode === "air",
+      ),
+      operationsCandidates.find(candidate => candidate.action.type === "create-service-pod"),
+      operationsCandidates.find(candidate => candidate.action.type === "assign-pod-vehicle"),
+      operationsCandidates.find(candidate => candidate.action.type === "add-second-vehicle-to-pod"),
+      operationsCandidates.find(candidate => candidate.action.type === "remove-pod-city"),
+      operationsCandidates.find(candidate => candidate.action.type === "ready-operations"),
+    ].filter((candidate): candidate is ScoredBotCandidate => candidate !== undefined)
+
+    const deduped = new Map<string, ScoredBotCandidate>()
+    for (const candidate of [...shortlisted, ...representatives]) {
+      deduped.set(getCandidateActionKey(candidate), candidate)
+    }
+
+    return [...deduped.values()].sort((a, b) => b.score - a.score)
+  }
+
+  const topScore = allCandidates[0]?.score ?? 0
+  return allCandidates.filter((candidate, index) =>
+    index === 0 ||
+    (isFinite(candidate.score) &&
+      candidate.score > Number.NEGATIVE_INFINITY &&
+      candidate.score > topScore - 200),
+  )
+}
+
+function reorderCandidatesToChosenAction(
+  candidates: ScoredBotCandidate[],
+  allCandidates: ScoredBotCandidate[],
+  chosenAction: ScoredBotCandidate["action"],
+): ScoredBotCandidate[] {
+  const chosenKey = JSON.stringify(chosenAction)
+  const chosenCandidate =
+    candidates.find(candidate => getCandidateActionKey(candidate) === chosenKey) ??
+    allCandidates.find(candidate => getCandidateActionKey(candidate) === chosenKey) ??
+    null
+
+  if (!chosenCandidate) {
+    return candidates
+  }
+
+  const reorderedCandidates = [
+    chosenCandidate,
+    ...candidates.filter(candidate => {
+      if (getCandidateActionKey(candidate) === chosenKey) {
+        return false
+      }
+
+      if (
+        chosenCandidate.action.type === "buy-vehicle" &&
+        candidate.action.type === "buy-vehicle" &&
+        candidate.action.cardId === chosenCandidate.action.cardId
+      ) {
+        return false
+      }
+
+      return true
+    }),
+  ]
+
+  return reorderedCandidates
+}
+
+function normalizeVehicleDecisionCandidates(decision: PendingDecision): PendingDecision {
+  if (decision.decisionType !== "vehicles" || decision.vehicleReview || decision.podProposal) {
+    return decision
+  }
+
+  const trimmedCandidates = selectVehicleCoachingCandidates(decision.candidates)
+  if (
+    trimmedCandidates.length === decision.candidates.length &&
+    trimmedCandidates.every((candidate, index) => getCandidateActionKey(candidate) === getCandidateActionKey(decision.candidates[index]!))
+  ) {
+    return decision
+  }
+
+  return {
+    ...decision,
+    candidates: trimmedCandidates,
+    chosenIndex: 0,
   }
 }
 
@@ -90,11 +472,121 @@ type PendingDecision = {
   chosenIndex: number
   nextPlannedLabel: string | null
   operationsPlan: import("./bots/scriptedBot").OperationsPlan | null
+  podProposal: PendingPodProposal | null
+  operationsReview: boolean
+  vehicleReview: boolean
+  operationsReviewBaseline: OperationsReviewOutcome | null
+  operationsReviewEdits: string[]
 }
 
 type AppPhase = "setup" | "playing" | "done"
 
+type PersistedCoachAppState = {
+  version: 1
+  appPhase: AppPhase
+  settings: {
+    bots: BotSlotConfig[]
+    pausedDecisionTypes: DecisionTypeKey[]
+  }
+  game: GameState | null
+  viewingPlayerId: string | null
+  pendingDecision: PendingDecision | null
+  podReviewQueue: PendingPodReview[]
+  session: CoachingSession | null
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+const COACH_APP_STORAGE_KEY = "coaching-app-state-v1"
+
+function createDefaultCoachSettings(): CoachSettings {
+  return {
+    bots: [
+      { name: "Stickbug 1", presetId: "bot-best-3p", paused: true },
+      { name: "Stickbug 2", presetId: "bot-best-3p", paused: true },
+      { name: "Stickbug 3", presetId: "bot-best-3p", paused: true },
+    ],
+    pausedDecisionTypes: new Set<DecisionTypeKey>(["operations", "vehicles", "cities"]),
+  }
+}
+
+function isBotPresetId(value: unknown): value is BotPresetId {
+  return typeof value === "string" && BOT_PRESET_IDS.includes(value as BotPresetId)
+}
+
+function loadPersistedCoachAppState(): PersistedCoachAppState | null {
+  try {
+    const raw = sessionStorage.getItem(COACH_APP_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<PersistedCoachAppState>
+    if (parsed.version !== 1) return null
+
+    const defaultSettings = createDefaultCoachSettings()
+    const bots = Array.isArray(parsed.settings?.bots) && parsed.settings.bots.length > 0
+      ? parsed.settings.bots.slice(0, MAX_SETUP_PLAYERS).map((bot, index) => ({
+          name:
+            typeof bot?.name === "string" && bot.name.trim().length > 0
+              ? bot.name
+              : defaultSettings.bots[index]?.name ?? `Stickbug ${index + 1}`,
+          presetId: isBotPresetId(bot?.presetId)
+            ? bot.presetId
+            : (defaultSettings.bots[index]?.presetId ?? "bot-best-3p"),
+          paused: typeof bot?.paused === "boolean" ? bot.paused : true,
+        }))
+      : defaultSettings.bots
+    const pausedDecisionTypes = new Set<DecisionTypeKey>(
+      Array.isArray(parsed.settings?.pausedDecisionTypes)
+        ? parsed.settings.pausedDecisionTypes.filter((key): key is DecisionTypeKey =>
+            key === "operations" || key === "vehicles" || key === "cities" || key === "end-turn",
+          )
+        : [...defaultSettings.pausedDecisionTypes],
+    )
+    const normalizedGame = parsed.game ? normalizeGameState(parsed.game as GameState) : null
+    const appPhase =
+      parsed.appPhase === "playing" || parsed.appPhase === "done" || parsed.appPhase === "setup"
+        ? parsed.appPhase
+        : "setup"
+
+    return {
+      version: 1,
+      appPhase:
+        (appPhase === "playing" || appPhase === "done") && normalizedGame
+          ? appPhase
+          : "setup",
+      settings: {
+        bots,
+        pausedDecisionTypes: pausedDecisionTypes.size > 0 ? [...pausedDecisionTypes] : [...defaultSettings.pausedDecisionTypes],
+      },
+      game: normalizedGame,
+      viewingPlayerId: typeof parsed.viewingPlayerId === "string" ? parsed.viewingPlayerId : null,
+      pendingDecision: parsed.pendingDecision
+        ? normalizeVehicleDecisionCandidates({
+            ...parsed.pendingDecision,
+            operationsPlan: parsed.pendingDecision.operationsPlan ?? null,
+            podProposal: parsed.pendingDecision.podProposal ?? null,
+            operationsReview: parsed.pendingDecision.operationsReview ?? false,
+            vehicleReview: parsed.pendingDecision.vehicleReview ?? false,
+            operationsReviewBaseline: parsed.pendingDecision.operationsReviewBaseline ?? null,
+            operationsReviewEdits: Array.isArray(parsed.pendingDecision.operationsReviewEdits)
+              ? parsed.pendingDecision.operationsReviewEdits
+              : [],
+          } as PendingDecision)
+        : null,
+      podReviewQueue: Array.isArray(parsed.podReviewQueue) ? parsed.podReviewQueue : [],
+      session: parsed.session ?? null,
+    }
+  } catch {
+    return null
+  }
+}
+
+function savePersistedCoachAppState(state: PersistedCoachAppState) {
+  try {
+    sessionStorage.setItem(COACH_APP_STORAGE_KEY, JSON.stringify(state))
+  } catch {
+    // non-fatal
+  }
+}
 
 const CARD_STYLE: React.CSSProperties = {
   borderRadius: 18,
@@ -126,8 +618,25 @@ const BUTTON_SECONDARY: React.CSSProperties = {
   fontSize: 14,
 }
 
-function scorePts(n: number) {
-  return `${n.toFixed(1)} pts`
+function formatScoreValue(value: number | null | undefined) {
+  return typeof value === "number" ? value.toFixed(1) : "—"
+}
+
+function scorePts(n: number | null | undefined) {
+  return typeof n === "number" ? `${n.toFixed(1)} pts` : "—"
+}
+
+function formatSignedCount(value: number) {
+  const rounded = Math.round(value)
+  return `${rounded >= 0 ? "+" : ""}${rounded.toLocaleString()}`
+}
+
+function formatMoneyMillions(value: number) {
+  return `$${(value / 1_000_000).toFixed(1)}M`
+}
+
+function formatSignedMoneyMillions(value: number) {
+  return `${value >= 0 ? "+" : "-"}$${(Math.abs(value) / 1_000_000).toFixed(1)}M`
 }
 
 function KeepCityBreakdownRow({ breakdown }: { breakdown: KeepCityScoreBreakdown }) {
@@ -230,20 +739,23 @@ function BuyVehicleBreakdownRow({ breakdown }: { breakdown: BuyVehicleScoreBreak
 
 
 export default function CoachApp() {
-  const [appPhase, setAppPhase] = useState<AppPhase>("setup")
+  const restoredStateRef = useRef<PersistedCoachAppState | null>(loadPersistedCoachAppState())
+  const restoredState = restoredStateRef.current
+  const defaultSettings = useMemo(() => createDefaultCoachSettings(), [])
+  const [appPhase, setAppPhase] = useState<AppPhase>(() => restoredState?.appPhase ?? "setup")
   const [settings, setSettings] = useState<CoachSettings>(() => ({
-    bots: [
-      { name: "Stickbug 1", presetId: "bot-best-3p", paused: true },
-      { name: "Stickbug 2", presetId: "bot-best-3p", paused: true },
-      { name: "Stickbug 3", presetId: "bot-best-3p", paused: true },
-    ],
-    pausedDecisionTypes: new Set<DecisionTypeKey>(["operations", "vehicles", "cities"]),
+    bots: restoredState?.settings.bots ?? defaultSettings.bots,
+    pausedDecisionTypes: new Set<DecisionTypeKey>(
+      restoredState?.settings.pausedDecisionTypes ?? [...defaultSettings.pausedDecisionTypes],
+    ),
   }))
-  const [game, setGame] = useState<GameState | null>(null)
-  const [viewingPlayerId, setViewingPlayerId] = useState<string | null>(null)
+  const [game, setGame] = useState<GameState | null>(() => restoredState?.game ?? null)
+  const [viewingPlayerId, setViewingPlayerId] = useState<string | null>(() => restoredState?.viewingPlayerId ?? null)
   const [isPeriodSummaryVisible, setIsPeriodSummaryVisible] = useState(false)
-  const [pendingDecision, setPendingDecision] = useState<PendingDecision | null>(null)
-  const [session, setSession] = useState<CoachingSession | null>(null)
+  const [pendingDecision, setPendingDecision] = useState<PendingDecision | null>(() => restoredState?.pendingDecision ?? null)
+  const [activePodAlternativeMode, setActivePodAlternativeMode] = useState<PodAlternativeMode | null>(null)
+  const [podReviewQueue, setPodReviewQueue] = useState<PendingPodReview[]>(() => restoredState?.podReviewQueue ?? [])
+  const [session, setSession] = useState<CoachingSession | null>(() => restoredState?.session ?? null)
   const [isSaving, setIsSaving] = useState(false)
   const [saveMessage, setSaveMessage] = useState<string | null>(null)
 
@@ -253,6 +765,27 @@ export default function CoachApp() {
 
   useEffect(() => { gameRef.current = game }, [game])
   useEffect(() => { pendingDecisionRef.current = pendingDecision }, [pendingDecision])
+  useEffect(() => { setActivePodAlternativeMode(null) }, [pendingDecision])
+  useEffect(() => {
+    if (session) {
+      saveCurrentCoachingSession(session)
+    }
+  }, [session])
+  useEffect(() => {
+    savePersistedCoachAppState({
+      version: 1,
+      appPhase,
+      settings: {
+        bots: settings.bots,
+        pausedDecisionTypes: [...settings.pausedDecisionTypes],
+      },
+      game,
+      viewingPlayerId,
+      pendingDecision,
+      podReviewQueue,
+      session,
+    })
+  }, [appPhase, settings, game, viewingPlayerId, pendingDecision, podReviewQueue, session])
 
   // ── Setup helpers ──────────────────────────────────────────────────────────
 
@@ -317,6 +850,7 @@ export default function CoachApp() {
 
     setGame(initialGame)
     setViewingPlayerId(initialGame.players[0]?.id ?? null)
+    setPodReviewQueue([])
     setSession(newSession)
     saveCurrentCoachingSession(newSession)
     botTurnSignatureRef.current = null
@@ -329,6 +863,20 @@ export default function CoachApp() {
     () => new Set(game?.players.map(p => p.id) ?? []),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [game?.players],
+  )
+  const boardGame = useMemo(() => {
+    if (!game || !pendingDecision || game.currentPlayerId === pendingDecision.botPlayerId) {
+      return game
+    }
+
+    return {
+      ...game,
+      currentPlayerId: pendingDecision.botPlayerId,
+    }
+  }, [game, pendingDecision])
+  const cityNameById = useMemo(
+    () => new Map((game?.cities ?? []).map(city => [city.id, city.name])),
+    [game?.cities],
   )
 
   useEffect(() => {
@@ -369,39 +917,171 @@ export default function CoachApp() {
     if (legalActions.length === 0) return
 
     // Determine what type the top action is
-    const weights = game.botPresetWeightsById?.[botSlot?.presetId ?? ""] ?? {}
-    const allCandidates = getTopScoredBotCandidates(game, pendingBotId, weights, 8)
-    // Filter out non-viable alternatives (score -Infinity or extremely negative relative to top)
-    const topScore = allCandidates[0]?.score ?? 0
-    const candidates = allCandidates.filter((c, i) =>
-      i === 0 ||
-      (isFinite(c.score) && c.score > Number.NEGATIVE_INFINITY && c.score > topScore - 200)
+    const botPlayer = game.players.find(p => p.id === pendingBotId) ?? null
+    const controller = createPresetBotController(
+      pendingBotId,
+      getPlayerBotPreset(botPlayer),
+      game.botPresetWeightsById,
     )
-    const topAction = candidates[0]?.action ?? legalActions[0]!
-    const decisionType = getDecisionType(topAction.type)
+    const chosenAction = controller.pickAction({
+      game,
+      playerId: pendingBotId,
+      legalActions,
+      phase: game.currentPhase,
+    })
+    const weights = game.botPresetWeightsById?.[botSlot?.presetId ?? ""] ?? {}
+    const allCandidates = getTopScoredBotCandidates(game, pendingBotId, weights, legalActions.length)
+    const decisionType = getDecisionType(chosenAction.type)
+    const podProposalDecision =
+      chosenAction.type === "create-service-pod" || chosenAction.type === "remove-pod-city"
+        ? buildPodProposalDecision(game, pendingBotId, chosenAction, allCandidates)
+        : null
+    const candidates = podProposalDecision
+      ? podProposalDecision.candidates
+      : reorderCandidatesToChosenAction(
+          selectCoachingCandidates(allCandidates, decisionType),
+          allCandidates,
+          chosenAction,
+        )
 
     const isPausedType = settings.pausedDecisionTypes.has(decisionType)
 
     // While the period summary is open, only allow ready-bureaucracy through.
     // All other actions wait until the user closes the summary.
-    if (isPeriodSummaryVisible && topAction.type !== "ready-bureaucracy") {
+    if (isPeriodSummaryVisible && chosenAction.type !== "ready-bureaucracy") {
       botTurnSignatureRef.current = null
       return
     }
 
-    // Only pause if there are real alternatives to compare
-    const hasViableAlternatives = candidates.length > 1
-    if (shouldPause && isPausedType && hasViableAlternatives && !isPeriodSummaryVisible) {
-      const botPlayer = game.players.find(p => p.id === pendingBotId)
+    if (shouldPause && isPausedType && decisionType === "operations" && !isPeriodSummaryVisible) {
+      let workingGame = game
 
+      for (let step = 0; step < 40; step++) {
+        const loopLegalActions = getBotLegalActions(workingGame, pendingBotId)
+        if (loopLegalActions.length === 0) {
+          break
+        }
+        const loopController = createPresetBotController(
+          pendingBotId,
+          getPlayerBotPreset(workingGame.players.find(p => p.id === pendingBotId) ?? null),
+          workingGame.botPresetWeightsById,
+        )
+        const loopAction = loopController.pickAction({
+          game: workingGame,
+          playerId: pendingBotId,
+          legalActions: loopLegalActions,
+          phase: workingGame.currentPhase,
+        })
+        if (loopAction.type === "ready-operations" || loopAction.type === "end-turn") {
+          break
+        }
+
+        const advancedGame = applyBotAction(workingGame, pendingBotId, loopAction)
+        const actionMessage = getBotActionLogMessage(workingGame, advancedGame, loopAction)
+        workingGame = appendActionLog(workingGame, advancedGame, actionMessage, pendingBotId)
+      }
+
+      const finalSummary = buildPlayerBureaucracySummary(workingGame, pendingBotId)
+
+      botTurnSignatureRef.current = null
+      setPodReviewQueue([])
+      setGame(workingGame)
+      setViewingPlayerId(prev => getNextLocalViewingPlayerId(workingGame, prev) ?? workingGame.players[0]?.id ?? prev)
+      setPendingDecision({
+        botPlayerId: pendingBotId,
+        botPlayerName: botPlayer?.name ?? pendingBotId,
+        decisionType: "operations",
+        candidates: [],
+        chosenIndex: 0,
+        nextPlannedLabel: null,
+        operationsPlan: null,
+        podProposal: null,
+        operationsReview: true,
+        vehicleReview: false,
+        operationsReviewBaseline: finalSummary ? summarizeOperationsReviewOutcome(finalSummary) : null,
+        operationsReviewEdits: [],
+      })
+      return
+    }
+
+    if (shouldPause && isPausedType && isPodBatchAction(chosenAction) && !isPeriodSummaryVisible) {
+      let workingGame = game
+      const touchedCorridorIds = new Set<string>()
+
+      for (let step = 0; step < 20; step++) {
+        const loopLegalActions = getBotLegalActions(workingGame, pendingBotId)
+        if (loopLegalActions.length === 0) {
+          break
+        }
+        const loopController = createPresetBotController(
+          pendingBotId,
+          getPlayerBotPreset(workingGame.players.find(p => p.id === pendingBotId) ?? null),
+          workingGame.botPresetWeightsById,
+        )
+        const loopAction = loopController.pickAction({
+          game: workingGame,
+          playerId: pendingBotId,
+          legalActions: loopLegalActions,
+          phase: workingGame.currentPhase,
+        })
+        if (!isPodBatchAction(loopAction)) {
+          break
+        }
+
+        const actionCorridorId =
+          getPodActionCorridorId(loopAction) ??
+          (loopAction.type === "assign-pod-vehicle"
+            ? buildPlayerBureaucracySummary(workingGame, pendingBotId)?.routePlans.find(plan => plan.id === loopAction.routeId)?.corridorId
+            : null)
+        if (actionCorridorId) {
+          touchedCorridorIds.add(actionCorridorId)
+        }
+
+        const advancedGame = applyBotAction(workingGame, pendingBotId, loopAction)
+        const actionMessage = getBotActionLogMessage(workingGame, advancedGame, loopAction)
+        workingGame = appendActionLog(workingGame, advancedGame, actionMessage, pendingBotId)
+      }
+
+      const finalSummary = buildPlayerBureaucracySummary(workingGame, pendingBotId)
+      const reviews: PendingPodReview[] =
+        finalSummary?.routePlans
+          .filter(
+            plan =>
+              touchedCorridorIds.has(plan.corridorId) &&
+              !plan.isDisconnected &&
+              plan.selectedCityIds.length >= 2,
+          )
+          .sort((planA, planB) => planA.corridorId.localeCompare(planB.corridorId) || planA.slotIndex - planB.slotIndex)
+          .map(plan => ({
+            botPlayerId: pendingBotId,
+            botPlayerName: botPlayer?.name ?? pendingBotId,
+            corridorId: plan.corridorId,
+            routeId: plan.id,
+          })) ?? []
+
+      const [firstReview, ...remainingReviews] = reviews
+      const firstDecision = firstReview ? buildPendingPodReviewDecision(workingGame, firstReview, weights) : null
+
+      botTurnSignatureRef.current = null
+      setGame(workingGame)
+      setViewingPlayerId(prev => getNextLocalViewingPlayerId(workingGame, prev) ?? workingGame.players[0]?.id ?? prev)
+      setPodReviewQueue(remainingReviews)
+      setPendingDecision(firstDecision)
+      return
+    }
+
+    // Pod proposals need explicit confirmation even if the bot only found one viable pod shape.
+    const hasViableAlternatives = candidates.length > 1
+    const shouldPauseForReview = hasViableAlternatives || podProposalDecision !== null
+    if (shouldPause && isPausedType && shouldPauseForReview && !isPeriodSummaryVisible) {
       // For operations: compute plan asynchronously after pause is set (avoid blocking main thread)
       let operationsPlan: import("./bots/scriptedBot").OperationsPlan | null = null
       let nextPlannedLabel: string | null = null
       if (decisionType !== "operations") {
         // Peek one step ahead for non-operations decisions
         try {
-          if (topAction) {
-            const simGame = applyBotAction(game, pendingBotId, topAction)
+          if (chosenAction) {
+            const simGame = applyBotAction(game, pendingBotId, chosenAction)
             const nextPending = getPendingBotPlayerId(simGame, botPlayerIds)
             if (nextPending === pendingBotId) {
               const simWeights = simGame.botPresetWeightsById?.[botSlot?.presetId ?? ""] ?? {}
@@ -420,6 +1100,11 @@ export default function CoachApp() {
         chosenIndex: 0,
         nextPlannedLabel,
         operationsPlan,
+        podProposal: podProposalDecision?.podProposal ?? null,
+        operationsReview: false,
+        vehicleReview: false,
+        operationsReviewBaseline: null,
+        operationsReviewEdits: [],
       })
       return
     }
@@ -474,6 +1159,33 @@ export default function CoachApp() {
     return () => { cancelled = true; window.clearTimeout(id) }
   }, [pendingDecision, settings])
 
+  const operationsReviewComparison = useMemo<OperationsReviewComparison | null>(() => {
+    if (!game || !pendingDecision?.operationsReview || !pendingDecision.operationsReviewBaseline) {
+      return null
+    }
+
+    const summary = buildPlayerBureaucracySummary(game, pendingDecision.botPlayerId)
+    if (!summary) {
+      return null
+    }
+
+    return compareOperationsReviewOutcomes(
+      pendingDecision.operationsReviewBaseline,
+      summarizeOperationsReviewOutcome(summary),
+    )
+  }, [game, pendingDecision])
+
+  useEffect(() => {
+    if (!pendingDecision) {
+      return
+    }
+
+    const normalizedDecision = normalizeVehicleDecisionCandidates(pendingDecision)
+    if (normalizedDecision !== pendingDecision) {
+      setPendingDecision(normalizedDecision)
+    }
+  }, [pendingDecision])
+
   // Check for game over after each game update
   useEffect(() => {
     if (game?.isGameOver && appPhase === "playing" && !pendingDecision) {
@@ -486,7 +1198,7 @@ export default function CoachApp() {
   const executeDecision = useCallback((
     decision: PendingDecision,
     chosenCandidateIndex: number,
-    rating: "accept" | "reject",
+    rating: TopChoiceCoachingRating | AlternativeCoachingRating,
     preferredIndex: number | null,
   ) => {
     const currentGame = gameRef.current
@@ -521,6 +1233,7 @@ export default function CoachApp() {
         label: c.label,
         breakdown: c.breakdown,
       })),
+      botChoiceIndex: 0,
       chosenIndex: chosenCandidateIndex,
       rating,
       preferredIndex,
@@ -533,25 +1246,41 @@ export default function CoachApp() {
       return updated
     })
 
+    let remainingPodReviews = podReviewQueue
+    let nextPendingDecision: PendingDecision | null = null
+    while (remainingPodReviews.length > 0 && !nextPendingDecision) {
+      const [nextPodReview, ...rest] = remainingPodReviews
+      remainingPodReviews = rest
+      nextPendingDecision = buildPendingPodReviewDecision(
+        nextGame,
+        nextPodReview,
+        botPreset ? (currentGame.botPresetWeightsById?.[botPreset] ?? {}) : {},
+      )
+    }
+
     botTurnSignatureRef.current = null
-    setPendingDecision(null)
+    setPodReviewQueue(remainingPodReviews)
+    setPendingDecision(nextPendingDecision)
     setGame(nextGame)
     setViewingPlayerId(prev => getNextLocalViewingPlayerId(nextGame, prev) ?? nextGame.players[0]?.id ?? prev)
-  }, [session])
+  }, [podReviewQueue, session])
 
-  const handleAccept = useCallback(() => {
+  const handleRateTopChoice = useCallback((rating: TopChoiceCoachingRating) => {
     if (!pendingDecision) return
-    executeDecision(pendingDecision, 0, "accept", null)
+    executeDecision(pendingDecision, 0, rating, null)
   }, [pendingDecision, executeDecision])
 
-  const handleReject = useCallback((preferredIndex: number) => {
+  const handleRateAlternative = useCallback((
+    preferredIndex: number,
+    rating: AlternativeCoachingRating,
+  ) => {
     if (!pendingDecision) return
-    executeDecision(pendingDecision, preferredIndex, "reject", preferredIndex)
+    executeDecision(pendingDecision, preferredIndex, rating, preferredIndex)
   }, [pendingDecision, executeDecision])
 
   const handleSkip = useCallback(() => {
     if (!pendingDecision) return
-    executeDecision(pendingDecision, 0, "accept", null)
+    executeDecision(pendingDecision, 0, "fine", null)
   }, [pendingDecision, executeDecision])
 
   // ── Save session ───────────────────────────────────────────────────────────
@@ -562,6 +1291,7 @@ export default function CoachApp() {
     try {
       const finalSession = { ...session, endedAt: new Date().toISOString() }
       await persistCoachingSession(finalSession)
+      setSession(finalSession)
       setSaveMessage(`Saved: ${summarizeCoachingSession(finalSession)}`)
     } catch {
       setSaveMessage("Failed to save session.")
@@ -570,11 +1300,434 @@ export default function CoachApp() {
     }
   }, [session])
 
+  useEffect(() => {
+    if (!session || session.decisions.length === 0) {
+      return
+    }
+
+    const persistId = window.setTimeout(() => {
+      void persistCoachingSession(session, { fallbackDownload: false })
+    }, 800)
+
+    return () => window.clearTimeout(persistId)
+  }, [session])
+
+  const resetToSetup = useCallback(() => {
+    botTurnSignatureRef.current = null
+    clearCurrentCoachingSession()
+    try {
+      sessionStorage.removeItem(COACH_APP_STORAGE_KEY)
+    } catch {
+      // non-fatal
+    }
+    setAppPhase("setup")
+    setGame(null)
+    setViewingPlayerId(null)
+    setPendingDecision(null)
+    setPodReviewQueue([])
+    setSession(null)
+    setSaveMessage(null)
+    setIsPeriodSummaryVisible(false)
+  }, [])
+
+  const handleExitToSetup = useCallback(() => {
+    const ratedDecisionCount = session ? session.decisions.length : 0
+    const hasProgress =
+      !!game ||
+      !!pendingDecision ||
+      !!session ||
+      ratedDecisionCount > 0
+    if (
+      hasProgress &&
+      !window.confirm("Exit this coaching session and discard the current in-progress game?")
+    ) {
+      return
+    }
+    resetToSetup()
+  }, [game, pendingDecision, resetToSetup, session])
+
   // ── Board action handlers (view-only; no human players) ───────────────────
-  // These are no-ops since all players are bots, but Board requires them.
+  // These stay read-only except during operations review, where we reuse the normal
+  // pod-editing controls so coaching can tune the bot's finished layout directly.
 
   const noop = useCallback(() => ({ ok: false as const, error: "All players are bots." }), [])
   const noopVoid = useCallback(() => {}, [])
+  const handleStartVehicleReview = useCallback(() => {
+    setPendingDecision(prev => (
+      prev && prev.decisionType === "vehicles"
+        ? { ...prev, vehicleReview: true }
+        : prev
+    ))
+  }, [])
+  const handleCancelVehicleReview = useCallback(() => {
+    setPendingDecision(prev => (
+      prev && prev.decisionType === "vehicles"
+        ? { ...prev, vehicleReview: false }
+        : prev
+    ))
+  }, [])
+  const appendOperationsReviewEdit = useCallback((message: string) => {
+    setPendingDecision(prev =>
+      prev && prev.operationsReview
+        ? { ...prev, operationsReviewEdits: [...prev.operationsReviewEdits, message] }
+        : prev,
+    )
+  }, [])
+  const completeVehicleReviewDecision = useCallback((
+    currentGame: GameState,
+    decision: PendingDecision,
+    finalGame: GameState,
+    manualCandidate: ScoredBotCandidate,
+  ) => {
+    const botPreset = currentGame.players.find(player => player.id === decision.botPlayerId)?.botPreset
+    const weights = botPreset ? (currentGame.botPresetWeightsById?.[botPreset] ?? {}) : {}
+    const coachDecision: CoachingDecision = {
+      id: generateDecisionId(),
+      sessionId: session?.id ?? "",
+      timestamp: new Date().toISOString(),
+      botPlayerId: decision.botPlayerId,
+      botPlayerName: decision.botPlayerName,
+      decisionType: "vehicles-review",
+      week: currentGame.currentWeek,
+      phase: currentGame.currentPhase,
+      weightsSnapshot: weights,
+      candidates: [...decision.candidates, manualCandidate],
+      botChoiceIndex: 0,
+      chosenIndex: decision.candidates.length,
+      rating: "good",
+      preferredIndex: null,
+      reviewEdits: [manualCandidate.label],
+    }
+    setSession(prev => {
+      if (!prev) return prev
+      const updated = { ...prev, decisions: [...prev.decisions, coachDecision] }
+      saveCurrentCoachingSession(updated)
+      return updated
+    })
+    botTurnSignatureRef.current = null
+    setPendingDecision(null)
+    setGame(finalGame)
+    setViewingPlayerId(prev => getNextLocalViewingPlayerId(finalGame, prev) ?? finalGame.players[0]?.id ?? prev)
+  }, [session])
+  const handleCoachBuyVehicleCard = useCallback(async (cardId: string, quantity: number) => {
+    const currentGame = gameRef.current
+    const decision = pendingDecision
+    if (!currentGame || !decision?.vehicleReview) {
+      return { ok: false as const, error: "Manual vehicle review is not active." }
+    }
+
+    const actingPlayerId = decision.botPlayerId
+    const botPreset = currentGame.players.find(player => player.id === actingPlayerId)?.botPreset
+    const weights = botPreset ? (currentGame.botPresetWeightsById?.[botPreset] ?? {}) : {}
+    const purchaseResult = buyVehicleCard(currentGame, cardId, quantity, actingPlayerId)
+    if (!purchaseResult.ok) {
+      return purchaseResult
+    }
+
+    const purchasedGame = appendActionLog(
+      currentGame,
+      purchaseResult.game,
+      `purchased ${purchaseResult.quantity} vehicle${purchaseResult.quantity === 1 ? "" : "s"} of #${purchaseResult.card.number} ${purchaseResult.card.name}`,
+      actingPlayerId,
+    )
+    const advancedGame = advanceTurn(purchasedGame, actingPlayerId)
+    const finalGame = appendActionLog(
+      purchasedGame,
+      advancedGame,
+      getAdvanceTurnLogMessage(purchasedGame, advancedGame),
+      actingPlayerId,
+    )
+    const manualCandidate =
+      getTopScoredBotCandidates(currentGame, actingPlayerId, weights, getBotLegalActions(currentGame, actingPlayerId).length)
+        .find(candidate =>
+          candidate.action.type === "buy-vehicle" &&
+          candidate.action.cardId === cardId &&
+          candidate.action.quantity === quantity,
+        ) ?? {
+          action: { type: "buy-vehicle" as const, cardId, quantity },
+          score: 0,
+          label: `Other: Buy ${quantity}× #${purchaseResult.card.number} ${purchaseResult.card.name}`,
+          breakdown: null,
+        }
+    completeVehicleReviewDecision(currentGame, decision, finalGame, {
+      ...manualCandidate,
+      label: `Other: ${manualCandidate.label}`,
+    })
+
+    return {
+      ok: true as const,
+      card: purchaseResult.card,
+      quantity: purchaseResult.quantity,
+      cost: purchaseResult.cost,
+      nextPhase: advancedGame.currentPhase,
+      nextPlayerName:
+        advancedGame.players.find(player => player.id === advancedGame.currentPlayerId)?.name ??
+        advancedGame.currentPlayerId,
+      advancedPhase: advancedGame.currentPhase !== purchasedGame.currentPhase,
+    }
+  }, [completeVehicleReviewDecision, pendingDecision])
+  const handleCoachExchangeVehicleCard = useCallback(async (newCardId: string, oldCardId: string) => {
+    const currentGame = gameRef.current
+    const decision = pendingDecision
+    if (!currentGame || !decision?.vehicleReview) {
+      return { ok: false as const, error: "Manual vehicle review is not active." }
+    }
+
+    const actingPlayerId = decision.botPlayerId
+    const botPreset = currentGame.players.find(player => player.id === actingPlayerId)?.botPreset
+    const weights = botPreset ? (currentGame.botPresetWeightsById?.[botPreset] ?? {}) : {}
+    const result = exchangeVehicleCard(currentGame, newCardId, oldCardId, actingPlayerId)
+    if (!result.ok) {
+      return result
+    }
+
+    const loggedGame = appendActionLog(
+      currentGame,
+      result.game,
+      `exchanged #${result.oldCard.number} ${result.oldCard.name} for #${result.newCard.number} ${result.newCard.name}`,
+      actingPlayerId,
+    )
+    const advancedGame = advanceTurn(loggedGame, actingPlayerId)
+    const manualCandidate =
+      getTopScoredBotCandidates(currentGame, actingPlayerId, weights, getBotLegalActions(currentGame, actingPlayerId).length)
+        .find(candidate =>
+          candidate.action.type === "exchange-vehicle" &&
+          candidate.action.newCardId === newCardId &&
+          candidate.action.oldCardId === oldCardId,
+        ) ?? {
+          action: { type: "exchange-vehicle" as const, newCardId, oldCardId },
+          score: 0,
+          label: `Replace #${result.oldCard.number} ${result.oldCard.name} with #${result.newCard.number} ${result.newCard.name}`,
+          breakdown: null,
+        }
+    completeVehicleReviewDecision(currentGame, decision, advancedGame, {
+      ...manualCandidate,
+      label: `Other: ${manualCandidate.label}`,
+    })
+
+    return {
+      ok: true as const,
+      newCard: result.newCard,
+      oldCard: result.oldCard,
+      tradeInValue: result.tradeInValue,
+      cost: result.cost,
+    }
+  }, [completeVehicleReviewDecision, pendingDecision])
+  const handleCoachClaimRoute = useCallback(async (
+    mode: "bus" | "rail" | "air",
+    cityIds: string[],
+    segmentPairs?: Array<[string, string]>,
+  ) => {
+    const baseGame = gameRef.current
+    const actingPlayerId = pendingDecision?.operationsReview ? pendingDecision.botPlayerId : null
+    if (!baseGame || !actingPlayerId) {
+      return { ok: false as const, error: "Operations review is not active." }
+    }
+    const result = claimRoute(baseGame, { mode, cityIds, segmentPairs }, actingPlayerId)
+    if (!result.ok) {
+      return result
+    }
+
+    const routeLabel = result.routes
+      .map(route => {
+        const cityA = baseGame.cities.find(city => city.id === route.cityA)?.name ?? route.cityA
+        const cityB = baseGame.cities.find(city => city.id === route.cityB)?.name ?? route.cityB
+        return `${cityA} - ${cityB}`
+      })
+      .join(", ")
+    const message = `claimed a ${mode} route across ${routeLabel}${result.connectionBonus > 0 ? ` and earned ${Math.round(result.connectionBonus).toLocaleString()}` : ""}`
+    const nextGame = appendActionLog(baseGame, result.game, message, actingPlayerId)
+    setGame(nextGame)
+    appendOperationsReviewEdit(message)
+    return {
+      ok: true as const,
+      game: nextGame,
+      routes: result.routes,
+      cost: result.cost,
+      connectionBonus: result.connectionBonus,
+      newCityIds: result.newCityIds,
+      nextPhase: nextGame.currentPhase,
+      nextPlayerName:
+        nextGame.players.find(player => player.id === nextGame.currentPlayerId)?.name ??
+        nextGame.currentPlayerId,
+      advancedPhase: false,
+    }
+  }, [appendOperationsReviewEdit, pendingDecision])
+  const handleCoachSetBureaucracyRouteVehicleCard = useCallback(async (routeId: string, vehicleCardId: string | null) => {
+    const baseGame = gameRef.current
+    const actingPlayerId = pendingDecision?.operationsReview ? pendingDecision.botPlayerId : null
+    if (!baseGame || !actingPlayerId) {
+      return { ok: false as const, error: "Operations review is not active." }
+    }
+    const result = setBureaucracyRouteVehicleCard(baseGame, routeId, vehicleCardId, actingPlayerId)
+    if (!result.ok) {
+      return result
+    }
+    const plan = findPlayerBureaucracyPlan(baseGame, actingPlayerId, routeId)
+    const cardName =
+      vehicleCardId === null
+        ? "no vehicle"
+        : baseGame.vehicleCatalog.find(card => card.id === vehicleCardId)?.name ?? vehicleCardId
+    const nextGame = appendActionLog(baseGame, result.game, `assigned ${cardName} to ${plan?.serviceLabel ?? routeId}`, actingPlayerId)
+    setGame(nextGame)
+    appendOperationsReviewEdit(`assigned ${cardName} to ${plan?.serviceLabel ?? routeId}`)
+    return { ...result, game: nextGame }
+  }, [appendOperationsReviewEdit, pendingDecision])
+  const handleCoachAddBureaucracyServiceSplit = useCallback(async (corridorId: string, initialCityIds?: string[]) => {
+    const baseGame = gameRef.current
+    const actingPlayerId = pendingDecision?.operationsReview ? pendingDecision.botPlayerId : null
+    if (!baseGame || !actingPlayerId) {
+      return { ok: false as const, error: "Operations review is not active." }
+    }
+    const result = addBureaucracyServiceSplit(baseGame, corridorId, actingPlayerId, initialCityIds)
+    if (!result.ok) {
+      return result
+    }
+    const nextGame = appendActionLog(baseGame, result.game, `added split service on corridor ${corridorId}`, actingPlayerId)
+    setGame(nextGame)
+    appendOperationsReviewEdit(`added split service on corridor ${corridorId}`)
+    return { ...result, game: nextGame }
+  }, [appendOperationsReviewEdit, pendingDecision])
+  const handleCoachSetBureaucracyServicePodCities = useCallback(async (corridorId: string, routeIds: string[], cityIds: string[]) => {
+    const baseGame = gameRef.current
+    const actingPlayerId = pendingDecision?.operationsReview ? pendingDecision.botPlayerId : null
+    if (!baseGame || !actingPlayerId) {
+      return { ok: false as const, error: "Operations review is not active." }
+    }
+    const result = setBureaucracyServicePodCities(baseGame, corridorId, routeIds, cityIds, actingPlayerId)
+    if (!result.ok) {
+      return result
+    }
+    const cityLabel = cityIds
+      .map(cityId => baseGame.cities.find(city => city.id === cityId)?.name ?? cityId)
+      .join(", ")
+    const nextGame = appendActionLog(baseGame, result.game, `set pod cities on corridor ${corridorId} to ${cityLabel || "none"}`, actingPlayerId)
+    setGame(nextGame)
+    appendOperationsReviewEdit(`set pod cities on corridor ${corridorId} to ${cityLabel || "none"}`)
+    return { ...result, game: nextGame }
+  }, [appendOperationsReviewEdit, pendingDecision])
+  const handleCoachDeleteBureaucracyServicePod = useCallback(async (corridorId: string, routeId: string) => {
+    const baseGame = gameRef.current
+    const actingPlayerId = pendingDecision?.operationsReview ? pendingDecision.botPlayerId : null
+    if (!baseGame || !actingPlayerId) {
+      return { ok: false as const, error: "Operations review is not active." }
+    }
+    const result = deleteBureaucracyServicePod(baseGame, corridorId, routeId, actingPlayerId)
+    if (!result.ok) {
+      return result
+    }
+    const plan = findPlayerBureaucracyPlan(baseGame, actingPlayerId, routeId)
+    const message =
+      result.cityIds.length === 0
+        ? "deleted an empty route"
+        : result.disconnectedCityIds.length === 0
+          ? `deleted ${plan?.serviceLabel ?? "a route"}`
+          : `deleted ${plan?.serviceLabel ?? "a route"} and moved ${result.disconnectedCityIds.length} cities to disconnected`
+    const nextGame = appendActionLog(baseGame, result.game, message, actingPlayerId)
+    setGame(nextGame)
+    appendOperationsReviewEdit(message)
+    return { ...result, game: nextGame }
+  }, [appendOperationsReviewEdit, pendingDecision])
+  const handleAcceptOperationsReview = useCallback(() => {
+    const currentGame = gameRef.current
+    if (!currentGame || !pendingDecision?.operationsReview) {
+      return
+    }
+    const actingPlayerId = pendingDecision.botPlayerId
+    const result = markOperationsReady(currentGame, actingPlayerId)
+    if (!result.ok) {
+      return
+    }
+    const nextGame = appendActionLog(
+      currentGame,
+      result.game,
+      result.advancedPhase ? "finished operations planning and advanced to bureaucracy" : "finished operations planning",
+      actingPlayerId,
+    )
+    const coachDecision: CoachingDecision = {
+      id: generateDecisionId(),
+      sessionId: session?.id ?? "",
+      timestamp: new Date().toISOString(),
+      botPlayerId: pendingDecision.botPlayerId,
+      botPlayerName: pendingDecision.botPlayerName,
+      decisionType: "operations-review",
+      week: currentGame.currentWeek,
+      phase: currentGame.currentPhase,
+      weightsSnapshot: {},
+      candidates: [
+        {
+          action: { type: "ready-operations" },
+          score: 0,
+          label: "Accept reviewed operations layout",
+          breakdown: null,
+        },
+      ],
+      botChoiceIndex: 0,
+      chosenIndex: 0,
+      rating: "good",
+      preferredIndex: null,
+      reviewEdits: pendingDecision.operationsReviewEdits,
+      operationsReviewComparison: operationsReviewComparison ?? undefined,
+    }
+    setSession(prev => {
+      if (!prev) return prev
+      const updated = { ...prev, decisions: [...prev.decisions, coachDecision] }
+      saveCurrentCoachingSession(updated)
+      return updated
+    })
+    botTurnSignatureRef.current = null
+    setPendingDecision(null)
+    setGame(nextGame)
+    setViewingPlayerId(prev => getNextLocalViewingPlayerId(nextGame, prev) ?? nextGame.players[0]?.id ?? prev)
+  }, [operationsReviewComparison, pendingDecision, session])
+  const operationsInlineAction = pendingDecision?.operationsReview ? (
+    <div style={{ display: "grid", gap: 8 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <button
+          type="button"
+          onClick={handleAcceptOperationsReview}
+          style={{ ...BUTTON_PRIMARY, padding: "8px 16px", fontSize: 13 }}
+        >
+          Accept operations
+        </button>
+        <button
+          type="button"
+          onClick={handleExitToSetup}
+          style={{ ...BUTTON_SECONDARY, padding: "8px 14px", fontSize: 13 }}
+        >
+          Exit coaching
+        </button>
+        <span style={{ fontSize: 12, color: "#56635a" }}>
+          Review the live pod layout here, then accept when it looks right.
+        </span>
+      </div>
+      {operationsReviewComparison && (
+        <div style={{ display: "flex", gap: "8px 16px", flexWrap: "wrap", fontSize: 12, color: "#4d5b50" }}>
+          <span>
+            Bot plan: <strong>{operationsReviewComparison.botPlan.totalPassengersServed.toLocaleString()} pax</strong>,{" "}
+            <strong>{formatMoneyMillions(operationsReviewComparison.botPlan.netRevenue)}</strong> net,{" "}
+            <strong>{operationsReviewComparison.botPlan.stuckCubeCount.toLocaleString()}</strong> stuck
+          </span>
+          <span>
+            Your edits: <strong>{operationsReviewComparison.reviewedPlan.totalPassengersServed.toLocaleString()} pax</strong>,{" "}
+            <strong>{formatMoneyMillions(operationsReviewComparison.reviewedPlan.netRevenue)}</strong> net,{" "}
+            <strong>{operationsReviewComparison.reviewedPlan.stuckCubeCount.toLocaleString()}</strong> stuck
+          </span>
+          <span>
+            Delta: <strong style={{ color: operationsReviewComparison.delta.totalPassengersServed >= 0 ? "#1a6b28" : "#9b1c1c" }}>
+              {formatSignedCount(operationsReviewComparison.delta.totalPassengersServed)} pax
+            </strong>,{" "}
+            <strong style={{ color: operationsReviewComparison.delta.netRevenue >= 0 ? "#1a6b28" : "#9b1c1c" }}>
+              {formatSignedMoneyMillions(operationsReviewComparison.delta.netRevenue)} net
+            </strong>,{" "}
+            <strong style={{ color: operationsReviewComparison.delta.stuckCubeCount <= 0 ? "#1a6b28" : "#9b1c1c" }}>
+              {formatSignedCount(-operationsReviewComparison.delta.stuckCubeCount)} stuck improvement
+            </strong>
+          </span>
+        </div>
+      )}
+    </div>
+  ) : undefined
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -665,32 +1818,45 @@ export default function CoachApp() {
 
   return (
     <div style={{ position: "fixed", inset: 0, overflow: "hidden" }}>
+      {appPhase === "playing" && !pendingDecision && (
+        <div style={{ position: "absolute", top: 12, right: 12, zIndex: 60 }}>
+          <button
+            type="button"
+            onClick={handleExitToSetup}
+            style={{ ...BUTTON_SECONDARY, fontSize: 13, padding: "8px 14px" }}
+          >
+            Exit coaching
+          </button>
+        </div>
+      )}
+
       {/* Board (view-only) */}
       <div style={{ pointerEvents: "auto" }}>
         <Board
-          game={game}
+          game={boardGame ?? game}
           viewingPlayerId={pendingDecision?.botPlayerId ?? viewingPlayerId}
-          suppressPeriodSummary={false}
+          suppressPeriodSummary
           onPeriodSummaryVisibilityChange={setIsPeriodSummaryVisible}
-          onClaimRoute={noop}
+          onClaimRoute={pendingDecision?.operationsReview ? handleCoachClaimRoute : noop}
           onDrawCityOffer={noop}
           onSetActiveCityOfferKeptCityIds={noop}
-          onBuyVehicleCard={noop}
+          onBuyVehicleCard={pendingDecision?.vehicleReview ? handleCoachBuyVehicleCard : noop}
           onUpgradeRailRoute={noop}
-          onSetBureaucracyRouteVehicleCard={noop}
-          onAddBureaucracyServiceSplit={noop}
-          onMoveBureaucracyServiceCity={noop}
-          onDeleteBureaucracyServicePod={noop}
+          onSetBureaucracyRouteVehicleCard={pendingDecision?.operationsReview ? handleCoachSetBureaucracyRouteVehicleCard : noop}
+          onAddBureaucracyServiceSplit={pendingDecision?.operationsReview ? handleCoachAddBureaucracyServiceSplit : noop}
+          onSetBureaucracyServicePodCities={pendingDecision?.operationsReview ? handleCoachSetBureaucracyServicePodCities : noop}
+          onDeleteBureaucracyServicePod={pendingDecision?.operationsReview ? handleCoachDeleteBureaucracyServicePod : noop}
           onAdvanceTurn={noop}
-          onExchangeVehicleCard={noop}
+          onExchangeVehicleCard={pendingDecision?.vehicleReview ? handleCoachExchangeVehicleCard : noop}
           onStopAutoPlay={noopVoid}
+          operationsInlineAction={operationsInlineAction}
           onUndo={noopVoid}
           canUndo={false}
         />
       </div>
 
       {/* Decision panel */}
-      {pendingDecision && (
+      {pendingDecision && !pendingDecision.operationsReview && (
         <div style={{
           position: "absolute",
           top: 0,
@@ -713,7 +1879,11 @@ export default function CoachApp() {
                   {pendingDecision.botPlayerName} · {DECISION_TYPE_LABELS[pendingDecision.decisionType] ?? pendingDecision.decisionType}
                 </div>
                 <div style={{ fontSize: 22, fontWeight: 800, color: "#223024", marginTop: 4 }}>
-                  Rate this decision
+                  {pendingDecision.operationsReview
+                    ? "Review operations"
+                    : pendingDecision.vehicleReview
+                      ? "Manual vehicle purchase"
+                      : "Rate this decision"}
                 </div>
                 {pendingDecision.nextPlannedLabel && (
                   <div style={{ fontSize: 12, color: "#8a9c8c", marginTop: 4 }}>
@@ -747,98 +1917,406 @@ export default function CoachApp() {
                   </div>
                 )}
               </div>
-              <button type="button" onClick={handleSkip} style={{ ...BUTTON_SECONDARY, fontSize: 13 }}>Skip</button>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <button
+                  type="button"
+                  onClick={handleExitToSetup}
+                  style={{ ...BUTTON_SECONDARY, fontSize: 13, padding: "8px 12px" }}
+                >
+                  Exit
+                </button>
+                {!pendingDecision.operationsReview && !pendingDecision.vehicleReview && pendingDecision.decisionType !== "vehicles" && (
+                  <button type="button" onClick={handleSkip} style={{ ...BUTTON_SECONDARY, fontSize: 13 }}>
+                    Skip
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Candidates */}
-            <div style={{ display: "grid", gap: 10 }}>
-              {pendingDecision.candidates.map((candidate, index) => (
+            {pendingDecision.operationsReview ? (
+              <div style={{ display: "grid", gap: 12 }}>
+                <div style={{ border: "2px solid #223024", borderRadius: 12, padding: "14px 16px", background: "#f7fbf6", display: "grid", gap: 10 }}>
+                  <div style={{ fontSize: 16, fontWeight: 800, color: "#223024" }}>
+                    Review the final Operations layout
+                  </div>
+                  <div style={{ fontSize: 13, color: "#56635a" }}>
+                    The bot has already finished its rail builds and pod edits. Use the normal Operations panel to drag cities between pods or clean up the layout, then accept when the final pod plan looks right.
+                  </div>
+                  <div>
+                    <button
+                      type="button"
+                      onClick={handleAcceptOperationsReview}
+                      style={{ ...BUTTON_PRIMARY, padding: "8px 16px", fontSize: 13 }}
+                    >
+                      Accept
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : pendingDecision.vehicleReview ? (
+              <div style={{ display: "grid", gap: 12 }}>
+                <div style={{ border: "2px solid #223024", borderRadius: 12, padding: "14px 16px", background: "#f7fbf6", display: "grid", gap: 10 }}>
+                  <div style={{ fontSize: 16, fontWeight: 800, color: "#223024" }}>
+                    Use the normal purchase UI
+                  </div>
+                  <div style={{ fontSize: 13, color: "#56635a" }}>
+                    The ranked list is hidden for now. Use the regular purchase-equipment controls on the board to buy any quantity of any vehicle, or replace a vehicle normally. Your manual choice will be saved as an <strong>Other</strong> vehicle review.
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    <button
+                      type="button"
+                      onClick={handleCancelVehicleReview}
+                      style={{ ...BUTTON_SECONDARY, padding: "8px 14px", fontSize: 13 }}
+                    >
+                      Back to top 5
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : pendingDecision.podProposal ? (
+              <div style={{ display: "grid", gap: 12 }}>
                 <div
-                  key={index}
                   style={{
-                    border: `2px solid ${index === 0 ? "#223024" : "#d8dfd5"}`,
+                    border: "2px solid #223024",
                     borderRadius: 12,
                     padding: "12px 14px",
-                    background: index === 0 ? "#f7fbf6" : "#fbfcfb",
+                    background: "#f7fbf6",
                     display: "grid",
-                    gap: 8,
+                    gap: 10,
                   }}
                 >
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      {index === 0 && (
-                        <span style={{ fontSize: 11, fontWeight: 800, background: "#223024", color: "#fff", borderRadius: 6, padding: "2px 7px", letterSpacing: 0.3 }}>
-                          BOT CHOICE
-                        </span>
-                      )}
-                      <span style={{ fontSize: 15, fontWeight: index === 0 ? 800 : 600, color: "#223024" }}>
-                        {candidate.label}
+                      <span style={{ fontSize: 11, fontWeight: 800, background: "#223024", color: "#fff", borderRadius: 6, padding: "2px 7px", letterSpacing: 0.3 }}>
+                        BOT CHOICE
+                      </span>
+                      <span style={{ fontSize: 15, fontWeight: 800, color: "#223024" }}>
+                        Propose final {pendingDecision.podProposal.vehicleTypeLabel} pod
                       </span>
                     </div>
                     <span style={{ fontSize: 14, fontWeight: 700, color: "#56635a", whiteSpace: "nowrap" }}>
-                      Score: {candidate.score.toFixed(1)}
+                      Score: {pendingDecision.candidates[0] ? formatScoreValue(pendingDecision.candidates[0].score) : "—"}
                     </span>
                   </div>
-
-                  {/* Breakdown for claim-route: no kind field */}
-                  {candidate.breakdown && !("kind" in candidate.breakdown) && (
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 12px", fontSize: 12, color: "#56635a" }}>
-                      {candidate.breakdown.modeBase !== 0 && <span>Mode base: {scorePts(candidate.breakdown.modeBase)}</span>}
-                      {candidate.breakdown.populationScore !== 0 && <span>Population: {scorePts(candidate.breakdown.populationScore)}</span>}
-                      {candidate.breakdown.newCityBonus !== 0 && <span>New cities: {scorePts(candidate.breakdown.newCityBonus)}</span>}
-                      {candidate.breakdown.firstModeBonus !== 0 && <span>First mode: {scorePts(candidate.breakdown.firstModeBonus)}</span>}
-                      {candidate.breakdown.regionPreference !== 0 && <span>Region pref: {scorePts(candidate.breakdown.regionPreference)}</span>}
-                      {candidate.breakdown.sameRegionLinkBonus !== 0 && <span>Same region: {scorePts(candidate.breakdown.sameRegionLinkBonus)}</span>}
-                      {candidate.breakdown.longDistancePreference !== 0 && <span>Long distance: {scorePts(candidate.breakdown.longDistancePreference)}</span>}
-                      {candidate.breakdown.newRegionBonus !== 0 && <span>New region: {scorePts(candidate.breakdown.newRegionBonus)}</span>}
-                      {candidate.breakdown.adjacentNetworkBonus !== 0 && <span>Network ext. ×{candidate.breakdown.adjacentNetworkCount}: {scorePts(candidate.breakdown.adjacentNetworkBonus)}</span>}
-                      {candidate.breakdown.opponentBlockPenalty !== 0 && <span style={{ color: "#9b1c1c" }}>Opponent block ×{candidate.breakdown.opponentBlockCount}: −{scorePts(candidate.breakdown.opponentBlockPenalty)}</span>}
-                      {candidate.breakdown.costPenalty !== 0 && <span style={{ color: "#9b1c1c" }}>Cost penalty: −{scorePts(candidate.breakdown.costPenalty)}</span>}
-                    </div>
-                  )}
-
-                  {/* Breakdown for keep-city-offer */}
-                  {candidate.breakdown && "kind" in candidate.breakdown && candidate.breakdown.kind === "keep-city" && (
-                    <KeepCityBreakdownRow breakdown={candidate.breakdown} />
-                  )}
-
-                  {/* Breakdown for draw-city-offer */}
-                  {candidate.breakdown && "kind" in candidate.breakdown && candidate.breakdown.kind === "draw-city" && (
-                    <DrawCityBreakdownRow breakdown={candidate.breakdown} />
-                  )}
-
-                  {/* Breakdown for buy-vehicle */}
-                  {candidate.breakdown && "kind" in candidate.breakdown && candidate.breakdown.kind === "buy-vehicle" && (
-                    <BuyVehicleBreakdownRow breakdown={candidate.breakdown} />
-                  )}
-
-                  {/* Action buttons */}
-                  <div style={{ display: "flex", gap: 8, marginTop: 2 }}>
-                    {index === 0 ? (
-                      <button
-                        type="button"
-                        onClick={handleAccept}
-                        style={{ ...BUTTON_PRIMARY, padding: "7px 16px", fontSize: 13 }}
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {pendingDecision.podProposal.proposedCityIds.map(cityId => (
+                      <span
+                        key={cityId}
+                        style={{ border: "1px solid #d8dfd5", borderRadius: 999, background: "#ffffff", padding: "3px 8px", fontSize: 12, color: "#223024" }}
                       >
-                        👍 Accept
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => handleReject(index)}
-                        style={{ ...BUTTON_SECONDARY, padding: "7px 16px", fontSize: 13, borderColor: "#c7a0a0", color: "#9b1c1c" }}
-                      >
-                        👎 This was better
-                      </button>
-                    )}
+                        {cityNameById.get(cityId) ?? cityId}
+                      </span>
+                    ))}
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    <button
+                      type="button"
+                      onClick={() => handleRateTopChoice("good")}
+                      style={{ ...BUTTON_PRIMARY, padding: "7px 14px", fontSize: 13 }}
+                    >
+                      Accept
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActivePodAlternativeMode(current => current === "add-city" ? null : "add-city")}
+                      style={{ ...BUTTON_SECONDARY, padding: "7px 14px", fontSize: 13 }}
+                    >
+                      Add city
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActivePodAlternativeMode(current => current === "remove-city" ? null : "remove-city")}
+                      style={{ ...BUTTON_SECONDARY, padding: "7px 14px", fontSize: 13 }}
+                    >
+                      Remove city
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActivePodAlternativeMode(current => current === "delete-pod" ? null : "delete-pod")}
+                      style={{ ...BUTTON_SECONDARY, padding: "7px 14px", fontSize: 13, borderColor: "#c7a0a0", color: "#9b1c1c" }}
+                    >
+                      Delete pod
+                    </button>
                   </div>
                 </div>
-              ))}
-            </div>
 
-            <div style={{ fontSize: 12, color: "#8a9c8c" }}>
-              Accept = bot choice was correct. "This was better" = reject bot choice and indicate the preferred alternative.
-            </div>
+                {activePodAlternativeMode && (() => {
+                  const optionIndexes =
+                    activePodAlternativeMode === "add-city"
+                      ? pendingDecision.podProposal.addOptionIndexes
+                      : activePodAlternativeMode === "remove-city"
+                        ? pendingDecision.podProposal.removeOptionIndexes
+                        : pendingDecision.podProposal.deleteOptionIndex === null
+                          ? []
+                          : [pendingDecision.podProposal.deleteOptionIndex]
+
+                  return (
+                    <div style={{ display: "grid", gap: 10 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#56635a", textTransform: "uppercase", letterSpacing: 0.4 }}>
+                        {activePodAlternativeMode === "add-city"
+                          ? "Add-city alternatives"
+                          : activePodAlternativeMode === "remove-city"
+                            ? "Remove-city alternatives"
+                            : "Delete-pod alternative"}
+                      </div>
+                      {optionIndexes.length === 0 ? (
+                        <div style={{ border: "1px solid #d8dfd5", borderRadius: 12, background: "#fbfcfb", padding: "12px 14px", fontSize: 13, color: "#56635a" }}>
+                          No {activePodAlternativeMode === "delete-pod" ? "delete" : activePodAlternativeMode.replace("-", " ")} alternatives are available here.
+                        </div>
+                      ) : (
+                        optionIndexes.map(index => {
+                          const candidate = pendingDecision.candidates[index]
+                          if (!candidate) return null
+                          const cityIds = pendingDecision.podProposal?.cityIdsByCandidateIndex[index] ?? []
+                          return (
+                            <div
+                              key={index}
+                              style={{
+                                border: "2px solid #d8dfd5",
+                                borderRadius: 12,
+                                padding: "12px 14px",
+                                background: "#fbfcfb",
+                                display: "grid",
+                                gap: 8,
+                              }}
+                            >
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                                <span style={{ fontSize: 15, fontWeight: 700, color: "#223024" }}>
+                                  {candidate.action.type === "delete-service-pod"
+                                    ? "Delete this pod"
+                                    : `Propose final ${pendingDecision.podProposal?.vehicleTypeLabel} pod`}
+                                </span>
+                                <span style={{ fontSize: 14, fontWeight: 700, color: "#56635a", whiteSpace: "nowrap" }}>
+                                  Score: {formatScoreValue(candidate.score)}
+                                </span>
+                              </div>
+                              {candidate.action.type !== "delete-service-pod" && (
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                                  {cityIds.map(cityId => (
+                                    <span
+                                      key={`${index}-${cityId}`}
+                                      style={{ border: "1px solid #d8dfd5", borderRadius: 999, background: "#ffffff", padding: "3px 8px", fontSize: 12, color: "#223024" }}
+                                    >
+                                      {cityNameById.get(cityId) ?? cityId}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRateAlternative(index, "slightly-better")}
+                                  style={{ ...BUTTON_SECONDARY, padding: "7px 12px", fontSize: 13, borderColor: "#c7d0c4", color: "#56635a" }}
+                                >
+                                  Slightly better
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRateAlternative(index, "better")}
+                                  style={{ ...BUTTON_SECONDARY, padding: "7px 12px", fontSize: 13, borderColor: "#c7a0a0", color: "#9b1c1c" }}
+                                >
+                                  Better
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRateAlternative(index, "way-better")}
+                                  style={{ ...BUTTON_SECONDARY, padding: "7px 12px", fontSize: 13, borderColor: "#9b1c1c", color: "#9b1c1c", fontWeight: 700 }}
+                                >
+                                  Way better
+                                </button>
+                              </div>
+                            </div>
+                          )
+                        })
+                      )}
+                    </div>
+                  )
+                })()}
+              </div>
+            ) : (
+              <>
+                <div style={{ display: "grid", gap: 10 }}>
+                  {pendingDecision.candidates.map((candidate, index) => (
+                    <div
+                      key={index}
+                      style={{
+                        border: `2px solid ${index === 0 ? "#223024" : "#d8dfd5"}`,
+                        borderRadius: 12,
+                        padding: "12px 14px",
+                        background: index === 0 ? "#f7fbf6" : "#fbfcfb",
+                        display: "grid",
+                        gap: 8,
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          {index === 0 && (
+                            <span style={{ fontSize: 11, fontWeight: 800, background: "#223024", color: "#fff", borderRadius: 6, padding: "2px 7px", letterSpacing: 0.3 }}>
+                              BOT CHOICE
+                            </span>
+                          )}
+                          <span style={{ fontSize: 15, fontWeight: index === 0 ? 800 : 600, color: "#223024" }}>
+                            {candidate.label}
+                          </span>
+                        </div>
+                        <span style={{ fontSize: 14, fontWeight: 700, color: "#56635a", whiteSpace: "nowrap" }}>
+                          Score: {formatScoreValue(candidate.score)}
+                        </span>
+                      </div>
+
+                      {candidate.breakdown && !("kind" in candidate.breakdown) && (
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 12px", fontSize: 12, color: "#56635a" }}>
+                          {candidate.breakdown.modeBase !== 0 && <span>Mode base: {scorePts(candidate.breakdown.modeBase)}</span>}
+                          {candidate.breakdown.populationScore !== 0 && <span>Population: {scorePts(candidate.breakdown.populationScore)}</span>}
+                          {candidate.breakdown.newCityBonus !== 0 && <span>New cities: {scorePts(candidate.breakdown.newCityBonus)}</span>}
+                          {candidate.breakdown.firstModeBonus !== 0 && <span>First mode: {scorePts(candidate.breakdown.firstModeBonus)}</span>}
+                          {candidate.breakdown.regionPreference !== 0 && <span>Region pref: {scorePts(candidate.breakdown.regionPreference)}</span>}
+                          {candidate.breakdown.sameRegionLinkBonus !== 0 && <span>Same region: {scorePts(candidate.breakdown.sameRegionLinkBonus)}</span>}
+                          {candidate.breakdown.longDistancePreference !== 0 && <span>Long distance: {scorePts(candidate.breakdown.longDistancePreference)}</span>}
+                          {candidate.breakdown.newRegionBonus !== 0 && <span>New region: {scorePts(candidate.breakdown.newRegionBonus)}</span>}
+                          {candidate.breakdown.adjacentNetworkBonus !== 0 && <span>Network ext. ×{candidate.breakdown.adjacentNetworkCount}: {scorePts(candidate.breakdown.adjacentNetworkBonus)}</span>}
+                          {candidate.breakdown.opponentBlockPenalty !== 0 && <span style={{ color: "#9b1c1c" }}>Opponent block ×{candidate.breakdown.opponentBlockCount}: −{scorePts(candidate.breakdown.opponentBlockPenalty)}</span>}
+                          {candidate.breakdown.costPenalty !== 0 && <span style={{ color: "#9b1c1c" }}>Cost penalty: −{scorePts(candidate.breakdown.costPenalty)}</span>}
+                        </div>
+                      )}
+
+                      {candidate.breakdown && "kind" in candidate.breakdown && candidate.breakdown.kind === "keep-city" && (
+                        <KeepCityBreakdownRow breakdown={candidate.breakdown} />
+                      )}
+                      {candidate.breakdown && "kind" in candidate.breakdown && candidate.breakdown.kind === "draw-city" && (
+                        <DrawCityBreakdownRow breakdown={candidate.breakdown} />
+                      )}
+                      {candidate.breakdown && "kind" in candidate.breakdown && candidate.breakdown.kind === "buy-vehicle" && (
+                        <BuyVehicleBreakdownRow breakdown={candidate.breakdown} />
+                      )}
+
+                      <div style={{ display: "flex", gap: 8, marginTop: 2 }}>
+                        {index === 0 ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleRateTopChoice("fine")}
+                              style={{ ...BUTTON_SECONDARY, padding: "7px 12px", fontSize: 13 }}
+                            >
+                              👍 Fine
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRateTopChoice("good")}
+                              style={{ ...BUTTON_PRIMARY, padding: "7px 12px", fontSize: 13 }}
+                            >
+                              👍 Good
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRateTopChoice("great")}
+                              style={{ ...BUTTON_PRIMARY, padding: "7px 12px", fontSize: 13, background: "#1f5f2c", borderColor: "#1f5f2c" }}
+                            >
+                              🔥 Great
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleRateAlternative(index, "slightly-better")}
+                              style={{ ...BUTTON_SECONDARY, padding: "7px 12px", fontSize: 13, borderColor: "#c7d0c4", color: "#56635a" }}
+                            >
+                              Slightly better
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRateAlternative(index, "better")}
+                              style={{ ...BUTTON_SECONDARY, padding: "7px 12px", fontSize: 13, borderColor: "#c7a0a0", color: "#9b1c1c" }}
+                            >
+                              Better
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRateAlternative(index, "way-better")}
+                              style={{ ...BUTTON_SECONDARY, padding: "7px 12px", fontSize: 13, borderColor: "#9b1c1c", color: "#9b1c1c", fontWeight: 700 }}
+                            >
+                              Way better
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                  {pendingDecision.decisionType === "vehicles" && (
+                    <>
+                      <div
+                        style={{
+                          border: "2px dashed #c7d0c4",
+                          borderRadius: 12,
+                          padding: "12px 14px",
+                          background: "#fbfcfb",
+                          display: "grid",
+                          gap: 8,
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontSize: 15, fontWeight: 700, color: "#223024" }}>
+                            Other
+                          </span>
+                          <span style={{ fontSize: 12, color: "#56635a" }}>
+                            Use the regular purchase UI
+                          </span>
+                        </div>
+                        <div style={{ fontSize: 13, color: "#56635a" }}>
+                          Not seeing the quantity or vehicle you want in the top 5? Open the normal purchase-equipment controls and choose any legal buy or replace action there.
+                        </div>
+                        <div>
+                          <button
+                            type="button"
+                            onClick={handleStartVehicleReview}
+                            style={{ ...BUTTON_SECONDARY, padding: "7px 12px", fontSize: 13 }}
+                          >
+                            Open normal UI
+                          </button>
+                        </div>
+                      </div>
+                      <div
+                        style={{
+                          border: "2px dashed #d8dfd5",
+                          borderRadius: 12,
+                          padding: "12px 14px",
+                          background: "#fbfcfb",
+                          display: "grid",
+                          gap: 8,
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontSize: 15, fontWeight: 700, color: "#223024" }}>
+                            Skip vehicle purchase
+                          </span>
+                          <span style={{ fontSize: 12, color: "#56635a" }}>
+                            Continue with the bot&apos;s next step
+                          </span>
+                        </div>
+                        <div style={{ fontSize: 13, color: "#56635a" }}>
+                          Use this when you do not want to buy or replace a vehicle here and just want coaching to continue.
+                        </div>
+                        <div>
+                          <button
+                            type="button"
+                            onClick={handleSkip}
+                            style={{ ...BUTTON_SECONDARY, padding: "7px 12px", fontSize: 13 }}
+                          >
+                            Continue
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                <div style={{ fontSize: 12, color: "#8a9c8c" }}>
+                  Rate the bot choice as fine/good/great, or pick an alternative and say whether it was slightly better, better, or way better.
+                </div>
+              </>
+            )}
         </div>
       )}
 
@@ -877,13 +2355,7 @@ export default function CoachApp() {
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setAppPhase("setup")
-                  setGame(null)
-                  setSession(null)
-                  setPendingDecision(null)
-                  setSaveMessage(null)
-                }}
+                onClick={resetToSetup}
                 style={BUTTON_SECONDARY}
               >
                 New session
@@ -912,7 +2384,7 @@ export default function CoachApp() {
           zIndex: 10,
           whiteSpace: "nowrap",
         }}>
-          🎓 {session.decisions.length} rated · {session.decisions.filter(d => d.rating === "accept").length} accepted · {session.decisions.filter(d => d.preferredIndex !== null).length} with preference
+          🎓 {session.decisions.length} rated · {session.decisions.filter(d => d.preferredIndex === null).length} top-choice ratings · {session.decisions.filter(d => d.preferredIndex !== null).length} alternative picks
         </div>
       )}
     </div>

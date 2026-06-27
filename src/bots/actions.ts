@@ -5,12 +5,15 @@ import {
   canPlayerEditOperations,
   canPlayerPickCities,
   canPlayerStartPhaseByPipeline,
+  calculateClaimRouteCost,
   claimRoute,
   exchangeVehicleCard,
   getConnectionOptions,
   getPlayerById,
   confirmAddCityPicks,
   drawCityOffer,
+  deleteBureaucracyServicePod,
+  getVehiclePurchaseLimit,
   getVehicleTradeInValue,
   getVisibleVehicleMarketCardIds,
   hasPlayerCompletedBureaucracy,
@@ -18,6 +21,7 @@ import {
   markBureaucracyReady,
   markOperationsReady,
   moveBureaucracyServiceCity,
+  setBureaucracyServicePodCities,
   setBureaucracyRouteVehicleCard,
   setActiveCityOfferKeptCityIds,
 } from "../engine/actions"
@@ -26,12 +30,13 @@ import {
   buildDisconnectedServiceSlotId,
   isValidServicePodSelection,
 } from "../engine/bureaucracy"
+import { getPlayerOwnedNetworkRoutes } from "../engine/playerNetwork"
 import { CITY_DECK_REGIONS, type GameState } from "../engine/types"
 import { getOwnedCityPairs } from "./strategy"
 import { getCachedBureaucracySummary } from "./summaryCache"
 import type { BotAction } from "./types"
 
-const MAX_BOT_OPERATION_CLAIM_ACTIONS = 8
+const MAX_BOT_OPERATION_CLAIM_ACTIONS = 16
 const MAX_BOT_OPERATION_POD_ACTIONS_PER_CORRIDOR = 6
 const MAX_BOT_OPERATION_POD_SIZE = 4
 const MAX_BOT_OPERATION_POD_SEEDS = 4
@@ -48,14 +53,23 @@ function getAvailableBotVehicleActions(game: GameState, playerId: string): BotAc
     return []
   }
 
-  const buyActions: BotAction[] = getVisibleVehicleMarketCardIds(game)
+  const buyableCardIds = [...new Set([
+    ...getVisibleVehicleMarketCardIds(game),
+    ...player.ownedVehicleCardIds,
+  ])]
+
+  const buyActions: BotAction[] = buyableCardIds
     .map(cardId => game.vehicleCatalog.find(card => card.id === cardId) ?? null)
     .filter((card): card is GameState["vehicleCatalog"][number] => card !== null && card.purchasePrice <= player.money)
-    .map(card => ({
-      type: "buy-vehicle" as const,
-      cardId: card.id,
-      quantity: 1,
-    }))
+    .flatMap(card => {
+      const maxAffordableQuantity = Math.floor(player.money / card.purchasePrice)
+      const maxQuantity = Math.max(1, Math.min(getVehiclePurchaseLimit(card.type), maxAffordableQuantity))
+      return Array.from({ length: maxQuantity }, (_, index) => ({
+        type: "buy-vehicle" as const,
+        cardId: card.id,
+        quantity: index + 1,
+      }))
+    })
 
   // Exchange actions: trade an owned vehicle for a market vehicle
   const exchangeActions: BotAction[] = getVisibleVehicleMarketCardIds(game)
@@ -122,6 +136,8 @@ function getAvailableOperationsActions(game: GameState, playerId: string): BotAc
   }
 
   const cityMap = new Map(game.cities.map(city => [city.id, city]))
+  const player = getPlayerById(game, playerId)
+  const railConstructionCostPerMile = game.operatingConfig.railConstructionCostPerMile
   const claimActions = getOwnedCityPairs(game, playerId).flatMap(([cityAId, cityBId]) => {
     const cityA = cityMap.get(cityAId)
     const railPairIsAdjacent = cityA?.adjacentCities?.some(adjacentCity => adjacentCity.id === cityBId) ?? false
@@ -136,18 +152,106 @@ function getAvailableOperationsActions(game: GameState, playerId: string): BotAc
         cityIds: [cityAId, cityBId] as [string, string],
       }))
   }).sort((actionA, actionB) => {
-    const actionACityScore = actionA.cityIds.reduce(
-      (total, cityId) => total + (cityMap.get(cityId)?.population ?? cityMap.get(cityId)?.size ?? 0),
-      0,
-    )
-    const actionBCityScore = actionB.cityIds.reduce(
-      (total, cityId) => total + (cityMap.get(cityId)?.population ?? cityMap.get(cityId)?.size ?? 0),
-      0,
-    )
-    return actionBCityScore - actionACityScore
+    const getConnectorWastePenalty = (action: typeof actionA, connectedCityIdSet: Set<string>) => {
+      if (action.mode !== "rail" || !player) {
+        return 0
+      }
+
+      const newCityIds = action.cityIds.filter(cityId => !connectedCityIdSet.has(cityId))
+
+      if (newCityIds.length !== 1) {
+        return 0
+      }
+
+      const newCityId = newCityIds[0]
+      const newCity = cityMap.get(newCityId)
+
+      if (!newCity) {
+        return 0
+      }
+
+      const currentCost = calculateClaimRouteCost(game, action, playerId)
+      const connectedOwnedCityIds = player.ownedCityCardIds.filter(cityId => connectedCityIdSet.has(cityId))
+      let cheapestConnectorCost = Number.POSITIVE_INFINITY
+
+      for (const adjacentCity of newCity.adjacentCities ?? []) {
+        if (!connectedOwnedCityIds.includes(adjacentCity.id)) {
+          continue
+        }
+
+        cheapestConnectorCost = Math.min(
+          cheapestConnectorCost,
+          adjacentCity.distance * railConstructionCostPerMile,
+        )
+      }
+
+      return Number.isFinite(cheapestConnectorCost)
+        ? Math.max(0, currentCost - cheapestConnectorCost)
+        : 0
+    }
+
+    const getClaimPriority = (action: typeof actionA) => {
+      const ownedRoutesOfMode = getPlayerOwnedNetworkRoutes(game, playerId).filter(
+        route => route.mode === action.mode,
+      )
+      const connectedCityIdSet = new Set(
+        ownedRoutesOfMode.flatMap(route => [route.cityA, route.cityB]),
+      )
+      const totalPopulation = action.cityIds.reduce(
+        (total, cityId) => total + (cityMap.get(cityId)?.population ?? cityMap.get(cityId)?.size ?? 0),
+        0,
+      )
+      const newCityCount = action.cityIds.filter(cityId => !connectedCityIdSet.has(cityId)).length
+      const adjacentOwnedRouteCount = ownedRoutesOfMode.filter(
+        route => action.cityIds.includes(route.cityA) || action.cityIds.includes(route.cityB),
+      ).length
+      const railCost = action.mode === "rail" ? calculateClaimRouteCost(game, action, playerId) : 0
+      const connectorWastePenalty = getConnectorWastePenalty(action, connectedCityIdSet)
+
+      return (
+        newCityCount * 1000 +
+        (totalPopulation / 1_000_000) * 24 +
+        adjacentOwnedRouteCount * 80 -
+        (railCost / 1_000_000) * 10 -
+        (connectorWastePenalty / 1_000_000) * 36
+      )
+    }
+
+    return getClaimPriority(actionB) - getClaimPriority(actionA)
   }).slice(0, MAX_BOT_OPERATION_CLAIM_ACTIONS)
 
   const playerSummary = getCachedBureaucracySummary(game, playerId)
+  const assignedVehicleCardIds = new Set(
+    (playerSummary?.routePlans ?? [])
+      .map(plan => plan.vehicleCard?.id ?? null)
+      .filter((cardId): cardId is string => cardId !== null),
+  )
+  const unassignedOwnedVehicleCards = (player?.ownedVehicleCardIds ?? [])
+    .map(cardId => game.vehicleCatalog.find(card => card.id === cardId) ?? null)
+    .filter((card): card is GameState["vehicleCatalog"][number] => card !== null && !assignedVehicleCardIds.has(card.id))
+  const unassignedVehicleCountsByMode = unassignedOwnedVehicleCards.reduce<Record<"bus" | "rail" | "air", number>>(
+    (counts, card) => {
+      if (card.type === "bus") counts.bus += 1
+      if (card.type === "train") counts.rail += 1
+      if (card.type === "air") counts.air += 1
+      return counts
+    },
+    { bus: 0, rail: 0, air: 0 },
+  )
+  const unstaffedPodCountsByMode = (playerSummary?.routePlans ?? []).reduce<Record<"bus" | "rail" | "air", number>>(
+    (counts, plan) => {
+      if (!plan.isDisconnected && plan.selectedCityIds.length >= 2 && !plan.vehicleCard) {
+        counts[plan.route.mode] += 1
+      }
+      return counts
+    },
+    { bus: 0, rail: 0, air: 0 },
+  )
+  const remainingVehicleBudgetByMode = {
+    bus: Math.max(0, unassignedVehicleCountsByMode.bus - unstaffedPodCountsByMode.bus),
+    rail: Math.max(0, unassignedVehicleCountsByMode.rail - unstaffedPodCountsByMode.rail),
+    air: Math.max(0, unassignedVehicleCountsByMode.air - unstaffedPodCountsByMode.air),
+  }
   const podActions = playerSummary
     ? Array.from(
         playerSummary.routePlans.reduce((corridors, plan) => {
@@ -167,15 +271,20 @@ function getAvailableOperationsActions(game: GameState, playerId: string): BotAc
         const reusableEmptyPlan = activePlans.find(plan => plan.selectedCityIds.length === 0) ?? null
         const canAddSplitService = activePlans.some(plan => plan.canAddSplitService)
 
-        if (!reusableEmptyPlan && !canAddSplitService) {
-          return []
-        }
-
         const existingPodKeys = new Set(
           activePlans
             .filter(plan => plan.selectedCityIds.length >= 2)
             .map(plan => [...plan.selectedCityIds].sort().join("|")),
         )
+        const demandByCityId = new Map<string, number>()
+        for (const plan of corridorPlans) {
+          for (const demand of plan.cityCubeDemands) {
+            demandByCityId.set(
+              demand.cityId,
+              Math.max(demandByCityId.get(demand.cityId) ?? 0, demand.outboundCubes + demand.inboundCubes),
+            )
+          }
+        }
         const cityMap = new Map(game.cities.map(city => [city.id, city]))
         const candidateCityIds = buildServicePodCandidates(
           representativePlan.availableCityIds,
@@ -183,22 +292,54 @@ function getAvailableOperationsActions(game: GameState, playerId: string): BotAc
           cityMap,
         )
           .filter(cityIds => !existingPodKeys.has([...cityIds].sort().join("|")))
-          .slice(0, MAX_BOT_OPERATION_POD_ACTIONS_PER_CORRIDOR)
-        const routeId =
-          reusableEmptyPlan?.id ?? buildServiceSlotId(representativePlan.corridorId, activePlans.length)
+        const createNewPodActions =
+          remainingVehicleBudgetByMode[representativePlan.route.mode] <= 0 || (!reusableEmptyPlan && !canAddSplitService)
+            ? []
+            : candidateCityIds
+                .slice(0, MAX_BOT_OPERATION_POD_ACTIONS_PER_CORRIDOR)
+                .filter(cityIds => cityIds.some(cityId => (demandByCityId.get(cityId) ?? 0) > 0))
+                .map(cityIds => ({
+                  type: "create-service-pod" as const,
+                  corridorId: representativePlan.corridorId,
+                  routeId:
+                    reusableEmptyPlan?.id ?? buildServiceSlotId(representativePlan.corridorId, activePlans.length),
+                  cityIds,
+                }))
 
-        return candidateCityIds.map(cityIds => ({
-          type: "create-service-pod" as const,
-          corridorId: representativePlan.corridorId,
-          routeId,
-          cityIds,
-        }))
+        const expandExistingPodActions = activePlans
+          .filter(plan => plan.selectedCityIds.length >= 2)
+          .flatMap(plan =>
+            candidateCityIds
+              .filter(cityIds =>
+                cityIds.length > plan.selectedCityIds.length &&
+                plan.selectedCityIds.every(cityId => cityIds.includes(cityId)) &&
+                cityIds.some(
+                  cityId =>
+                    !plan.selectedCityIds.includes(cityId) &&
+                    (demandByCityId.get(cityId) ?? 0) > 0,
+                ),
+              )
+              .slice(0, Math.max(1, Math.floor(MAX_BOT_OPERATION_POD_ACTIONS_PER_CORRIDOR / 2)))
+              .map(cityIds => ({
+                type: "create-service-pod" as const,
+                corridorId: representativePlan.corridorId,
+                routeId: plan.id,
+                cityIds,
+              })),
+          )
+
+        return [...createNewPodActions, ...expandExistingPodActions]
       })
     : []
 
   const removePodCityActions: BotAction[] = playerSummary
     ? playerSummary.routePlans
-        .filter(plan => !plan.isDisconnected && plan.selectedCityIds.length >= 3)
+        .filter(
+          plan =>
+            !plan.isDisconnected &&
+            plan.selectedCityIds.length >= 3 &&
+            (plan.netRevenue ?? 0) < 0,
+        )
         .flatMap(plan =>
           plan.selectedCityIds
             .filter(cityId => {
@@ -221,10 +362,8 @@ function getAvailableOperationsActions(game: GameState, playerId: string): BotAc
     : []
 
   // Assign unassigned vehicles to pods that have no vehicle yet — prefer highest-capacity match
-  const player = getPlayerById(game, playerId)
-  const assignedVehicleCardIds = new Set(Object.values(game.bureaucracyVehicleCardIdsByRouteId))
-  const unassignedOwnedVehicleCardIds = (player?.ownedVehicleCardIds ?? [])
-    .filter(cardId => !assignedVehicleCardIds.has(cardId))
+  const unassignedOwnedVehicleCardIds = unassignedOwnedVehicleCards
+    .map(card => card.id)
     .sort((a, b) => {
       const capA = game.vehicleCatalog.find(c => c.id === a)?.totalPassengerCapacity ?? 0
       const capB = game.vehicleCatalog.find(c => c.id === b)?.totalPassengerCapacity ?? 0
@@ -377,42 +516,19 @@ function applyCreateServicePodAction(game: GameState, playerId: string, action: 
     throw new Error("The target service pod could not be created.")
   }
 
-  for (const cityId of action.cityIds) {
-    const refreshedSummary = getCachedBureaucracySummary(nextGame, playerId)
-    const refreshedTargetPlan = refreshedSummary?.routePlans.find(plan => plan.id === action.routeId) ?? null
+  const setCitiesResult = setBureaucracyServicePodCities(
+    nextGame,
+    action.corridorId,
+    [action.routeId],
+    action.cityIds,
+    playerId,
+  )
 
-    if (!refreshedTargetPlan) {
-      throw new Error("The target service pod could not be found.")
-    }
-
-    if (refreshedTargetPlan.selectedCityIds.includes(cityId)) {
-      continue
-    }
-
-    const sourcePlan =
-      refreshedSummary?.routePlans.find(
-        plan =>
-          plan.corridorId === action.corridorId &&
-          plan.id !== action.routeId &&
-          plan.selectedCityIds.includes(cityId),
-      ) ?? null
-    const moveResult = moveBureaucracyServiceCity(
-      nextGame,
-      action.corridorId,
-      cityId,
-      action.routeId,
-      sourcePlan?.id ?? null,
-      playerId,
-    )
-
-    if (!moveResult.ok) {
-      throw new Error(moveResult.error)
-    }
-
-    nextGame = moveResult.game
+  if (!setCitiesResult.ok) {
+    throw new Error(setCitiesResult.error)
   }
 
-  return nextGame
+  return setCitiesResult.game
 }
 
 export function getBotLegalActions(game: GameState, playerId: string): BotAction[] {
@@ -493,6 +609,13 @@ export function applyBotAction(game: GameState, playerId: string, action: BotAct
         action.sourceRouteId,
         playerId,
       )
+      if (!result.ok) {
+        throw new Error(result.error)
+      }
+      return result.game
+    }
+    case "delete-service-pod": {
+      const result = deleteBureaucracyServicePod(game, action.corridorId, action.routeId, playerId)
       if (!result.ok) {
         throw new Error(result.error)
       }

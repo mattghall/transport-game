@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react"
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react"
 import {
   type RailUpgradeResult,
-  type BureaucracyServiceCityMoveResult,
+  type BureaucracyServicePodCitiesResult,
   calculateClaimRouteCost,
   type BureaucracyServiceSplitResult,
   type BureaucracyVehicleCardResult,
@@ -164,13 +164,15 @@ type Props = {
     routeId: string,
     vehicleCardId: string | null,
   ) => MaybePromise<BureaucracyVehicleCardResult>
-  onAddBureaucracyServiceSplit: (corridorId: string, initialCityIds?: string[]) => MaybePromise<BureaucracyServiceSplitResult>
-  onMoveBureaucracyServiceCity: (
+  onAddBureaucracyServiceSplit: (
     corridorId: string,
-    cityId: string,
-    routeId: string,
-    sourceRouteId?: string | null,
-  ) => MaybePromise<BureaucracyServiceCityMoveResult>
+    initialCityIds?: string[],
+  ) => MaybePromise<BureaucracyServiceSplitResult>
+  onSetBureaucracyServicePodCities: (
+    corridorId: string,
+    routeIds: string[],
+    cityIds: string[],
+  ) => MaybePromise<BureaucracyServicePodCitiesResult>
   onDeleteBureaucracyServicePod: (
     corridorId: string,
     routeId: string,
@@ -183,6 +185,7 @@ type Props = {
   onAdvanceTurn: () => MaybePromise<{ ok: true; game: GameState } | { ok: false; error: string }>
   onStopAutoPlay: () => MaybePromise<void>
   onGoHome?: () => void
+  operationsInlineAction?: ReactNode
   onUndo: () => void
   canUndo: boolean
 }
@@ -203,6 +206,13 @@ type PreviewSegment = {
 }
 
 type DraggedPodCity = {
+  corridorId: string
+  routeId: string
+  routeIds: string[]
+  cityId: string
+}
+
+type SelectedDisconnectedPodCity = {
   corridorId: string
   routeId: string
   cityId: string
@@ -229,11 +239,12 @@ const POD_COLOR_PALETTE = [
   "#d97706",
   "#7c3aed",
   "#0891b2",
-  "#dc2626",
+  "#0f766e",
   "#4f46e5",
 ] as const
 const BUS_POD_COLOR_PALETTE = ["#2563eb", "#0f766e", "#7c3aed", "#db2777"] as const
-const RAIL_POD_COLOR_PALETTE = ["#b45309", "#dc2626", "#7c2d12", "#ea580c"] as const
+const RAIL_POD_COLOR_PALETTE = ["#b45309", "#7c2d12", "#ea580c", "#5b7395"] as const
+const CONFETTI_COLORS = ["#2563eb", "#16a34a", "#d97706", "#7c3aed", "#0891b2", "#db2777"] as const
 
 const BOARD_SHELL_STYLE = {
   position: "fixed",
@@ -359,7 +370,8 @@ const BOTTOM_BAR_STYLE = {
   borderRadius: 12,
   background: "rgba(255, 255, 255, 0.97)",
   boxShadow: "0 10px 28px rgba(0, 0, 0, 0.16)",
-  zIndex: 2,
+  zIndex: 25,
+  overflow: "visible",
   fontFamily: "system-ui, sans-serif",
 } as const
 
@@ -1261,6 +1273,106 @@ function InfoBubble({ label }: { label: string }) {
   )
 }
 
+type FloatingToast = {
+  id: number
+  message: string
+}
+
+type ConfettiPiece = {
+  id: number
+  left: number
+  delay: number
+  duration: number
+  rotation: number
+  size: number
+  color: string
+}
+
+let sharedAudioContext: AudioContext | null = null
+
+function getSharedAudioContext() {
+  if (typeof window === "undefined") {
+    return null
+  }
+
+  const AudioContextCtor =
+    window.AudioContext ||
+    (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+
+  if (!AudioContextCtor) {
+    return null
+  }
+
+  if (!sharedAudioContext) {
+    sharedAudioContext = new AudioContextCtor()
+  }
+
+  if (sharedAudioContext.state === "suspended") {
+    void sharedAudioContext.resume().catch(() => {})
+  }
+
+  return sharedAudioContext
+}
+
+function playTone(
+  context: AudioContext,
+  frequency: number,
+  startAt: number,
+  duration: number,
+  options?: { type?: OscillatorType; gain?: number; frequencyEnd?: number },
+) {
+  const oscillator = context.createOscillator()
+  const gainNode = context.createGain()
+  oscillator.type = options?.type ?? "sine"
+  oscillator.frequency.setValueAtTime(frequency, startAt)
+  if (options?.frequencyEnd !== undefined) {
+    oscillator.frequency.linearRampToValueAtTime(options.frequencyEnd, startAt + duration)
+  }
+  gainNode.gain.setValueAtTime(0.0001, startAt)
+  gainNode.gain.exponentialRampToValueAtTime(options?.gain ?? 0.08, startAt + 0.02)
+  gainNode.gain.exponentialRampToValueAtTime(0.0001, startAt + duration)
+  oscillator.connect(gainNode)
+  gainNode.connect(context.destination)
+  oscillator.start(startAt)
+  oscillator.stop(startAt + duration + 0.03)
+}
+
+function playTurnAlertSound() {
+  const context = getSharedAudioContext()
+  if (!context) return
+  const startAt = context.currentTime + 0.02
+  playTone(context, 392, startAt, 0.24, { type: "sawtooth", gain: 0.08, frequencyEnd: 370 })
+  playTone(context, 294, startAt + 0.06, 0.28, { type: "triangle", gain: 0.06, frequencyEnd: 262 })
+}
+
+function playCountdownTickSound() {
+  const context = getSharedAudioContext()
+  if (!context) return
+  const startAt = context.currentTime + 0.01
+  playTone(context, 1100, startAt, 0.08, { type: "square", gain: 0.03, frequencyEnd: 920 })
+}
+
+function playCelebrationSound() {
+  const context = getSharedAudioContext()
+  if (!context) return
+  const startAt = context.currentTime + 0.02
+  playTone(context, 523.25, startAt, 0.14, { type: "triangle", gain: 0.05 })
+  playTone(context, 659.25, startAt + 0.12, 0.16, { type: "triangle", gain: 0.05 })
+  playTone(context, 783.99, startAt + 0.26, 0.28, { type: "triangle", gain: 0.06 })
+}
+
+function buildConfettiPieces(count = 42): ConfettiPiece[] {
+  return Array.from({ length: count }, (_, index) => ({
+    id: index,
+    left: Math.random() * 100,
+    delay: Math.random() * 0.35,
+    duration: 2.6 + Math.random() * 1.8,
+    rotation: -180 + Math.random() * 360,
+    size: 8 + Math.random() * 8,
+    color: CONFETTI_COLORS[index % CONFETTI_COLORS.length],
+  }))
+}
+
 export default function Board({
   game,
   viewingPlayerId,
@@ -1275,11 +1387,12 @@ export default function Board({
   onUpgradeRailRoute,
   onSetBureaucracyRouteVehicleCard,
   onAddBureaucracyServiceSplit,
-  onMoveBureaucracyServiceCity,
+  onSetBureaucracyServicePodCities,
   onDeleteBureaucracyServicePod,
   onAdvanceTurn,
   onStopAutoPlay,
   onGoHome,
+  operationsInlineAction,
   onUndo,
   canUndo,
 }: Props) {
@@ -1290,6 +1403,7 @@ export default function Board({
   const [selectedOwnedCityIds, setSelectedOwnedCityIds] = useState<string[]>([])
   const [selectedRailSegmentKeys, setSelectedRailSegmentKeys] = useState<string[]>([])
   const [draggedPodCity, setDraggedPodCity] = useState<DraggedPodCity | null>(null)
+  const [selectedDisconnectedPodCity, setSelectedDisconnectedPodCity] = useState<SelectedDisconnectedPodCity | null>(null)
   const [draggedVehicleCard, setDraggedVehicleCard] = useState<{
     planId: string
     cardId: string
@@ -1309,6 +1423,13 @@ export default function Board({
   const [zoomScale, setZoomScale] = useState(1)
   const [isLiveStagePulseOn, setIsLiveStagePulseOn] = useState(false)
   const [turnTimerSecondsLeft, setTurnTimerSecondsLeft] = useState<number | null>(null)
+  const [floatingToast, setFloatingToast] = useState<FloatingToast | null>(null)
+  const [winnerConfettiPieces, setWinnerConfettiPieces] = useState<ConfettiPiece[]>([])
+  const [expandedEmptyOperationsCorridorIds, setExpandedEmptyOperationsCorridorIds] = useState<string[]>([])
+  const floatingToastTimeoutRef = useRef<number | null>(null)
+  const lastActionableAlertKeyRef = useRef<string | null>(null)
+  const lastCountdownTickSecondRef = useRef<number | null>(null)
+  const lastWinnerCelebrationKeyRef = useRef<string | null>(null)
 
   useEffect(() => {
     if (!game.turnTimerExpiresAt || !game.turnTimerSeconds) {
@@ -1352,6 +1473,14 @@ export default function Board({
     }, 3200)
 
     return () => window.clearInterval(intervalId)
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (floatingToastTimeoutRef.current !== null) {
+        window.clearTimeout(floatingToastTimeoutRef.current)
+      }
+    }
   }, [])
 
   useEffect(() => {
@@ -2408,9 +2537,16 @@ export default function Board({
       })
       const weeklyNet = player.weeklyPayout - player.operatingCosts
       const bureaucracySummary = bureaucracySummaries.find(s => s.player.id === player.id)
+      const projectedWeeklyNet =
+        game.currentPhase === "bureaucracy" && bureaucracySummary
+          ? bureaucracySummary.netRevenue
+          : weeklyNet
       const projectedMoney = game.currentPhase === "bureaucracy" && bureaucracySummary
         ? player.money + bureaucracySummary.netRevenue
         : player.money
+      const projectedPassengers = game.currentPhase === "bureaucracy" && bureaucracySummary
+        ? player.totalPassengersServed + bureaucracySummary.totalPassengersServed
+        : player.totalPassengersServed
       const ownedVehicleCards = player.ownedVehicleCardIds
         .map(cardId => vehicleCardMap[cardId])
         .filter((card): card is VehicleCard => card !== undefined)
@@ -2434,7 +2570,9 @@ export default function Board({
         ownedVehicleCounts,
         ownedRouteCount,
         weeklyNet,
+        projectedWeeklyNet,
         projectedMoney,
+        projectedPassengers,
       }
     })
   }, [cityMap, game, vehicleCardMap, bureaucracySummaries])
@@ -2518,6 +2656,7 @@ export default function Board({
           route: GameState["routes"][number]
           color: string
           opacity: number
+          plainGray: boolean
         }
       >()
       const addRoute = (
@@ -2525,6 +2664,7 @@ export default function Board({
         route: GameState["routes"][number],
         color: string,
         opacity: number,
+        plainGray = false,
       ) => {
         if (!routesByKey.has(key)) {
           routesByKey.set(key, {
@@ -2532,6 +2672,7 @@ export default function Board({
             route,
             color,
             opacity,
+            plainGray,
           })
         }
       }
@@ -2618,8 +2759,13 @@ export default function Board({
             addRoute(
               key,
               route,
-              routePodColorMap.get(key) ?? player.color,
-              MODE_LINE_STYLES[route.mode].opacity ?? 1,
+              viewerPhase === "purchase-equipment" && player.id !== currentPlayerId
+                ? "#9ca3af"
+                : routePodColorMap.get(key) ?? player.color,
+              viewerPhase === "purchase-equipment" && player.id !== currentPlayerId
+                ? 0.7
+                : MODE_LINE_STYLES[route.mode].opacity ?? 1,
+              viewerPhase === "purchase-equipment" && player.id !== currentPlayerId,
             )
           }
         }
@@ -2971,7 +3117,12 @@ export default function Board({
   const currentPlayerVehicleDemandByCardId = useMemo(() => {
     const demandByCardId: Record<
       string,
-      { selectedFleetSize: number; demandFleetSize: number }
+      {
+        selectedFleetSize: number
+        demandFleetSize: number
+        movablePassengerCapacity: number
+        passengerDemand: number
+      }
     > = {}
 
     currentPlayerBureaucracySummary?.routePlans.forEach(plan => {
@@ -2982,16 +3133,20 @@ export default function Board({
       const current = demandByCardId[plan.vehicleCard.id] ?? {
         selectedFleetSize: 0,
         demandFleetSize: 0,
+        movablePassengerCapacity: 0,
+        passengerDemand: 0,
       }
 
       current.selectedFleetSize += plan.selectedFleetSize
       current.demandFleetSize += plan.demandFleetSize
+      current.movablePassengerCapacity += plan.maxTripsByTime * plan.vehicleCard.totalPassengerCapacity
+      current.passengerDemand += getDemandCapacityForCityIds(game, plan.selectedCityIds)
 
       demandByCardId[plan.vehicleCard.id] = current
     })
 
     return demandByCardId
-  }, [currentPlayerBureaucracySummary])
+  }, [currentPlayerBureaucracySummary, game])
   const invalidCurrentPlayerPodRouteIds = useMemo(
     () =>
       new Set(
@@ -3057,6 +3212,11 @@ export default function Board({
   const areResizeHandlesVisible =
     !isResourceMarketOpen && !isBureaucracyOpen && !isEconomicsOpen && !isWikiOpen
   const canEditOperations = canPlayerEditOperations(game, activeViewingPlayerId)
+  const canReviewBureaucracy =
+    activeViewingPlayerId !== null &&
+    activeViewingPlayerId !== undefined &&
+    viewerPhase === "bureaucracy" &&
+    !hasPlayerCompletedBureaucracy(game, activeViewingPlayerId)
   const [demandFillHoveredDest, setDemandFillHoveredDest] = useState<string | null>(null)
   const [demandFillSelectedDest, setDemandFillSelectedDest] = useState<string | null>(null)
   const [networkMapGridSizes, setNetworkMapGridSizes] = useState<Record<string, { cols: number; rows: number }>>({})
@@ -3096,6 +3256,97 @@ export default function Board({
     : shouldAdvancePhase
       ? "Next phase"
       : "Next player"
+  const shouldShowTurnTimer =
+    turnTimerSecondsLeft !== null &&
+    (canBuyVehiclesInPipeline || canManageCurrentCityOffer || canEditOperations || canReviewBureaucracy)
+  const isViewerActionable =
+    !game.isGameOver &&
+    (canBuyVehiclesInPipeline || canManageCurrentCityOffer || canEditOperations || canReviewBureaucracy)
+  const canClosePeriodSummary =
+    game.isGameOver ||
+    activeViewingPlayerId === null ||
+    isViewerActionable
+
+  function showFloatingToast(message: string) {
+    const toast = { id: Date.now(), message }
+    setFloatingToast(toast)
+    if (floatingToastTimeoutRef.current !== null) {
+      window.clearTimeout(floatingToastTimeoutRef.current)
+    }
+    floatingToastTimeoutRef.current = window.setTimeout(() => {
+      setFloatingToast(current => (current?.id === toast.id ? null : current))
+    }, 3500)
+  }
+
+  useEffect(() => {
+    if (!isViewerActionable || isPeriodSummaryVisible || activeViewingPlayerId === null) {
+      return
+    }
+
+    const alertKey = [
+      game.currentWeek,
+      game.currentPhase,
+      activeViewingPlayerId,
+      game.currentPlayerId,
+      currentPlayer?.phase ?? "",
+      game.bureaucracyReadyPlayerIds.join("|"),
+    ].join(":")
+
+    if (lastActionableAlertKeyRef.current === alertKey) {
+      return
+    }
+
+    lastActionableAlertKeyRef.current = alertKey
+    showFloatingToast(`Your turn — ${formatPhaseLabel(viewerPhase)}`)
+    playTurnAlertSound()
+  }, [
+    activeViewingPlayerId,
+    currentPlayer?.phase,
+    game.bureaucracyReadyPlayerIds,
+    game.currentPhase,
+    game.currentPlayerId,
+    game.currentWeek,
+    isPeriodSummaryVisible,
+    isViewerActionable,
+    viewerPhase,
+  ])
+
+  useEffect(() => {
+    if (!shouldShowTurnTimer || !isViewerActionable || isPeriodSummaryVisible) {
+      lastCountdownTickSecondRef.current = null
+      return
+    }
+
+    if (
+      turnTimerSecondsLeft !== null &&
+      turnTimerSecondsLeft > 0 &&
+      turnTimerSecondsLeft <= 5 &&
+      lastCountdownTickSecondRef.current !== turnTimerSecondsLeft
+    ) {
+      lastCountdownTickSecondRef.current = turnTimerSecondsLeft
+      playCountdownTickSound()
+    }
+  }, [isPeriodSummaryVisible, isViewerActionable, shouldShowTurnTimer, turnTimerSecondsLeft])
+
+  useEffect(() => {
+    if (!game.isGameOver || !leadingStanding) {
+      return
+    }
+
+    const celebrationKey = `${game.currentWeek}:${leadingStanding.player.id}`
+    if (lastWinnerCelebrationKeyRef.current === celebrationKey) {
+      return
+    }
+
+    lastWinnerCelebrationKeyRef.current = celebrationKey
+    setWinnerConfettiPieces(buildConfettiPieces())
+    showFloatingToast(`${leadingStanding.player.name} wins!`)
+    playCelebrationSound()
+    const timeoutId = window.setTimeout(() => {
+      setWinnerConfettiPieces([])
+    }, 5000)
+    return () => window.clearTimeout(timeoutId)
+  }, [game.currentWeek, game.isGameOver, leadingStanding])
 
   function renderPodMiniMap(cityIds: string[], mode: RouteMode) {
     if (cityIds.length < 2) return null
@@ -3232,19 +3483,133 @@ export default function Board({
 
             // Pre-compute merged pod count so we can size the network group accordingly
             const cityKeyFn = (ids: string[]) => [...ids].sort().join("\x00")
-            const uniquePodKeys = new Set(
-              group.plans.filter(p => !p.isDisconnected).map(p => cityKeyFn(p.selectedCityIds))
-            )
+            const podKeyCounts = new Map<string, number>()
+            group.plans
+              .filter(p => !p.isDisconnected)
+              .forEach(plan => {
+                const key = cityKeyFn(plan.selectedCityIds)
+                podKeyCounts.set(key, (podKeyCounts.get(key) ?? 0) + 1)
+              })
+            const uniquePodKeys = new Set(podKeyCounts.keys())
             const mergedPodCount = Math.max(1, uniquePodKeys.size)
+            const widestMergedPodVehicleCount = Math.max(1, ...podKeyCounts.values(), 1)
             // Whether any route in this network has a vehicle assigned
             const anyVehicleAssigned = group.plans.some(p => !p.isDisconnected && p.vehicleCard != null)
+            const hasConfiguredPods = group.plans.some(
+              p => !p.isDisconnected && p.selectedCityIds.length > 0,
+            )
+            const hasPlaceholderPod = group.plans.some(p => !p.isDisconnected)
+            const isCompactEmptyNetwork =
+              !hasConfiguredPods &&
+              !expandedEmptyOperationsCorridorIds.includes(group.corridorId)
+            const disconnectedPaneWidth =
+              disconnectedPlan && (disconnectedPlan.selectedCityIds.length > 0 || anyVehicleAssigned)
+                ? 228
+                : 0
+            const widestMergedPodMinWidth = anyVehicleAssigned
+              ? Math.min(860, 220 + widestMergedPodVehicleCount * 170 + 220 + 24)
+              : 320
 
-            // Vehicle networks: higher grow + wider basis; no-vehicle: compact
-            const podBasisPx = anyVehicleAssigned ? 500 : 280
-            const podMinPx = anyVehicleAssigned ? 420 : 240
+            // Keep the outer network card at least as wide as the pods inside it so
+            // separate networks wrap onto the next line instead of spilling over one another.
             const networkFlexGrow = anyVehicleAssigned ? mergedPodCount * 2 : mergedPodCount
-            const networkFlexBasis = `${mergedPodCount * podBasisPx}px`
-            const networkMinWidth = mergedPodCount * podMinPx
+            const networkFlexBasis = `${Math.max(
+              260,
+              mergedPodCount * (anyVehicleAssigned ? 280 : 220),
+              widestMergedPodMinWidth + disconnectedPaneWidth,
+            )}px`
+            const networkMinWidth = anyVehicleAssigned
+              ? Math.min(
+                1120,
+                Math.max(
+                  360 + Math.max(0, mergedPodCount - 1) * 180,
+                  widestMergedPodMinWidth + disconnectedPaneWidth,
+                ),
+              )
+              : Math.min(560, 240 + Math.max(0, mergedPodCount - 1) * 120)
+
+            if (isCompactEmptyNetwork) {
+              return (
+                <div
+                  key={`pod-group-${group.corridorId}`}
+                  style={{
+                    border: "1px solid #e7ece5",
+                    borderRadius: 10,
+                    padding: 10,
+                    boxSizing: "border-box",
+                    display: "grid",
+                    gap: 10,
+                    background: "#fafcf9",
+                    flex: "0 1 300px",
+                    minWidth: 240,
+                    maxWidth: 320,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 8,
+                      alignItems: "baseline",
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <div style={{ fontSize: 12, color: "#324236" }}>
+                      <strong>{MODE_LABELS[group.mode]} network</strong>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!hasPlaceholderPod) {
+                          const added = await handleAddSplitService(group.corridorId)
+                          if (!added) {
+                            return
+                          }
+                        }
+                        setExpandedEmptyOperationsCorridorIds(current =>
+                          current.includes(group.corridorId)
+                            ? current
+                            : [...current, group.corridorId],
+                        )
+                      }}
+                      style={{
+                        padding: "6px 10px",
+                        borderRadius: 999,
+                        border: "1px solid #c7d0c4",
+                        background: "#ffffff",
+                        cursor: "pointer",
+                        fontSize: 12,
+                      }}
+                    >
+                      New route
+                    </button>
+                  </div>
+                  <div style={{ color: "#56635a", fontSize: 12 }}>
+                    {group.availableCityIds
+                      .map(cityId => cityMap[cityId]?.name ?? cityId)
+                      .join(", ")}
+                  </div>
+                  <div
+                    style={{
+                      border: "1.5px dashed #c7d0c4",
+                      borderRadius: 14,
+                      minHeight: 140,
+                      background: "#ffffff",
+                      color: "#8b948d",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: 12,
+                      fontStyle: "italic",
+                      textAlign: "center",
+                      padding: 12,
+                    }}
+                  >
+                    No vehicle assigned
+                  </div>
+                </div>
+              )
+            }
 
             return (
             <div
@@ -3259,6 +3624,7 @@ export default function Board({
                 background: "#fafcf9",
                 flex: `${networkFlexGrow} 1 ${networkFlexBasis}`,
                 minWidth: networkMinWidth,
+                maxWidth: "100%",
               }}
             >
               <div
@@ -3294,7 +3660,7 @@ export default function Board({
                   </button>
                 )}
               </div>
-              <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "flex-start", flexWrap: "wrap", minWidth: 0 }}>
                 {/* Content pods — wrap among themselves */}
                 <div style={{ flex: 1, display: "flex", gap: 8, flexWrap: "wrap", minWidth: 0 }}>
                 {(() => {
@@ -3327,9 +3693,22 @@ export default function Board({
                       draggedPodCity !== null &&
                       draggedPodCity.corridorId === group.corridorId &&
                       dropError === null
+                    const selectedDisconnectedAddError =
+                      selectedDisconnectedPodCity && selectedDisconnectedPodCity.corridorId === group.corridorId
+                        ? getPodMoveError(group.plans, selectedDisconnectedPodCity.cityId, plan.id)
+                        : null
+                    const canAddSelectedDisconnectedCityHere =
+                      selectedDisconnectedPodCity !== null &&
+                      selectedDisconnectedPodCity.corridorId === group.corridorId &&
+                      selectedDisconnectedAddError === null
                     const availableVehicleCards = currentPlayerOwnedVehicleCards.filter(
                       card => card.type === getVehicleTypeForMode(plan.route.mode),
                     )
+                    const vehicleSectionMinWidth = Math.min(
+                      560,
+                      180 + Math.max(0, mergedPod.plans.length - 1) * 170,
+                    )
+                    const citySectionMinWidth = plan.isDisconnected ? 0 : 220
 
                     return (
                     <div
@@ -3352,11 +3731,11 @@ export default function Board({
                           return
                         }
 
-                        handleMoveServiceCity(
+                        handleMoveServiceCityGroup(
                           draggedPodCity.corridorId,
                           draggedPodCity.cityId,
-                          plan.id,
-                          draggedPodCity.routeId,
+                          mergedPod.plans.map(mergedPlan => mergedPlan.id),
+                          draggedPodCity.routeIds,
                         )
                         setDraggedPodCity(null)
                       }}
@@ -3372,9 +3751,20 @@ export default function Board({
                             return { flex: "0 0 auto", minWidth: 0 }
                           }
                           const hasContent = mergedPod.plans.some(p => p.vehicleCard) || plan.selectedCityIds.length > 0
+                          const podLayoutMinWidth = Math.min(
+                            860,
+                            vehicleSectionMinWidth + citySectionMinWidth + 24,
+                          )
+                          const preferredPodWidth = Math.min(
+                            860,
+                            Math.max(
+                              podLayoutMinWidth,
+                              340 + Math.max(0, mergedPod.plans.length - 1) * 220,
+                            ),
+                          )
                           return hasContent
-                            ? { flex: "2 1 340px", minWidth: 0 }
-                            : { flex: "1 1 180px", minWidth: 0, maxWidth: 320 }
+                            ? { flex: `1 1 ${preferredPodWidth}px`, minWidth: podLayoutMinWidth }
+                            : { flex: "1 1 320px", minWidth: 320, maxWidth: 360 }
                         })(),
                         border: `1px dashed ${
                           draggedPodCity?.corridorId === group.corridorId
@@ -3389,8 +3779,10 @@ export default function Board({
                             : isInvalidPod ? "#fff5f5" : "#ffffff",
                         display: "flex",
                         flexDirection: "row",
+                        flexWrap: "wrap",
                         boxSizing: "border-box",
                         minHeight: 90,
+                        maxWidth: "100%",
                       }}
                     >
                       {/* ── Left: vehicle section ── */}
@@ -3434,9 +3826,13 @@ export default function Board({
                               ? "#eef6ee"
                               : "#f4f7f3",
                             borderRight: "1px solid #dde5da",
-                            flexShrink: 0,
+                            borderBottom: "none",
+                            flex: `1 1 ${vehicleSectionMinWidth}px`,
+                            minWidth: vehicleSectionMinWidth,
                             justifyContent: "space-between",
                             transition: "background 120ms ease",
+                            boxSizing: "border-box",
+                            maxWidth: "100%",
                           }}>
                           {/* Full vehicle cards — side by side for each plan in the merged group */}
                           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "stretch" }}>
@@ -3445,9 +3841,14 @@ export default function Board({
                                 mp,
                                 canEditOperations ? (
                                   mergedPod.plans.length === 1
-                                    ? null
+                                    ? () => {
+                                        void handleSetBureaucracyVehicleCard(mp.id, null)
+                                      }
                                     : () => handleDeleteServicePod(group.corridorId, mp.id, mp.selectedCityIds)
                                 ) : null,
+                                mergedPod.plans.length === 1
+                                  ? "Unassign this vehicle from the route"
+                                  : "Remove this vehicle from the route",
                                 group.corridorId,
                                 mergedPod.plans.length > 1,
                               )
@@ -3482,7 +3883,9 @@ export default function Board({
                                  borderRadius: 14,
                                  background: draggedVehicleCard ? "#f0faf0" : "#ffffff",
                                  border: `1.5px dashed ${draggedVehicleCard ? "#56a85c" : "#c7d0c4"}`,
-                                 minWidth: 156,
+                                 width: 176,
+                                 minWidth: 176,
+                                 maxWidth: 176,
                                  minHeight: 185,
                                  color: "#8b948d",
                                  fontSize: 11,
@@ -3542,7 +3945,7 @@ export default function Board({
                                 <option value="">— no vehicle —</option>
                                 {availableVehicleCards.map(card => (
                                   <option key={card.id} value={card.id}>
-                                    #{card.number} {card.name} ×{currentPlayerOwnedVehicleCountsByCardId[card.id] ?? 1}
+                                    {`${assignedVehicleCardIds.has(card.id) ? "" : "(unassigned) "}#${card.number} ${card.name} ×${currentPlayerOwnedVehicleCountsByCardId[card.id] ?? 1}`}
                                   </option>
                                 ))}
                               </select>
@@ -3571,12 +3974,13 @@ export default function Board({
 
                       {/* ── Right: cities section ── */}
                       <div style={{
-                        flex: plan.isDisconnected ? "0 0 auto" : 1,
+                        flex: plan.isDisconnected ? "0 0 auto" : `1 1 ${citySectionMinWidth}px`,
                         display: "flex",
                         flexDirection: "column",
                         gap: 4,
                         padding: 8,
-                        minWidth: 0,
+                        minWidth: citySectionMinWidth,
+                        boxSizing: "border-box",
                       }}>
                         {/* Top row: DISCONNECTED label or invalid warning + delete button */}
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 4 }}>
@@ -3592,6 +3996,36 @@ export default function Board({
                               </span>
                             )}
                           </div>
+                          {canEditOperations && canAddSelectedDisconnectedCityHere && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                const moved = await handleMoveServiceCityGroup(
+                                  group.corridorId,
+                                  selectedDisconnectedPodCity.cityId,
+                                  mergedPod.plans.map(mergedPlan => mergedPlan.id),
+                                  [selectedDisconnectedPodCity.routeId],
+                                )
+                                if (moved) {
+                                  setSelectedDisconnectedPodCity(null)
+                                }
+                              }}
+                              style={{
+                                border: "1px solid #86a889",
+                                background: "#f4f9f4",
+                                color: "#2c6e31",
+                                borderRadius: 999,
+                                padding: "3px 8px",
+                                cursor: "pointer",
+                                fontSize: 11,
+                                fontWeight: 700,
+                                whiteSpace: "nowrap",
+                                flexShrink: 0,
+                              }}
+                            >
+                              Add {(cityMap[selectedDisconnectedPodCity.cityId]?.name ?? selectedDisconnectedPodCity.cityId)} here
+                            </button>
+                          )}
                           {!plan.isDisconnected && (
                             <button
                               type="button"
@@ -3619,8 +4053,40 @@ export default function Board({
                         </div>
                         {/* Cities */}
                         {plan.selectedCityIds.length === 0 ? (
-                          <div style={{ color: "#8b948d", fontSize: 12 }}>
-                            {plan.isDisconnected ? "Click × or drop city here" : "Drop city here"}
+                          <div style={{ display: "grid", gap: 6 }}>
+                            <div style={{ color: "#8b948d", fontSize: 12 }}>
+                              {plan.isDisconnected ? "Click × or drop city here" : "Drop city here"}
+                            </div>
+                            {canEditOperations && !plan.isDisconnected && plan.availableCityIds.length >= 2 && (
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  const result = await onSetBureaucracyServicePodCities(
+                                    group.corridorId,
+                                    [plan.id],
+                                    plan.availableCityIds,
+                                  )
+                                  if (!result.ok) {
+                                    setStatusMessage(result.error)
+                                    return
+                                  }
+                                  setStatusMessage("Added every city in that corridor to the empty pod.")
+                                }}
+                                style={{
+                                  justifySelf: "start",
+                                  border: "1px solid #86a889",
+                                  background: "#f4f9f4",
+                                  color: "#2c6e31",
+                                  borderRadius: 999,
+                                  padding: "3px 8px",
+                                  cursor: "pointer",
+                                  fontSize: 11,
+                                  fontWeight: 700,
+                                }}
+                              >
+                                Add all
+                              </button>
+                            )}
                           </div>
                         ) : (
                           <>
@@ -3629,9 +4095,15 @@ export default function Board({
                                 <div
                                   key={`pod-editor-city-${plan.id}-${cityId}`}
                                   draggable
-                                  onDragStart={() =>
-                                    setDraggedPodCity({ corridorId: group.corridorId, routeId: plan.id, cityId })
-                                  }
+                                  onDragStart={() => {
+                                    setSelectedDisconnectedPodCity(null)
+                                    setDraggedPodCity({
+                                      corridorId: group.corridorId,
+                                      routeId: plan.id,
+                                      routeIds: mergedPod.plans.map(mergedPlan => mergedPlan.id),
+                                      cityId,
+                                    })
+                                  }}
                                   onDragEnd={() => setDraggedPodCity(null)}
                                   style={{
                                     border: "1px solid #d8dfd5",
@@ -3653,7 +4125,12 @@ export default function Board({
                                       onClick={event => {
                                         event.preventDefault()
                                         event.stopPropagation()
-                                        handleMoveServiceCity(group.corridorId, cityId, disconnectedPlan.id, plan.id)
+                                        handleMoveServiceCityGroup(
+                                          group.corridorId,
+                                          cityId,
+                                          [disconnectedPlan.id],
+                                          mergedPod.plans.map(mergedPlan => mergedPlan.id),
+                                        )
                                       }}
                                       title="Remove this city from this route only"
                                       style={{
@@ -3704,7 +4181,12 @@ export default function Board({
                         event.preventDefault()
                         if (!draggedPodCity || draggedPodCity.corridorId !== group.corridorId) return
                         if (dropError) { setStatusMessage(dropError); setDraggedPodCity(null); return }
-                        handleMoveServiceCity(draggedPodCity.corridorId, draggedPodCity.cityId, plan.id, draggedPodCity.routeId)
+                        handleMoveServiceCityGroup(
+                          draggedPodCity.corridorId,
+                          draggedPodCity.cityId,
+                          [plan.id],
+                          draggedPodCity.routeIds,
+                        )
                         setDraggedPodCity(null)
                       }}
                       style={{
@@ -3737,16 +4219,53 @@ export default function Board({
                             <div
                               key={`disc-city-${cityId}`}
                               draggable
-                              onDragStart={() => setDraggedPodCity({ corridorId: group.corridorId, routeId: plan.id, cityId })}
+                              onClick={() => {
+                                if (!canEditOperations) return
+                                setSelectedDisconnectedPodCity(current =>
+                                  current?.corridorId === group.corridorId &&
+                                  current.routeId === plan.id &&
+                                  current.cityId === cityId
+                                    ? null
+                                    : {
+                                      corridorId: group.corridorId,
+                                      routeId: plan.id,
+                                      cityId,
+                                    },
+                                )
+                              }}
+                              onDragStart={() => {
+                                setSelectedDisconnectedPodCity(null)
+                                setDraggedPodCity({
+                                  corridorId: group.corridorId,
+                                  routeId: plan.id,
+                                  routeIds: [plan.id],
+                                  cityId,
+                                })
+                              }}
                               onDragEnd={() => setDraggedPodCity(null)}
                               style={{
-                                border: "1px solid #d8dfd5",
+                                border:
+                                  selectedDisconnectedPodCity?.corridorId === group.corridorId &&
+                                  selectedDisconnectedPodCity.routeId === plan.id &&
+                                  selectedDisconnectedPodCity.cityId === cityId
+                                    ? "1px solid #2c6e31"
+                                    : "1px solid #d8dfd5",
                                 borderRadius: 999,
                                 padding: "3px 5px 3px 7px",
-                                background: "#ffffff",
-                                color: "#324236",
+                                background:
+                                  selectedDisconnectedPodCity?.corridorId === group.corridorId &&
+                                  selectedDisconnectedPodCity.routeId === plan.id &&
+                                  selectedDisconnectedPodCity.cityId === cityId
+                                    ? "#eef6ee"
+                                    : "#ffffff",
+                                color:
+                                  selectedDisconnectedPodCity?.corridorId === group.corridorId &&
+                                  selectedDisconnectedPodCity.routeId === plan.id &&
+                                  selectedDisconnectedPodCity.cityId === cityId
+                                    ? "#1f5f2a"
+                                    : "#324236",
                                 fontSize: 11,
-                                cursor: "grab",
+                                cursor: canEditOperations ? "pointer" : "grab",
                                 display: "inline-flex",
                                 alignItems: "center",
                                 gap: 4,
@@ -3755,6 +4274,11 @@ export default function Board({
                               <span>{(cityMap[cityId]?.name ?? cityId)} ({cityMap[cityId]?.size ?? "?"})</span>
                             </div>
                           ))}
+                        </div>
+                      )}
+                      {canEditOperations && selectedDisconnectedPodCity?.corridorId === group.corridorId && selectedDisconnectedPodCity.routeId === plan.id && (
+                        <div style={{ fontSize: 11, color: "#2c6e31" }}>
+                          Selected {(cityMap[selectedDisconnectedPodCity.cityId]?.name ?? selectedDisconnectedPodCity.cityId)}. Tap <strong>Add here</strong> on any legal pod.
                         </div>
                       )}
                     </div>
@@ -4109,6 +4633,37 @@ export default function Board({
       return
     }
 
+    if (canEditOperations) {
+      const understaffedAssignedPlans = currentPlayerActiveBureaucracyPlans.filter(
+        plan => plan.vehicleCard !== null && plan.selectedCityIds.length <= 1,
+      )
+      const warningLines: string[] = []
+
+      if (unassignedVehicleCards.length > 0) {
+        warningLines.push(
+          unassignedVehicleCards.length === 1
+            ? "You still have 1 vehicle not assigned to any pod."
+            : `You still have ${unassignedVehicleCards.length} vehicles not assigned to any pods.`,
+        )
+      }
+
+      if (understaffedAssignedPlans.length > 0) {
+        warningLines.push(
+          understaffedAssignedPlans.length === 1
+            ? "You have 1 pod with a vehicle assigned but only 0-1 cities in it."
+            : `You have ${understaffedAssignedPlans.length} pods with vehicles assigned but only 0-1 cities in them.`,
+        )
+      }
+
+      if (
+        warningLines.length > 0 &&
+        !window.confirm(`${warningLines.join("\n")}\n\nContinue anyway?`)
+      ) {
+        setStatusMessage("Finish assigning vehicles and cities before continuing, or confirm the warning.")
+        return
+      }
+    }
+
     const nextStatusMessage = shouldAdvancePhase
       ? `Starting ${formatPhaseLabel(getNextPhase(game.currentPhase)).toLowerCase()}.`
       : `${nextPlayer?.name ?? "Next player"} is up.`
@@ -4207,9 +4762,72 @@ export default function Board({
     }
   }
 
+  function renderDemandUtilizationBar(
+    movablePassengerCapacity: number,
+    passengerDemand: number,
+    accentColor: string,
+  ) {
+    const safeCapacity = Math.max(0, movablePassengerCapacity)
+    const safeDemand = Math.max(0, passengerDemand)
+
+    if (safeCapacity <= 0) {
+      return null
+    }
+
+    const rawUtilizationRatio = safeDemand / safeCapacity
+    const utilizationRatio = clamp(rawUtilizationRatio, 0, 1)
+    const utilizationPercent = Math.round(utilizationRatio * 100)
+    const rawUtilizationPercent = Math.round(rawUtilizationRatio * 100)
+    const hasExtraCapacity = safeCapacity > safeDemand
+    const demandExceedsCapacity = safeDemand > safeCapacity
+    const fillColor =
+      safeDemand === 0
+        ? "#7d8d80"
+        : hasExtraCapacity
+          ? accentColor
+          : "#b42318"
+
+    return (
+      <div style={{ display: "grid", gap: 4 }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            gap: 8,
+            color: "#56635a",
+            fontSize: 10,
+            fontWeight: 700,
+          }}
+        >
+          <span>{demandExceedsCapacity ? "Overcrowded" : "Seats filled"}</span>
+          <span>{formatDecimal(demandExceedsCapacity ? rawUtilizationPercent : utilizationPercent, 0)}%</span>
+        </div>
+        <div
+          style={{
+            height: 7,
+            borderRadius: 999,
+            overflow: "hidden",
+            background: colorWithOpacity(fillColor, 0.16),
+            boxShadow: "inset 0 0 0 1px rgba(34, 48, 36, 0.08)",
+          }}
+        >
+          <div
+            style={{
+              width: `${utilizationPercent}%`,
+              height: "100%",
+              background: fillColor,
+              transition: "width 120ms ease",
+            }}
+          />
+        </div>
+      </div>
+    )
+  }
+
   function renderPodVehicleCard(
     plan: BureaucracyRoutePlan,
     onRemove?: (() => void) | null,
+    onRemoveTitle?: string,
     corridorId?: string,
     hasSiblings?: boolean,
   ) {
@@ -4221,6 +4839,8 @@ export default function Board({
     const cardBorderColor = colorWithOpacity(accentColor, 0.55)
     const fleetCount = plan.selectedFleetSize
     const isDemandShortfall = fleetCount < plan.demandFleetSize
+    const podPassengerDemand = getDemandCapacityForCityIds(game, plan.selectedCityIds)
+    const podMovablePassengerCapacity = plan.maxTripsByTime * card.totalPassengerCapacity
     const stackedDiceValues = [fleetCount, fleetCount - 6, fleetCount - 12]
       .filter(v => v > 0)
       .map(v => Math.min(v, 6))
@@ -4247,7 +4867,8 @@ export default function Board({
           background: cardBackground,
           boxShadow: cardShadow,
           fontSize: 12,
-          minWidth: 156,
+          width: 176,
+          minWidth: 176,
           maxWidth: 176,
           flexShrink: 0,
           cursor: "grab",
@@ -4258,7 +4879,7 @@ export default function Board({
           <button
             type="button"
             onClick={onRemove}
-            title="Remove this vehicle from the route"
+            title={onRemoveTitle ?? "Remove this vehicle from the route"}
             style={{
               position: "absolute",
               top: 6,
@@ -4304,6 +4925,7 @@ export default function Board({
             {fleetCount}/{plan.demandFleetSize}
           </span>
         </div>
+        {renderDemandUtilizationBar(podMovablePassengerCapacity, podPassengerDemand, accentColor)}
         {/* Stats */}
         <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 8px", color: "#324236", fontSize: 11, lineHeight: 1.25 }}>
           <span>👥 {card.totalPassengerCapacity.toLocaleString()} seats</span>
@@ -4530,6 +5152,12 @@ export default function Board({
             )}
           </div>
         )}
+        {isOwnedSection &&
+          renderDemandUtilizationBar(
+            demandCoverage?.movablePassengerCapacity ?? 0,
+            demandCoverage?.passengerDemand ?? 0,
+            accentColor,
+          )}
         <div
           style={{
             display: "flex",
@@ -4659,7 +5287,7 @@ export default function Board({
               onClick={() =>
                 setPendingExchangeOldCardId(current => (current === card.id ? null : card.id))
               }
-              title={canUpgrade ? "Trade in this vehicle and replace it with a market vehicle" : "Upgrade only available during purchase phase"}
+              title={canUpgrade ? "Trade in this vehicle and replace it with a market vehicle" : "Replacement only available during purchase phase"}
               style={{
                 padding: "6px 10px",
                 borderRadius: 999,
@@ -4671,7 +5299,7 @@ export default function Board({
                 color: isBeingUpgraded ? "#c0392b" : canUpgrade ? "#7a6830" : "#9ba59d",
               }}
             >
-              {isBeingUpgraded ? "Cancel" : "Upgrade"}
+              {isBeingUpgraded ? "Cancel" : "Replace"}
             </button>
           </>
         ) : upgradingOldCard ? (
@@ -4755,7 +5383,7 @@ export default function Board({
       setStatusMessage(result.error)
     } else {
       setStatusMessage(
-        `Upgraded to #${result.newCard.number} ${result.newCard.name} (traded in #${result.oldCard.number} ${result.oldCard.name}). Net cost: ${formatCurrency(result.cost)}.`,
+        `Replaced #${result.oldCard.number} ${result.oldCard.name} with #${result.newCard.number} ${result.newCard.name}. Net cost: ${formatCurrency(result.cost)}.`,
       )
     }
     setPendingVehiclePurchaseCardId(null)
@@ -4782,10 +5410,11 @@ export default function Board({
 
     if (!result.ok) {
       setStatusMessage(result.error)
-      return
+      return false
     }
 
-    setStatusMessage("Added another service slot on that corridor.")
+    setStatusMessage("Added a new pod on that corridor.")
+    return true
   }
 
   async function handleAddVehicleToRoute(corridorId: string, currentCityIds: string[]) {
@@ -4796,38 +5425,78 @@ export default function Board({
       return
     }
 
-    setStatusMessage("Added another vehicle to that route.")
+    setStatusMessage("Added another vehicle slot to that route.")
   }
 
-  async function handleMoveServiceCity(
+  async function handleMoveServiceCityGroup(
     corridorId: string,
     cityId: string,
-    routeId: string,
-    sourceRouteId: string | null = null,
-  ) {
-    const result = await onMoveBureaucracyServiceCity(
+    targetRouteIds: string[],
+    sourceRouteIds: string[] = [],
+  ): Promise<boolean> {
+    const effectiveTargetRouteIds = [...new Set(targetRouteIds)]
+
+    if (effectiveTargetRouteIds.length === 0) {
+      return false
+    }
+
+    const primaryTargetRouteId = effectiveTargetRouteIds[0]
+    const primarySourceRouteId = sourceRouteIds[0] ?? null
+    const targetPlan = findPlayerBureaucracyPlan(game, currentPlayer.id, primaryTargetRouteId)
+    const sourcePlan =
+      primarySourceRouteId === null
+        ? null
+        : findPlayerBureaucracyPlan(game, currentPlayer.id, primarySourceRouteId)
+
+    if (!targetPlan) {
+      setStatusMessage("That route could not be found.")
+      return false
+    }
+
+    if (targetPlan.isDisconnected) {
+      const effectiveSourceRouteIds = [...new Set(sourceRouteIds)]
+      const nextCityIds = (sourcePlan?.selectedCityIds ?? []).filter(
+        selectedCityId => selectedCityId !== cityId,
+      )
+
+      if (effectiveSourceRouteIds.length === 0) {
+        setStatusMessage("That route could not be found.")
+        return false
+      }
+
+      const result = await onSetBureaucracyServicePodCities(
+        corridorId,
+        effectiveSourceRouteIds,
+        nextCityIds,
+      )
+
+      if (!result.ok) {
+        setStatusMessage(result.error)
+        return false
+      }
+
+      setStatusMessage(
+        `Removed ${cityMap[cityId]?.name ?? cityId} from ${sourcePlan?.serviceLabel ?? "that route"}.`,
+      )
+      return true
+    }
+
+    const nextCityIds = [...new Set([...(targetPlan.selectedCityIds ?? []), cityId])]
+    const result = await onSetBureaucracyServicePodCities(
       corridorId,
-      cityId,
-      routeId,
-      sourceRouteId,
+      effectiveTargetRouteIds,
+      nextCityIds,
     )
 
     if (!result.ok) {
       setStatusMessage(result.error)
-      return
+      return false
     }
 
-    const targetPlan = findPlayerBureaucracyPlan(game, currentPlayer.id, routeId)
-    const sourcePlan =
-      sourceRouteId === null
-        ? null
-        : findPlayerBureaucracyPlan(game, currentPlayer.id, sourceRouteId)
-
     setStatusMessage(
-      targetPlan?.isDisconnected
-        ? `Removed ${cityMap[cityId]?.name ?? cityId} from ${sourcePlan?.serviceLabel ?? "that route"}.`
-        : `Copied ${cityMap[cityId]?.name ?? cityId} into ${targetPlan?.serviceLabel ?? "that route"}.`,
+      `Copied ${cityMap[cityId]?.name ?? cityId} into ${targetPlan.serviceLabel ?? "that route"}.`,
     )
+    return true
   }
 
   async function handleDeleteServicePod(corridorId: string, routeId: string, cityIds: string[]) {
@@ -4949,7 +5618,7 @@ export default function Board({
       <div style={TOP_BAR_STYLE}>
         <div style={TOP_BAR_PLAYERS_STYLE}>
         {playerSummaries.map(
-          ({ player, connectedCities, weeklyNet, ownedVehicleCardCounts, ownedRouteCount, projectedMoney }) => (
+          ({ player, connectedCities, projectedWeeklyNet, ownedVehicleCardCounts, ownedRouteCount, projectedMoney, projectedPassengers }) => (
             <button
               key={`${player.id}-summary`}
               type="button"
@@ -4977,15 +5646,15 @@ export default function Board({
               </div>
               <div
                 style={{
-                  color: weeklyNet > 0 ? "#2a7f3b" : weeklyNet < 0 ? "#b42318" : "#666666",
+                  color: projectedWeeklyNet > 0 ? "#2a7f3b" : projectedWeeklyNet < 0 ? "#b42318" : "#666666",
                   fontWeight: 600,
                 }}
               >
-                {weeklyNet >= 0 ? "+" : "-"}
-                {formatCurrency(Math.abs(weeklyNet))}
+                {projectedWeeklyNet >= 0 ? "+" : "-"}
+                {formatCurrency(Math.abs(projectedWeeklyNet))}
               </div>
               <div style={{ display: "flex", gap: 8, color: "#324236", alignItems: "center" }}>
-                <span>👥 {formatDecimal(player.totalPassengersServed, 0)}</span>
+                <span>👥 {formatDecimal(projectedPassengers, 0)}</span>
                 <span>🏙 {connectedCities.length}</span>
                 <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
                   {ownedVehicleCardCounts.bus > 0 && (
@@ -5028,6 +5697,24 @@ export default function Board({
           ),
         )}
         </div>
+        {shouldShowTurnTimer && (
+          <div
+            style={{
+              flex: "0 0 auto",
+              alignSelf: "center",
+              padding: "8px 12px",
+              borderRadius: 10,
+              border: "1px solid #d8dfd5",
+              background: "#ffffff",
+              color: turnTimerSecondsLeft <= 10 ? "#c0392b" : "#324236",
+              fontSize: 13,
+              fontWeight: 700,
+              whiteSpace: "nowrap",
+            }}
+          >
+            ⏱ {turnTimerSecondsLeft}s
+          </div>
+        )}
       </div>
       <div style={rowTwoStyle}>
         <div
@@ -5407,7 +6094,7 @@ export default function Board({
               )
             })}
 
-            {displayedMapRoutes.map(({ id, route, color, opacity }) => {
+            {displayedMapRoutes.map(({ id, route, color, opacity, plainGray }) => {
               const aCity = cityMap[route.cityA]
               const bCity = cityMap[route.cityB]
               if (!aCity || !bCity) return null
@@ -5430,6 +6117,20 @@ export default function Board({
                   ? "18 6"
                   : lineStyle.strokeDasharray
               const finalRouteOpacity = game.isGameOver ? 1 : opacity
+
+              if (plainGray) {
+                return (
+                  <path
+                    key={id}
+                    d={d}
+                    stroke={color}
+                    strokeWidth={4}
+                    fill="none"
+                    strokeLinecap="round"
+                    opacity={finalRouteOpacity}
+                  />
+                )
+              }
 
               return (
                 <g key={id}>
@@ -5632,7 +6333,7 @@ export default function Board({
                   border: "1px solid #d8dfd5",
                   background: "#f8faf7",
                   boxShadow: "0 10px 28px rgba(0, 0, 0, 0.16)",
-                  zIndex: 3,
+                  zIndex: 40,
                 }}
               >
                 {lanSessionStatus && (
@@ -6017,16 +6718,6 @@ export default function Board({
                 <span style={{ display: "inline-block", whiteSpace: "nowrap", transform: "rotate(90deg)" }}>
                   Next
                 </span>
-                {turnTimerSecondsLeft !== null && (
-                  <span style={{
-                    fontSize: 10,
-                    fontWeight: 700,
-                    color: turnTimerSecondsLeft <= 10 ? "#c0392b" : "#56635a",
-                    lineHeight: 1,
-                  }}>
-                    {turnTimerSecondsLeft}s
-                  </span>
-                )}
               </button>
           </div>
         </div>
@@ -6079,12 +6770,12 @@ export default function Board({
               <div>
                 <strong>End of year {completedPeriod} summary</strong>
                 <div style={{ color: "#56635a", fontSize: 13 }}>
-                  {game.bureaucracyReadyPlayerIds.includes(activeViewingPlayerId) && game.currentPhase !== "purchase-equipment"
+                  {!canClosePeriodSummary
                     ? "Waiting for other players to finish…"
                     : "Revenue, costs, and passenger totals from the year that just finished."}
                 </div>
               </div>
-              {!(game.bureaucracyReadyPlayerIds.includes(activeViewingPlayerId) && game.currentPhase !== "purchase-equipment") && (
+              {canClosePeriodSummary && (
                 <button
                   type="button"
                   onClick={() => setIsPeriodSummaryOpen(false)}
@@ -6565,6 +7256,26 @@ export default function Board({
       )}
       {expandedPlayerSummary && (
         <div style={playerPanelStyle}>
+          {(() => {
+            const liveSummary =
+              game.currentPhase === "bureaucracy"
+                ? bureaucracySummaries.find(summary => summary.player.id === expandedPlayerSummary.player.id) ?? null
+                : null
+            const displayedMoney = liveSummary
+              ? expandedPlayerSummary.player.money + liveSummary.netRevenue
+              : expandedPlayerSummary.player.money
+            const displayedOperatingCost = liveSummary
+              ? liveSummary.totalOperatingCost
+              : expandedPlayerSummary.player.operatingCosts
+            const displayedRevenue = liveSummary
+              ? liveSummary.totalRevenue
+              : expandedPlayerSummary.player.weeklyPayout
+            const displayedPassengers = liveSummary
+              ? expandedPlayerSummary.player.totalPassengersServed + liveSummary.totalPassengersServed
+              : expandedPlayerSummary.player.totalPassengersServed
+
+            return (
+              <>
           <strong>Player ledger</strong>
           <div style={PLAYER_CARD_STYLE}>
             <div>
@@ -6573,19 +7284,19 @@ export default function Board({
               </strong>
             </div>
             <div>
-              <strong>Money:</strong> {formatCurrency(expandedPlayerSummary.player.money)}
+              <strong>Money:</strong> {formatCurrency(displayedMoney)}
             </div>
             <div>
               <strong>Operating costs:</strong>{" "}
-              {formatCurrency(expandedPlayerSummary.player.operatingCosts)}
+              {formatCurrency(displayedOperatingCost)}
             </div>
             <div>
               <strong>Annual revenue:</strong>{" "}
-              {formatCurrency(expandedPlayerSummary.player.weeklyPayout)}
+              {formatCurrency(displayedRevenue)}
             </div>
             <div>
               <strong>Total passengers:</strong>{" "}
-              {formatDecimal(expandedPlayerSummary.player.totalPassengersServed, 0)}
+              {formatDecimal(displayedPassengers, 0)}
             </div>
             <div>
               <strong>Vehicles:</strong>{" "}
@@ -6689,6 +7400,9 @@ export default function Board({
               </div>
             ) : null}
           </div>
+              </>
+            )
+          })()}
         </div>
       )}
       {isBureaucracyOpen && (
@@ -6852,209 +7566,6 @@ export default function Board({
                     </div>
                   ) : (
                   <>
-                   {!canEditOperations && currentPlayerCombinedDemandFill.length > 0 && (
-                    <div
-                      style={{
-                        border: "1px solid #e1e6df",
-                        borderRadius: 10,
-                        padding: 10,
-                        background: "#ffffff",
-                        display: "grid",
-                        gap: 8,
-                      }}
-                    >
-                      <div>
-                        <strong>City demand fill</strong>
-                        <span style={{ color: "#56635a", fontSize: 11, marginLeft: 8 }}>
-                          1 box = 10 cubes • hover to see destinations
-                        </span>
-                      </div>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                        {currentPlayerCombinedDemandFill.map(
-                          ({
-                            city,
-                            outboundCubes,
-                            movedOutboundCubes,
-                          }) => {
-                            const intentEntry = currentPlayerBureaucracySummary?.outboundIntentByCity.find(
-                              e => e.cityId === city.id,
-                            )
-                            const cityHasService = currentPlayerActiveBureaucracyPlans.some(
-                              plan => plan.selectedCityIds.includes(city.id),
-                            )
-                            const stuckEntry = currentPlayerBureaucracySummary?.stuckCubesByCity.find(
-                              s => s.cityId === city.id,
-                            )
-                            type Tone = "green" | "white" | "red"
-
-                            const CUBES_PER_BOX = 10
-
-                            // Build flat per-cube destination arrays from initial intent
-                            const allCubeDestinations: string[] = []
-                            if (intentEntry) {
-                              for (const dest of intentEntry.destinations) {
-                                for (let i = 0; i < dest.cubeCount; i++) {
-                                  allCubeDestinations.push(dest.destCityName)
-                                }
-                              }
-                            }
-
-                            const movedCubeDestinations = allCubeDestinations.slice(0, movedOutboundCubes)
-                            const unmovedCubeDestinations = allCubeDestinations.slice(movedOutboundCubes)
-
-                            const unmovedCount = Math.max(0, outboundCubes - movedOutboundCubes)
-                            const unmovedTone: Tone = cityHasService ? "white" : "red"
-
-                            // Fill any gap from stuck cubes at intermediate cities (transit)
-                            if (unmovedCubeDestinations.length < unmovedCount && stuckEntry) {
-                              for (const wanted of stuckEntry.wantedDestinations) {
-                                for (let i = 0; i < wanted.cubeCount && unmovedCubeDestinations.length < unmovedCount; i++) {
-                                  unmovedCubeDestinations.push(wanted.destCityName)
-                                }
-                              }
-                            }
-                            while (unmovedCubeDestinations.length < unmovedCount) {
-                              unmovedCubeDestinations.push("unknown")
-                            }
-
-                            function buildBoxes(cubeList: string[], tone: Tone): Array<{ tone: Tone; tooltip: string; primaryDest: string }> {
-                              if (cubeList.length === 0) return []
-                              const counts = new Map<string, number>()
-                              for (const d of cubeList) counts.set(d, (counts.get(d) ?? 0) + 1)
-                              const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1])
-
-                              const fullBoxes: Array<{ tone: Tone; tooltip: string; primaryDest: string }> = []
-                              const remainders: Array<{ dest: string; count: number }> = []
-
-                              for (const [dest, count] of sorted) {
-                                const full = Math.floor(count / CUBES_PER_BOX)
-                                const rem = count % CUBES_PER_BOX
-                                for (let i = 0; i < full; i++) {
-                                  fullBoxes.push({ tone, tooltip: `→ ${dest}`, primaryDest: dest })
-                                }
-                                if (rem > 0) remainders.push({ dest, count: rem })
-                              }
-
-                              // Sort remainders by count desc, pack sequentially into boxes of 10
-                              remainders.sort((a, b) => b.count - a.count)
-                              const remBoxes: Array<{ tone: Tone; tooltip: string; primaryDest: string }> = []
-                              let buf: string[] = []
-                              for (const { dest, count } of remainders) {
-                                for (let i = 0; i < count; i++) {
-                                  buf.push(dest)
-                                  if (buf.length === CUBES_PER_BOX) {
-                                    const c = new Map<string, number>()
-                                    for (const d of buf) c.set(d, (c.get(d) ?? 0) + 1)
-                                    const topDest = [...c.entries()].sort((a, b) => b[1] - a[1])[0][0]
-                                    const parts = [...c.entries()].sort((a, b) => b[1] - a[1]).map(([d, n]) => c.size === 1 ? `→ ${d}` : `→ ${d} (${n})`).join(", ")
-                                    remBoxes.push({ tone, tooltip: parts, primaryDest: topDest })
-                                    buf = []
-                                  }
-                                }
-                              }
-                              if (buf.length > 0) {
-                                const c = new Map<string, number>()
-                                for (const d of buf) c.set(d, (c.get(d) ?? 0) + 1)
-                                const topDest = [...c.entries()].sort((a, b) => b[1] - a[1])[0][0]
-                                const parts = [...c.entries()].sort((a, b) => b[1] - a[1]).map(([d, n]) => c.size === 1 ? `→ ${d}` : `→ ${d} (${n})`).join(", ")
-                                remBoxes.push({ tone, tooltip: parts, primaryDest: topDest })
-                              }
-
-                              return [...fullBoxes, ...remBoxes]
-                            }
-
-                            const boxes: Array<{ tone: Tone; tooltip: string; primaryDest: string }> = [
-                              ...buildBoxes(movedCubeDestinations, "green"),
-                              ...buildBoxes(unmovedCubeDestinations, unmovedTone),
-                            ]
-
-                            // Group boxes by primaryDest preserving order of first appearance
-                            const destOrder: string[] = []
-                            const boxesByDest = new Map<string, typeof boxes>()
-                            for (const box of boxes) {
-                              if (!boxesByDest.has(box.primaryDest)) {
-                                destOrder.push(box.primaryDest)
-                                boxesByDest.set(box.primaryDest, [])
-                              }
-                              boxesByDest.get(box.primaryDest)!.push(box)
-                            }
-
-                            return (
-                              <div
-                                key={`${city.id}-combined-fill`}
-                                style={{
-                                  border: "1px solid #d8dfd5",
-                                  borderRadius: 10,
-                                  padding: "6px 8px",
-                                  background: "#ffffff",
-                                  display: "grid",
-                                  gap: 4,
-                                  minWidth: 120,
-                                }}
-                              >
-                                <div style={{ fontSize: 12 }}>
-                                  <strong
-                                    onClick={() => setDemandFillSelectedDest(demandFillSelectedDest === city.name ? null : city.name)}
-                                    style={{
-                                      cursor: "pointer",
-                                      color: demandFillSelectedDest === city.name || demandFillHoveredDest === city.name ? "#2563eb" : undefined,
-                                      textDecoration: demandFillSelectedDest === city.name ? "underline" : undefined,
-                                      userSelect: "none",
-                                    }}
-                                  >{city.name}</strong>
-                                  {" • "}size {city.size}
-                                </div>
-                                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "flex-start" }}>
-                                  {destOrder.map(dest => {
-                                    const destBoxes = boxesByDest.get(dest)!
-                                    const isHighlighted = demandFillHoveredDest === dest || demandFillSelectedDest === dest
-                                    return (
-                                      <div
-                                        key={dest}
-                                        style={{
-                                          display: "inline-flex",
-                                          flexWrap: "wrap",
-                                          gap: 3,
-                                          padding: 2,
-                                          borderRadius: 4,
-                                          outline: isHighlighted ? "2px solid #2563eb" : "2px solid transparent",
-                                          transition: "outline-color 0.1s",
-                                        }}
-                                        onMouseEnter={() => setDemandFillHoveredDest(dest)}
-                                        onMouseLeave={() => setDemandFillHoveredDest(null)}
-                                      >
-                                        {destBoxes.map((box, i) => (
-                                          <span
-                                            key={i}
-                                            title={box.tooltip}
-                                            style={{
-                                              width: 12,
-                                              height: 12,
-                                              borderRadius: 3,
-                                              border: `1px solid ${box.tone === "green" ? "#5fbf72" : box.tone === "red" ? "#ef4444" : "#c8d0c8"}`,
-                                              background: box.tone === "green" ? "#5fbf72" : box.tone === "red" ? "#fca5a5" : "#ffffff",
-                                              display: "inline-block",
-                                              boxSizing: "border-box",
-                                            }}
-                                          />
-                                        ))}
-                                      </div>
-                                    )
-                                  })}
-                                </div>
-                                <div style={{ color: "#56635a", fontSize: 11 }}>
-                                  Moved{" "}
-                                  <span style={{ color: unmovedCount > 0 ? (unmovedTone === "red" ? "#b42318" : "#56635a") : "#1a7c3c", fontWeight: 600 }}>
-                                    {movedOutboundCubes}/{outboundCubes}
-                                  </span>
-                                </div>
-                              </div>
-                            )
-                          },
-                        )}
-                      </div>
-                    </div>
-                  )}
                   {canEditOperations
                     ? currentPlayerBureaucracyPlansByMode.map(({ mode, plans }) => (
                       <div
@@ -7082,6 +7593,13 @@ export default function Board({
                               plan.availableCityIds.length > 0
                                 ? plan.availableCityIds
                                 : plan.selectedCityIds
+                            const airSelectedCityIds =
+                              plan.route.mode === "air"
+                                ? [
+                                    plan.selectedCityIds[0] ?? plan.availableCityIds[0] ?? "",
+                                    plan.selectedCityIds[1] ?? plan.availableCityIds[1] ?? "",
+                                  ]
+                                : null
                             return (
                               <div
                                 key={plan.id}
@@ -7105,23 +7623,87 @@ export default function Board({
                                     {" • "}Route cities {podCityIds.length}
                                   </div>
                                 </div>
-                                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                                  {podCityIds.map(cityId => (
-                                    <div
-                                      key={`${plan.id}-pod-city-${cityId}`}
-                                      style={{
-                                        border: "1px solid #d8dfd5",
-                                        borderRadius: 999,
-                                        padding: "4px 8px",
-                                        background: "#fafcf9",
-                                        fontSize: 12,
-                                        color: "#324236",
-                                      }}
-                                    >
-                                      {cityMap[cityId]?.name ?? cityId}
-                                    </div>
-                                  ))}
-                                </div>
+                                {plan.route.mode === "air" && airSelectedCityIds ? (
+                                  <div
+                                    style={{
+                                      display: "flex",
+                                      flexWrap: "wrap",
+                                      gap: 8,
+                                      alignItems: "center",
+                                      fontSize: 12,
+                                    }}
+                                  >
+                                    {(["From", "To"] as const).map((label, index) => (
+                                      <label
+                                        key={`${plan.id}-air-city-${label}`}
+                                        style={{ display: "flex", alignItems: "center", gap: 6 }}
+                                      >
+                                        <span style={{ color: "#56635a", minWidth: 28 }}>{label}</span>
+                                        <select
+                                          value={airSelectedCityIds[index]}
+                                          onChange={event => {
+                                            const nextCityIds = [...airSelectedCityIds]
+                                            nextCityIds[index] = event.target.value
+                                            if (
+                                              nextCityIds.length < 2 ||
+                                              !nextCityIds[0] ||
+                                              !nextCityIds[1] ||
+                                              nextCityIds[0] === nextCityIds[1]
+                                            ) {
+                                              return
+                                            }
+                                            void (async () => {
+                                              const result = await onSetBureaucracyServicePodCities(
+                                                plan.corridorId,
+                                                [plan.id],
+                                                nextCityIds,
+                                              )
+                                              if (!result.ok) {
+                                                setStatusMessage(result.error)
+                                              }
+                                            })()
+                                          }}
+                                          disabled={!canEditOperations}
+                                          style={{
+                                            minWidth: 150,
+                                            padding: "6px 8px",
+                                            borderRadius: 8,
+                                            border: "1px solid #c7d0c4",
+                                            background: "#ffffff",
+                                            color: "#223024",
+                                          }}
+                                        >
+                                          {plan.availableCityIds.map(cityId => (
+                                            <option
+                                              key={`${plan.id}-air-option-${index}-${cityId}`}
+                                              value={cityId}
+                                            >
+                                              {cityMap[cityId]?.name ?? cityId}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      </label>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                                    {podCityIds.map(cityId => (
+                                      <div
+                                        key={`${plan.id}-pod-city-${cityId}`}
+                                        style={{
+                                          border: "1px solid #d8dfd5",
+                                          borderRadius: 999,
+                                          padding: "4px 8px",
+                                          background: "#fafcf9",
+                                          fontSize: 12,
+                                          color: "#324236",
+                                        }}
+                                      >
+                                        {cityMap[cityId]?.name ?? cityId}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
                                 <label
                                   style={{
                                     display: "flex",
@@ -7155,7 +7737,7 @@ export default function Board({
                                       .filter(card => card.type === getVehicleTypeForMode(plan.route.mode))
                                       .map(card => (
                                         <option key={card.id} value={card.id}>
-                                          #{card.number} {card.name} ({currentPlayerOwnedVehicleCountsByCardId[card.id] ?? 0})
+                                          {`${assignedVehicleCardIds.has(card.id) ? "" : "(unassigned) "}#${card.number} ${card.name} (${currentPlayerOwnedVehicleCountsByCardId[card.id] ?? 0})`}
                                         </option>
                                       ))}
                                   </select>
@@ -7165,7 +7747,11 @@ export default function Board({
                                     </span>
                                   )}
                                 </label>
-                                {plan.availableCityIds.length > 2 && (
+                                {plan.route.mode === "air" ? (
+                                  <div style={{ color: "#56635a", fontSize: 12 }}>
+                                    Air service uses direct city pairs rather than normal multi-city pods.
+                                  </div>
+                                ) : plan.availableCityIds.length > 2 && (
                                   <div style={{ color: "#56635a", fontSize: 12 }}>
                                     Route membership is managed in the route editor above.
                                   </div>
@@ -7223,7 +7809,7 @@ export default function Board({
                           {/* Vehicles */}
                           {(() => {
                             // Compute plan → color map using same union-find grouping as network maps
-                            const POD_COLORS_MAP = ["#2563eb", "#dc2626", "#d97706", "#7c3aed", "#0891b2", "#be185d", "#65a30d", "#c2410c"]
+                            const POD_COLORS_MAP = ["#2563eb", "#0f766e", "#d97706", "#7c3aed", "#0891b2", "#be185d", "#65a30d", "#4f46e5"]
                             const eligibleForColor = currentPlayerActiveBureaucracyPlans.filter(p => p.selectedCityIds.length >= 2)
                             const _parent = new Map<string, string>()
                             const _find = (x: string): string => {
@@ -7345,9 +7931,205 @@ export default function Board({
                            )
                           })()}
                         </div>
+                        {currentPlayerCombinedDemandFill.length > 0 && (
+                          <div
+                            style={{
+                              border: "1px solid #e1e6df",
+                              borderRadius: 10,
+                              padding: 10,
+                              background: "#ffffff",
+                              display: "grid",
+                              gap: 8,
+                            }}
+                          >
+                            <div>
+                              <strong>City demand fill</strong>
+                              <span style={{ color: "#56635a", fontSize: 11, marginLeft: 8 }}>
+                                1 box = 10 cubes • hover to see destinations
+                              </span>
+                            </div>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                              {currentPlayerCombinedDemandFill.map(
+                                ({
+                                  city,
+                                  outboundCubes,
+                                  movedOutboundCubes,
+                                }) => {
+                                  const intentEntry = currentPlayerBureaucracySummary?.outboundIntentByCity.find(
+                                    e => e.cityId === city.id,
+                                  )
+                                  const cityHasService = currentPlayerActiveBureaucracyPlans.some(
+                                    plan => plan.selectedCityIds.includes(city.id),
+                                  )
+                                  const stuckEntry = currentPlayerBureaucracySummary?.stuckCubesByCity.find(
+                                    s => s.cityId === city.id,
+                                  )
+                                  type Tone = "green" | "white" | "red"
+
+                                  const CUBES_PER_BOX = 10
+                                  const allCubeDestinations: string[] = []
+                                  if (intentEntry) {
+                                    for (const dest of intentEntry.destinations) {
+                                      for (let i = 0; i < dest.cubeCount; i++) {
+                                        allCubeDestinations.push(dest.destCityName)
+                                      }
+                                    }
+                                  }
+
+                                  const movedCubeDestinations = allCubeDestinations.slice(0, movedOutboundCubes)
+                                  const unmovedCubeDestinations = allCubeDestinations.slice(movedOutboundCubes)
+                                  const unmovedCount = Math.max(0, outboundCubes - movedOutboundCubes)
+                                  const unmovedTone: Tone = cityHasService ? "white" : "red"
+
+                                  if (unmovedCubeDestinations.length < unmovedCount && stuckEntry) {
+                                    for (const wanted of stuckEntry.wantedDestinations) {
+                                      for (let i = 0; i < wanted.cubeCount && unmovedCubeDestinations.length < unmovedCount; i++) {
+                                        unmovedCubeDestinations.push(wanted.destCityName)
+                                      }
+                                    }
+                                  }
+                                  while (unmovedCubeDestinations.length < unmovedCount) {
+                                    unmovedCubeDestinations.push("unknown")
+                                  }
+
+                                  function buildBoxes(cubeList: string[], tone: Tone): Array<{ tone: Tone; tooltip: string; primaryDest: string }> {
+                                    if (cubeList.length === 0) return []
+                                    const counts = new Map<string, number>()
+                                    for (const d of cubeList) counts.set(d, (counts.get(d) ?? 0) + 1)
+                                    const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1])
+
+                                    const fullBoxes: Array<{ tone: Tone; tooltip: string; primaryDest: string }> = []
+                                    const remainders: Array<{ dest: string; count: number }> = []
+
+                                    for (const [dest, count] of sorted) {
+                                      const full = Math.floor(count / CUBES_PER_BOX)
+                                      const rem = count % CUBES_PER_BOX
+                                      for (let i = 0; i < full; i++) {
+                                        fullBoxes.push({ tone, tooltip: `→ ${dest}`, primaryDest: dest })
+                                      }
+                                      if (rem > 0) remainders.push({ dest, count: rem })
+                                    }
+
+                                    remainders.sort((a, b) => b.count - a.count)
+                                    const remBoxes: Array<{ tone: Tone; tooltip: string; primaryDest: string }> = []
+                                    let buf: string[] = []
+                                    for (const { dest, count } of remainders) {
+                                      for (let i = 0; i < count; i++) {
+                                        buf.push(dest)
+                                        if (buf.length === CUBES_PER_BOX) {
+                                          const c = new Map<string, number>()
+                                          for (const d of buf) c.set(d, (c.get(d) ?? 0) + 1)
+                                          const topDest = [...c.entries()].sort((a, b) => b[1] - a[1])[0][0]
+                                          const parts = [...c.entries()].sort((a, b) => b[1] - a[1]).map(([d, n]) => c.size === 1 ? `→ ${d}` : `→ ${d} (${n})`).join(", ")
+                                          remBoxes.push({ tone, tooltip: parts, primaryDest: topDest })
+                                          buf = []
+                                        }
+                                      }
+                                    }
+                                    if (buf.length > 0) {
+                                      const c = new Map<string, number>()
+                                      for (const d of buf) c.set(d, (c.get(d) ?? 0) + 1)
+                                      const topDest = [...c.entries()].sort((a, b) => b[1] - a[1])[0][0]
+                                      const parts = [...c.entries()].sort((a, b) => b[1] - a[1]).map(([d, n]) => c.size === 1 ? `→ ${d}` : `→ ${d} (${n})`).join(", ")
+                                      remBoxes.push({ tone, tooltip: parts, primaryDest: topDest })
+                                    }
+
+                                    return [...fullBoxes, ...remBoxes]
+                                  }
+
+                                  const boxes: Array<{ tone: Tone; tooltip: string; primaryDest: string }> = [
+                                    ...buildBoxes(movedCubeDestinations, "green"),
+                                    ...buildBoxes(unmovedCubeDestinations, unmovedTone),
+                                  ]
+
+                                  const destOrder: string[] = []
+                                  const boxesByDest = new Map<string, typeof boxes>()
+                                  for (const box of boxes) {
+                                    if (!boxesByDest.has(box.primaryDest)) {
+                                      destOrder.push(box.primaryDest)
+                                      boxesByDest.set(box.primaryDest, [])
+                                    }
+                                    boxesByDest.get(box.primaryDest)!.push(box)
+                                  }
+
+                                  return (
+                                    <div
+                                      key={`${city.id}-combined-fill`}
+                                      style={{
+                                        border: "1px solid #d8dfd5",
+                                        borderRadius: 10,
+                                        padding: "6px 8px",
+                                        background: "#ffffff",
+                                        display: "grid",
+                                        gap: 4,
+                                        minWidth: 120,
+                                      }}
+                                    >
+                                      <div style={{ fontSize: 12 }}>
+                                        <strong
+                                          onClick={() => setDemandFillSelectedDest(demandFillSelectedDest === city.name ? null : city.name)}
+                                          style={{
+                                            cursor: "pointer",
+                                            color: demandFillSelectedDest === city.name || demandFillHoveredDest === city.name ? "#2563eb" : undefined,
+                                            textDecoration: demandFillSelectedDest === city.name ? "underline" : undefined,
+                                            userSelect: "none",
+                                          }}
+                                        >{city.name}</strong>
+                                        {" • "}size {city.size}
+                                      </div>
+                                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "flex-start" }}>
+                                        {destOrder.map(dest => {
+                                          const destBoxes = boxesByDest.get(dest)!
+                                          const isHighlighted = demandFillHoveredDest === dest || demandFillSelectedDest === dest
+                                          return (
+                                            <div
+                                              key={dest}
+                                              style={{
+                                                display: "inline-flex",
+                                                flexWrap: "wrap",
+                                                gap: 3,
+                                                padding: 2,
+                                                borderRadius: 4,
+                                                outline: isHighlighted ? "2px solid #2563eb" : "2px solid transparent",
+                                                transition: "outline-color 0.1s",
+                                              }}
+                                              onMouseEnter={() => setDemandFillHoveredDest(dest)}
+                                              onMouseLeave={() => setDemandFillHoveredDest(null)}
+                                            >
+                                              {destBoxes.map((box, i) => (
+                                                <span
+                                                  key={i}
+                                                  title={box.tooltip}
+                                                  style={{
+                                                    width: 12,
+                                                    height: 12,
+                                                    borderRadius: 3,
+                                                    border: `1px solid ${box.tone === "green" ? "#5fbf72" : box.tone === "red" ? "#ef4444" : "#c8d0c8"}`,
+                                                    background: box.tone === "green" ? "#5fbf72" : box.tone === "red" ? "#fca5a5" : "#ffffff",
+                                                    display: "inline-block",
+                                                    boxSizing: "border-box",
+                                                  }}
+                                                />
+                                              ))}
+                                            </div>
+                                          )
+                                        })}
+                                      </div>
+                                      <div style={{ color: "#56635a", fontSize: 11 }}>
+                                        Moved{" "}
+                                        <span style={{ color: unmovedCount > 0 ? (unmovedTone === "red" ? "#b42318" : "#56635a") : "#1a7c3c", fontWeight: 600 }}>
+                                          {movedOutboundCubes}/{outboundCubes}
+                                        </span>
+                                      </div>
+                                    </div>
+                                  )
+                                })}
+                            </div>
+                          </div>
+                        )}
                         {/* Per-network modules: map on top, pairing cards below */}
                         {(() => {
-                          const POD_COLORS_NET = ["#2563eb", "#dc2626", "#d97706", "#7c3aed", "#0891b2", "#be185d", "#65a30d", "#c2410c"]
+                          const POD_COLORS_NET = ["#2563eb", "#0f766e", "#d97706", "#7c3aed", "#0891b2", "#be185d", "#65a30d", "#4f46e5"]
                           const eligiblePlans = currentPlayerActiveBureaucracyPlans.filter(p => p.selectedCityIds.length >= 2)
                           if (eligiblePlans.length === 0 && currentPlayerAggregatedCityPairings.length === 0) return null
 
@@ -7681,11 +8463,10 @@ export default function Board({
                             </div>
                           )
                         })()}
-                     </>
-                    )
-                  }
-                 </>
-                 )}
+                      </>
+                    )}
+                  </>
+                )}
               </div>
             </div>
           ) : (
@@ -7751,7 +8532,7 @@ export default function Board({
               {isUpgradeMode && upgradeOldCard ? (
                 <>
                   <div>
-                    <strong>Confirm vehicle upgrade</strong>
+                    <strong>Confirm vehicle replacement</strong>
                     <div style={{ color: "#56635a", fontSize: 13 }}>
                       {currentPlayer?.name ?? "Current player"} is trading in{" "}
                       <strong>#{upgradeOldCard.number} {upgradeOldCard.name}</strong> for{" "}
@@ -7854,7 +8635,7 @@ export default function Board({
                         fontWeight: 700,
                       }}
                     >
-                      Confirm upgrade
+                      Confirm replacement
                     </button>
                   </div>
                 </>
@@ -9059,6 +9840,11 @@ export default function Board({
                           Split routes by mode, drag cities between pods, use disconnected/× to remove a city from one pod, and assign vehicles before running Bureaucracy.
                         </div>
                       </div>
+                      {operationsInlineAction && (
+                        <div style={{ display: "flex", justifyContent: "flex-start" }}>
+                          {operationsInlineAction}
+                        </div>
+                      )}
                       {BUREAUCRACY_MODE_ORDER.map(mode => {
                         const podGroupsForMode = currentPlayerPodGroups.filter(group => group.mode === mode)
 
@@ -9657,6 +10443,66 @@ export default function Board({
           />
         )}
       </div>
+      {floatingToast && (
+        <div
+          style={{
+            position: "fixed",
+            top: 88,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 1002,
+            padding: "10px 16px",
+            borderRadius: 999,
+            background: "rgba(34, 48, 36, 0.94)",
+            color: "#ffffff",
+            fontWeight: 700,
+            boxShadow: "0 10px 26px rgba(0, 0, 0, 0.24)",
+            pointerEvents: "none",
+            maxWidth: "min(90vw, 420px)",
+            textAlign: "center",
+          }}
+        >
+          {floatingToast.message}
+        </div>
+      )}
+      {winnerConfettiPieces.length > 0 && (
+        <div
+          aria-hidden="true"
+          style={{
+            position: "fixed",
+            inset: 0,
+            pointerEvents: "none",
+            overflow: "hidden",
+            zIndex: 1001,
+          }}
+        >
+          {winnerConfettiPieces.map(piece => (
+            <div
+              key={piece.id}
+              style={{
+                position: "absolute",
+                top: -24,
+                left: `${piece.left}%`,
+                width: piece.size,
+                height: piece.size * 0.6,
+                background: piece.color,
+                opacity: 0.92,
+                borderRadius: 999,
+                transform: `rotate(${piece.rotation}deg)`,
+                animation: `board-confetti-fall ${piece.duration}s linear forwards`,
+                animationDelay: `${piece.delay}s`,
+              }}
+            />
+          ))}
+        </div>
+      )}
+      <style>
+        {`@keyframes board-confetti-fall {
+          0% { transform: translate3d(0, 0, 0) rotate(0deg); opacity: 0; }
+          10% { opacity: 0.92; }
+          100% { transform: translate3d(0, 110vh, 0) rotate(540deg); opacity: 0; }
+        }`}
+      </style>
       {/* Debug log viewer */}
       {debugLogEntries.length > 0 && (
         <div

@@ -8,8 +8,6 @@
 
 import { createGameState } from "../src/engine/createGameState"
 import { buildPlayerBureaucracySummary } from "../src/engine/bureaucracy"
-import { applyBureaucracyFuelConsumption } from "../src/engine/bureaucracy"
-import { defaultDecks } from "../src/data/deckData"
 import { usMap } from "../src/data/maps/usMap"
 
 function fmt(n: number) {
@@ -17,13 +15,6 @@ function fmt(n: number) {
 }
 function fmtMoney(n: number) {
   return "$" + (n / 1_000_000).toFixed(2) + "M"
-}
-
-// ── helpers ──────────────────────────────────────────────────────────────────
-
-function claimRoute(game: any, playerId: string, cityA: string, cityB: string, mode: string) {
-  const { applyAction } = require("../src/engine/actions")
-  return applyAction(game, { type: "claim-route", playerId, cityA, cityB, mode })
 }
 
 // ── Test: simulate one year of operations for a simple 2-city air route ──────
@@ -51,7 +42,6 @@ function runOneYearSimulation(label: string, allBots: boolean) {
   // Give P1 a mid-sized rail vehicle and an air vehicle manually
   const railCard  = game.vehicleCatalog.find(c => c.type === "train")!
   const airCard   = game.vehicleCatalog.find(c => c.type === "air")!
-  const busCard   = game.vehicleCatalog.find(c => c.type === "bus")!
 
   // Manually set up player with vehicles and a city-pair route
   // We'll directly mutate the game state for test purposes

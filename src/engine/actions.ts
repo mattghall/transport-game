@@ -223,6 +223,19 @@ export type BureaucracyServiceCitiesResult =
       error: string
     }
 
+export type BureaucracyServicePodCitiesResult =
+  | {
+      ok: true
+      game: GameState
+      corridorId: string
+      routeIds: string[]
+      cityIds: string[]
+    }
+  | {
+      ok: false
+      error: string
+    }
+
 export type BureaucracyServiceSplitResult =
   | {
       ok: true
@@ -2096,6 +2109,15 @@ export function exchangeVehicleCard(
 
   const nextGame: GameState = {
     ...game,
+    purchasedVehiclePlayerIds: dedupePlayerIds([
+      ...game.purchasedVehiclePlayerIds,
+      playerId,
+    ]),
+    hasPurchasedVehicleThisPhase: true,
+    purchasedVehicleTypesThisPhase: {
+      ...game.purchasedVehicleTypesThisPhase,
+      [newCard.type]: true,
+    },
     vehicleMarketCardIds: game.vehicleMarketCardIds.filter(id => id !== newCardId),
     players: game.players.map(p =>
       p.id !== playerId ? p : {
@@ -2305,6 +2327,93 @@ export function setBureaucracyServiceCities(
   return {
     ok: true,
     routeId,
+    cityIds: normalizedCityIds,
+    game: {
+      ...game,
+      bureaucracyServiceCityIdsByRouteId: nextSelections,
+    },
+  }
+}
+
+export function setBureaucracyServicePodCities(
+  game: GameState,
+  corridorId: string,
+  routeIds: string[],
+  cityIds: string[],
+  playerId = game.currentPlayerId,
+): BureaucracyServicePodCitiesResult {
+  if (isGameLocked(game)) {
+    return {
+      ok: false,
+      error: "The game is over.",
+    }
+  }
+
+  if (!canPlayerEditOperations(game, playerId)) {
+    return {
+      ok: false,
+      error: "Service cities can only be updated after you confirm picks and before you click Next player.",
+    }
+  }
+
+  const summary = buildPlayerBureaucracySummary(game, playerId)
+  const corridorPlans =
+    summary?.routePlans.filter(plan => plan.corridorId === corridorId) ?? []
+  const normalizedRouteIds = [...new Set(routeIds)]
+  const targetPlans = normalizedRouteIds
+    .map(routeId => corridorPlans.find(plan => plan.id === routeId) ?? null)
+    .filter((plan): plan is NonNullable<typeof plan> => plan !== null)
+
+  if (targetPlans.length !== normalizedRouteIds.length || targetPlans.length === 0) {
+    return {
+      ok: false,
+      error: "That service pod could not be found.",
+    }
+  }
+
+  if (targetPlans.some(plan => plan.isDisconnected)) {
+    return {
+      ok: false,
+      error: "Disconnected cities cannot be edited as a vehicle pod.",
+    }
+  }
+
+  const primaryPlan = targetPlans[0]
+  const disconnectedPlan = corridorPlans.find(plan => plan.isDisconnected) ?? null
+  const nextSelections = { ...game.bureaucracyServiceCityIdsByRouteId }
+  const normalizedCityIds = [...new Set(primaryPlan.availableCityIds.filter(cityId => cityIds.includes(cityId)))]
+
+  if (
+    normalizedCityIds.length > 1 &&
+    !isValidServicePodSelection(normalizedCityIds, primaryPlan.corridorSegmentPairs)
+  ) {
+    return {
+      ok: false,
+      error: "That destination route would be disconnected. Routes with 2+ cities must stay connected.",
+    }
+  }
+
+  corridorPlans.forEach(plan => {
+    nextSelections[plan.id] = [...plan.selectedCityIds]
+  })
+
+  normalizedRouteIds.forEach(routeId => {
+    nextSelections[routeId] = normalizedCityIds
+  })
+
+  if (disconnectedPlan) {
+    syncDisconnectedServiceCities(
+      nextSelections,
+      primaryPlan.availableCityIds,
+      corridorPlans.filter(plan => !plan.isDisconnected).map(plan => plan.id),
+      disconnectedPlan.id,
+    )
+  }
+
+  return {
+    ok: true,
+    corridorId,
+    routeIds: normalizedRouteIds,
     cityIds: normalizedCityIds,
     game: {
       ...game,

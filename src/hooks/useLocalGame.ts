@@ -3,6 +3,7 @@ import {
   type RailUpgradeResult,
   type BureaucracyServiceCityMoveResult,
   type BureaucracyServiceSplitResult,
+  type BureaucracyServicePodCitiesResult,
   type BureaucracyVehicleCardResult,
   addBureaucracyServiceSplit,
   advanceTurn,
@@ -17,13 +18,14 @@ import {
   markBureaucracyReady,
   markOperationsReady,
   moveBureaucracyServiceCity,
+  setBureaucracyServicePodCities,
   setActiveCityOfferKeptCityIds,
   setBureaucracyRouteVehicleCard,
   upgradeRailRoute,
 } from "../engine/actions"
-import { findPlayerBureaucracyPlan } from "../engine/bureaucracy"
+import { buildPlayerBureaucracySummary, buildServiceSlotId, findPlayerBureaucracyPlan } from "../engine/bureaucracy"
 import { getPendingBotPlayerId } from "../bots/actions"
-import type { GameState } from "../engine/types"
+import type { GameState, RouteMode } from "../engine/types"
 import type { DrawCityOfferResult } from "../engine/actions"
 import { drawCityOffer } from "../engine/actions"
 import {
@@ -52,7 +54,7 @@ export type LocalGameActions = {
     mode: "bus" | "rail" | "air",
     cityIds: string[],
     segmentPairs?: Array<[string, string]>,
-  ) => ReturnType<typeof claimRouteResult>
+  ) => ReturnType<typeof _claimRouteResult>
   handleDrawCityOffer: (
     region: NonNullable<GameState["activeCityOffer"]>["region"],
   ) => DrawCityOfferResult
@@ -60,10 +62,11 @@ export type LocalGameActions = {
   handleBuyVehicleCard: (
     cardId: string,
     quantity: number,
-  ) => ReturnType<typeof buyVehicleCardResult>
+  ) => ReturnType<typeof _buyVehicleCardResult>
   handleUpgradeRailRoute: (routeId: string) => RailUpgradeResult
   handleSetBureaucracyRouteVehicleCard: (routeId: string, vehicleCardId: string | null) => BureaucracyVehicleCardResult
-  handleAddBureaucracyServiceSplit: (corridorId: string) => BureaucracyServiceSplitResult
+  handleAddBureaucracyServiceSplit: (corridorId: string, initialCityIds?: string[]) => BureaucracyServiceSplitResult
+  handleSetBureaucracyServicePodCities: (corridorId: string, routeIds: string[], cityIds: string[]) => BureaucracyServicePodCitiesResult
   handleMoveBureaucracyServiceCity: (
     corridorId: string,
     cityId: string,
@@ -76,15 +79,53 @@ export type LocalGameActions = {
 }
 
 // Placeholder return types used for inference — not called at runtime
-function claimRouteResult() {
+function _claimRouteResult() {
   return null as unknown as
     | { ok: true; routes: GameState["routes"]; cost: number; connectionBonus: number; newCityIds: string[]; nextPhase: GameState["currentPhase"]; nextPlayerName: string; advancedPhase: boolean }
     | { ok: false; error: string }
 }
-function buyVehicleCardResult() {
+function _buyVehicleCardResult() {
   return null as unknown as
     | { ok: true; card: GameState["vehicleCatalog"][number]; quantity: number; cost: number; nextPhase: GameState["currentPhase"]; nextPlayerName: string; advancedPhase: boolean }
     | { ok: false; error: string }
+}
+
+function getVehicleTypeForMode(mode: RouteMode) {
+  switch (mode) {
+    case "rail":
+      return "train"
+    case "air":
+      return "air"
+    case "bus":
+      return "bus"
+  }
+}
+
+function getAutoAssignableVehicleCardId(game: GameState, playerId: string, corridorId: string) {
+  const player = game.players.find(candidate => candidate.id === playerId)
+  const summary = buildPlayerBureaucracySummary(game, playerId)
+  const routeMode =
+    summary?.routePlans.find(plan => !plan.isDisconnected && plan.corridorId === corridorId)?.route.mode ?? null
+
+  if (!player || !summary || routeMode === null) {
+    return null
+  }
+
+  const assignedVehicleCardIds = new Set(
+    summary.routePlans
+      .map(plan => plan.vehicleCard?.id)
+      .filter((cardId): cardId is string => cardId !== undefined),
+  )
+
+  return (
+    player.ownedVehicleCardIds.find(cardId => {
+      if (assignedVehicleCardIds.has(cardId)) {
+        return false
+      }
+
+      return game.vehicleCatalog.find(card => card.id === cardId)?.type === getVehicleTypeForMode(routeMode)
+    }) ?? null
+  )
 }
 
 export function useLocalGame({ initialGame, onGameSave }: UseLocalGameOptions): LocalGameActions {
@@ -343,22 +384,51 @@ export function useLocalGame({ initialGame, onGameSave }: UseLocalGameOptions): 
   )
 
   const handleAddBureaucracyServiceSplit = useCallback(
-    (corridorId: string) =>
+    (corridorId: string, initialCityIds?: string[]) =>
       commit(baseGame => {
         const actingPlayerId = getDefaultLocalViewingPlayerId(baseGame) ?? baseGame.currentPlayerId
-        const result = addBureaucracyServiceSplit(baseGame, corridorId, actingPlayerId)
+        const nextSlotIndex = Math.max(
+          1,
+          baseGame.bureaucracyServiceSlotCountsByCorridorId[corridorId] ?? 1,
+        )
+        const newRouteId = buildServiceSlotId(corridorId, nextSlotIndex)
+        const autoAssignableVehicleCardId = getAutoAssignableVehicleCardId(
+          baseGame,
+          actingPlayerId,
+          corridorId,
+        )
+        const result = addBureaucracyServiceSplit(baseGame, corridorId, actingPlayerId, initialCityIds)
 
-        return result.ok
-          ? {
-              ...result,
-              game: appendActionLog(
-                baseGame,
-                result.game,
-                `added split service on corridor ${corridorId}`,
-                actingPlayerId,
-              ),
-            }
-          : result
+        if (!result.ok) {
+          return result
+        }
+
+        let nextGame = result.game
+        let logMessage = `added split service on corridor ${corridorId}`
+
+        if (autoAssignableVehicleCardId) {
+          const vehicleAssignmentResult = setBureaucracyRouteVehicleCard(
+            nextGame,
+            newRouteId,
+            autoAssignableVehicleCardId,
+            actingPlayerId,
+          )
+
+          if (!vehicleAssignmentResult.ok) {
+            return vehicleAssignmentResult
+          }
+
+          nextGame = vehicleAssignmentResult.game
+          const vehicleCardName =
+            baseGame.vehicleCatalog.find(card => card.id === autoAssignableVehicleCardId)?.name ??
+            autoAssignableVehicleCardId
+          logMessage = `${logMessage} and assigned ${vehicleCardName}`
+        }
+
+        return {
+          ...result,
+          game: appendActionLog(baseGame, nextGame, logMessage, actingPlayerId),
+        }
       }),
     [commit],
   )
@@ -394,6 +464,39 @@ export function useLocalGame({ initialGame, onGameSave }: UseLocalGameOptions): 
         return {
           ...result,
           game: appendActionLog(baseGame, result.game, actionLabel, actingPlayerId),
+        }
+      }),
+    [commit],
+  )
+
+  const handleSetBureaucracyServicePodCities = useCallback(
+    (corridorId: string, routeIds: string[], cityIds: string[]) =>
+      commit(baseGame => {
+        const actingPlayerId = getDefaultLocalViewingPlayerId(baseGame) ?? baseGame.currentPlayerId
+        const result = setBureaucracyServicePodCities(
+          baseGame,
+          corridorId,
+          routeIds,
+          cityIds,
+          actingPlayerId,
+        )
+
+        if (!result.ok) {
+          return result
+        }
+
+        const cityLabel = cityIds
+          .map(cityId => baseGame.cities.find(city => city.id === cityId)?.name ?? cityId)
+          .join(", ")
+
+        return {
+          ...result,
+          game: appendActionLog(
+            baseGame,
+            result.game,
+            `set pod cities on corridor ${corridorId} to ${cityLabel || "none"}`,
+            actingPlayerId,
+          ),
         }
       }),
     [commit],
@@ -543,6 +646,7 @@ export function useLocalGame({ initialGame, onGameSave }: UseLocalGameOptions): 
     handleUpgradeRailRoute,
     handleSetBureaucracyRouteVehicleCard,
     handleAddBureaucracyServiceSplit,
+    handleSetBureaucracyServicePodCities,
     handleMoveBureaucracyServiceCity,
     handleDeleteBureaucracyServicePod,
     handleAdvanceTurn,

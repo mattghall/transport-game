@@ -58,6 +58,12 @@ export type AddSecondVehicleToPodBotAction = {
   vehicleCardId: string
 }
 
+export type DeleteServicePodBotAction = {
+  type: "delete-service-pod"
+  corridorId: string
+  routeId: string
+}
+
 /** Trade in an old vehicle card for a better one in the market during purchase-equipment. */
 export type ExchangeVehicleBotAction = {
   type: "exchange-vehicle"
@@ -87,6 +93,7 @@ export type BotAction =
   | RemovePodCityBotAction
   | AssignPodVehicleBotAction
   | AddSecondVehicleToPodBotAction
+  | DeleteServicePodBotAction
   | ExchangeVehicleBotAction
   | ReadyOperationsBotAction
   | ReadyBureaucracyBotAction

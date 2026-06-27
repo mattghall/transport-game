@@ -85,11 +85,17 @@ export const BEST_BOT_WEIGHTS: ScriptedBotWeights = {
   keepCityAdjacencyPotentialScore: 5,
   claimAdjacentNetworkBonus: 8,
   claimOpponentBlockPenalty: 4,
+  claimConnectorWastePenaltyMultiplier: 3.5,
+  claimDisconnectedRailPenalty: 220,
   buyFleetScaleBonus: 30,
   buyVehicleCapacityScore: 1.5,
   buyVehicleSpeedScore: 0.5,
   buyVehicleForEmptyPodBonus: 25,
   podHasCompatibleVehicleBonus: 15,
+  podPassengerGainScore: 1,
+  podDisconnectedCityReductionBonus: 18,
+  podUnstaffedPodPenalty: 90,
+  podExistingVehicleAssignedBonus: 40,
 }
 
 export const BOT_PRESETS: ReadonlyArray<{
