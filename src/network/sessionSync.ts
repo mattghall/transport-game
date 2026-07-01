@@ -166,10 +166,12 @@ export type UpdateLanLobbyRequest = {
   startGame?: boolean
   settings?: {
     chanceCardsEnabled?: boolean
+    dynamicDemandEnabled?: boolean
     turnTimerSeconds?: number
     autoPlayUntilWeek?: number
     previewPlayerId?: string | null
     previewBotPreset?: BotPresetId | null
+    firstPlayerId?: string | null
   }
 }
 

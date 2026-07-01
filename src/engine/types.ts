@@ -92,9 +92,23 @@ export type OperatingConfig = {
   weeksPerPeriod: number
   totalWeeks: number
   simulationTicksPerPeriod: number
+  cityDrawCount: number
+  cityTargetKeepCount: number
+  cityMinimumKeepCount: number
   loadingHours: Record<VehicleType, number>
   demandPointsPerCitySize: number
   passengersPerDemandPoint: number
+  dynamicDemand: {
+    enabled: boolean
+    lowServiceThreshold: number
+    lowServiceMultiplier: number
+    noServiceThreshold: number
+    noServiceMultiplier: number
+    highServiceThreshold: number
+    highServiceMultiplier: number
+    fullServiceThreshold: number
+    fullServiceMultiplier: number
+  }
   connectionBonusPerCitySize: number
   railConstructionCostPerMile: number
   railElectrificationCostPerMile: number
@@ -203,6 +217,7 @@ export type GameState = {
   activeChanceCardId: string | null
   chanceDeckCardIds: string[]
   chanceDiscardCardIds: string[]
+  cityDemandMultipliersByCityId: Record<string, number>
   bureaucracyFuelUnitsByRouteId: Record<string, number>
   bureaucracyVehicleCardIdsByRouteId: Record<string, string>
   bureaucracyServiceCityIdsByRouteId: Record<string, string[]>

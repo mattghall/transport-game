@@ -4,9 +4,10 @@
  */
 import { Worker } from "worker_threads"
 import { cpus } from "os"
-import { fileURLToPath } from "url"
+import { fileURLToPath, pathToFileURL } from "url"
 import { dirname, resolve } from "path"
 import {
+  calculateScriptedBotEvaluationScore,
   createTrainingPlayers,
   createTrainingSeeds,
   mutateScriptedBotWeights,
@@ -33,8 +34,7 @@ import type { SimWorkerTask, SimWorkerResponse } from "./simulationWorker.ts"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
-const WORKER_FILE = resolve(__dirname, "simulationWorker.ts")
-const WORKER_EXEC_ARGS = ["--import", "tsx/esm"]
+const WORKER_FILE = pathToFileURL(resolve(__dirname, "simulationWorkerBootstrap.mjs"))
 
 // ---------------------------------------------------------------------------
 // Worker pool
@@ -64,7 +64,7 @@ export class SimWorkerPool {
 
   private spawnWorker(): PoolWorkerEntry {
     const entry: PoolWorkerEntry = {
-      worker: new Worker(WORKER_FILE, { execArgv: WORKER_EXEC_ARGS }),
+      worker: new Worker(WORKER_FILE),
       busy: false,
     }
     entry.worker.on("message", (msg: SimWorkerResponse) => {
@@ -171,6 +171,11 @@ function aggregateSamples(
   const averageConnectedCities = samples.reduce((t, s) => t + s.connectedCities, 0) / sampleCount
   const averageMoney = samples.reduce((t, s) => t + s.money, 0) / sampleCount
   const timeoutRate = samples.reduce((t, s) => t + (s.timedOut ? 1 : 0), 0) / sampleCount
+  const averageUnassignedVehicleCount = samples.reduce((t, s) => t + s.unassignedVehicleCount, 0) / sampleCount
+  const averageUnstaffedPodCount = samples.reduce((t, s) => t + s.unstaffedPodCount, 0) / sampleCount
+  const averageUnstaffedRailPodCount = samples.reduce((t, s) => t + s.unstaffedRailPodCount, 0) / sampleCount
+  const averageAvoidableDisconnectedCityCount =
+    samples.reduce((t, s) => t + s.avoidableDisconnectedCityCount, 0) / sampleCount
 
   return {
     weights,
@@ -181,13 +186,23 @@ function aggregateSamples(
     averageConnectedCities,
     averageMoney,
     timeoutRate,
-    score:
-      averagePassengers +
-      averagePassengerMargin * (playerCount === 1 ? 0.1 : 1) +
-      winRate * 5_000 -
-      averageRank * 1_000 +
-      averageConnectedCities * 50 -
-      timeoutRate * 250_000,
+    averageUnassignedVehicleCount,
+    averageUnstaffedPodCount,
+    averageUnstaffedRailPodCount,
+    averageAvoidableDisconnectedCityCount,
+    score: calculateScriptedBotEvaluationScore({
+      playerCount,
+      averagePassengers,
+      averagePassengerMargin,
+      winRate,
+      averageRank,
+      averageConnectedCities,
+      timeoutRate,
+      averageUnassignedVehicleCount,
+      averageUnstaffedPodCount,
+      averageUnstaffedRailPodCount,
+      averageAvoidableDisconnectedCityCount,
+    }),
     samples,
   }
 }

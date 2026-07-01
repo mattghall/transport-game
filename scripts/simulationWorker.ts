@@ -3,6 +3,7 @@
  * Long-lived — handles many tasks over its lifetime via message passing.
  */
 import { parentPort } from "worker_threads"
+import { measureBotStructure } from "../src/bots/evaluationMetrics.ts"
 import { runBotSimulation } from "../src/bots/simulate.ts"
 import { createScriptedBot, mergeScriptedBotWeights, type ScriptedBotWeights } from "../src/bots/scriptedBot.ts"
 import { buildVictoryStandings } from "../src/engine/economy.ts"
@@ -53,6 +54,7 @@ parentPort.on("message", (task: SimWorkerTask) => {
     const strongestOpponentStanding = standings.find(s => s.player.id !== candidatePlayerId)
     const passengers = candidateStanding?.player.totalPassengersServed ?? 0
     const opponentPassengers = strongestOpponentStanding?.player.totalPassengersServed ?? 0
+    const structureMetrics = measureBotStructure(result.game, candidatePlayerId)
 
     const response: SimWorkerResponse = {
       ok: true,
@@ -69,6 +71,7 @@ parentPort.on("message", (task: SimWorkerTask) => {
         connectedCities: candidateStanding?.connectedCities ?? 0,
         money: candidateStanding?.player.money ?? 0,
         timedOut: result.timedOut,
+        ...structureMetrics,
       },
     }
     parentPort!.postMessage(response)

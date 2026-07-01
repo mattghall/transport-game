@@ -23,6 +23,7 @@ import {
   markOperationsReady,
   markBureaucracyReady,
   setBureaucracyRouteVehicleCard,
+  setBureaucracyAirRouteCities,
   setBureaucracyServicePodCities,
   addBureaucracyServiceSplit,
   deleteBureaucracyServicePod,
@@ -147,6 +148,26 @@ function serveStaticOrSPA(response, pathname) {
   if (!serveStaticFile(response, htmlPath)) {
     sendJson(response, 404, { error: "Not found." })
   }
+}
+
+function writeTrainingResultsFile(relativePath, body) {
+  const normalizedPath = decodeURIComponent(relativePath).replace(/^\/+/, "")
+  if (!normalizedPath) {
+    const error = new Error("Training results path is required.")
+    error.statusCode = 400
+    throw error
+  }
+
+  const destinationPath = resolve(PUBLIC_TRAINING_DIR, normalizedPath)
+  const publicTrainingPrefix = `${PUBLIC_TRAINING_DIR}/`
+  if (destinationPath !== PUBLIC_TRAINING_DIR && !destinationPath.startsWith(publicTrainingPrefix)) {
+    const error = new Error("Training results path must stay inside public/training-results.")
+    error.statusCode = 400
+    throw error
+  }
+
+  mkdirSync(dirname(destinationPath), { recursive: true })
+  writeFileSync(destinationPath, body, "utf8")
 }
 
 const TRAINED_WEIGHT_KEYS = [
@@ -433,6 +454,11 @@ function applyGameAction(game, playerId, action) {
     }
     case 'set-route-vehicle': {
       const result = setBureaucracyRouteVehicleCard(game, action.routeId, action.vehicleCardId, playerId)
+      if (!result.ok) throw new Error(result.error)
+      return result.game
+    }
+    case 'set-air-route-cities': {
+      const result = setBureaucracyAirRouteCities(game, action.routeId, action.cityIds, playerId)
       if (!result.ok) throw new Error(result.error)
       return result.game
     }
@@ -1729,6 +1755,9 @@ function getStartedPlayerIds(lobby) {
 }
 
 function getStartedGame(game, startedPlayerIds) {
+  const removedPlayers = Array.isArray(game?.players)
+    ? game.players.filter(player => !startedPlayerIds.includes(player.id))
+    : []
   const nextPlayers = Array.isArray(game?.players)
     ? game.players.filter(player => startedPlayerIds.includes(player.id))
     : []
@@ -1739,12 +1768,34 @@ function getStartedGame(game, startedPlayerIds) {
     throw error
   }
 
+  const nextCurrentPlayerId = nextPlayers.some(player => player.id === game.currentPlayerId)
+    ? game.currentPlayerId
+    : nextPlayers[0].id
+  const nextLeadPlayerIndex = Math.max(
+    0,
+    nextPlayers.findIndex(player => player.id === nextCurrentPlayerId),
+  )
+  const nextCityDeckCardIdsByRegion = { ...(game.cityDeckCardIdsByRegion ?? {}) }
+  const cityById = new Map((game.cities ?? []).map(city => [city.id, city]))
+
+  for (const removedPlayer of removedPlayers) {
+    for (const cityId of removedPlayer.ownedCityCardIds ?? []) {
+      const city = cityById.get(cityId)
+      const primaryRegion = city?.region?.[0] ?? null
+      if (!primaryRegion) {
+        continue
+      }
+      nextCityDeckCardIdsByRegion[primaryRegion] ??= []
+      nextCityDeckCardIdsByRegion[primaryRegion].push(cityId)
+    }
+  }
+
   return {
     ...game,
     players: nextPlayers,
-    currentPlayerId: nextPlayers.some(player => player.id === game.currentPlayerId)
-      ? game.currentPlayerId
-      : nextPlayers[0].id,
+    cityDeckCardIdsByRegion: nextCityDeckCardIdsByRegion,
+    leadPlayerIndex: nextLeadPlayerIndex,
+    currentPlayerId: nextCurrentPlayerId,
   }
 }
 
@@ -1762,6 +1813,10 @@ function applyLobbySettingsToGame(game, settings, totalWeeks) {
     typeof settings.chanceCardsEnabled === "boolean"
       ? settings.chanceCardsEnabled
       : game.chanceCardsEnabled
+  const nextDynamicDemandEnabled =
+    typeof settings.dynamicDemandEnabled === "boolean"
+      ? settings.dynamicDemandEnabled
+      : game.operatingConfig?.dynamicDemand?.enabled ?? false
   const nextTurnTimerSeconds =
     typeof settings.turnTimerSeconds === "number" && Number.isFinite(settings.turnTimerSeconds)
       ? Math.max(0, Math.round(settings.turnTimerSeconds))
@@ -1775,6 +1830,10 @@ function applyLobbySettingsToGame(game, settings, totalWeeks) {
             : Math.min(Math.round(settings.autoPlayUntilWeek), maxAutoPlayWeeks),
         )
       : game.autoPlayUntilWeek
+  const nextFirstPlayerId =
+    typeof settings.firstPlayerId === "string" && settings.firstPlayerId.length > 0
+      ? settings.firstPlayerId
+      : game.currentPlayerId
 
   const shouldRewriteHumanPreviewPreset =
     settings.previewPlayerId !== undefined ||
@@ -1811,9 +1870,23 @@ function applyLobbySettingsToGame(game, settings, totalWeeks) {
   return {
     ...game,
     chanceCardsEnabled: nextChanceCardsEnabled,
+    operatingConfig: {
+      ...game.operatingConfig,
+      dynamicDemand: {
+        ...game.operatingConfig.dynamicDemand,
+        enabled: nextDynamicDemandEnabled,
+      },
+    },
     turnTimerSeconds: nextTurnTimerSeconds,
     turnTimerExpiresAt: null,
     autoPlayUntilWeek: nextAutoPlayUntilWeek,
+    leadPlayerIndex: Math.max(
+      0,
+      nextPlayers.findIndex(player => player.id === nextFirstPlayerId),
+    ),
+    currentPlayerId: nextPlayers.some(player => player.id === nextFirstPlayerId)
+      ? nextFirstPlayerId
+      : nextPlayers[0]?.id ?? game.currentPlayerId,
     players: nextPlayers,
   }
 }
@@ -1898,6 +1971,7 @@ function getNextLobbySession(session, lobbyUpdate) {
     const startedPlayerIds = getStartedPlayerIds(currentLobby)
     return {
       game: getStartedGame(session.game, startedPlayerIds),
+      staticData: session.staticData,
       lobby: { ...currentLobby, status: "started" },
     }
   }
@@ -1918,14 +1992,22 @@ function getNextLobbySession(session, lobbyUpdate) {
               : player,
           ),
         }
+  const hydratedLobbyGame = hydrateServerGame({
+    ...session,
+    game: renamedGame,
+  })
   const nextGame = applyLobbySettingsToGame(
-    renamedGame,
+    hydratedLobbyGame,
     lobbyUpdate.settings,
     session.staticData?.operatingConfig?.totalWeeks,
   )
 
   const nextSession = {
-    game: nextGame,
+    game: dehydrateGame(nextGame),
+    staticData: {
+      ...session.staticData,
+      operatingConfig: nextGame.operatingConfig,
+    },
     lobby: nextLobby,
   }
 
@@ -2122,6 +2204,11 @@ function createSessionId() {
 }
 
 async function readJsonBody(request) {
+  const rawBody = await readRequestBody(request)
+  return rawBody ? JSON.parse(rawBody) : null
+}
+
+async function readRequestBody(request) {
   const chunks = []
 
   for await (const chunk of request) {
@@ -2129,11 +2216,10 @@ async function readJsonBody(request) {
   }
 
   if (chunks.length === 0) {
-    return null
+    return ""
   }
 
-  const rawBody = Buffer.concat(chunks).toString("utf8")
-  return rawBody ? JSON.parse(rawBody) : null
+  return Buffer.concat(chunks).toString("utf8")
 }
 
 function isValidSessionPayload(value) {
@@ -2173,10 +2259,12 @@ function isValidLobbyUpdate(value) {
       typeof value.settings === "object" &&
       value.settings !== null &&
       (value.settings.chanceCardsEnabled === undefined || typeof value.settings.chanceCardsEnabled === "boolean") &&
+      (value.settings.dynamicDemandEnabled === undefined || typeof value.settings.dynamicDemandEnabled === "boolean") &&
       (value.settings.turnTimerSeconds === undefined || (typeof value.settings.turnTimerSeconds === "number" && Number.isFinite(value.settings.turnTimerSeconds))) &&
       (value.settings.autoPlayUntilWeek === undefined || (typeof value.settings.autoPlayUntilWeek === "number" && Number.isFinite(value.settings.autoPlayUntilWeek))) &&
       (value.settings.previewPlayerId === undefined || value.settings.previewPlayerId === null || typeof value.settings.previewPlayerId === "string") &&
-      (value.settings.previewBotPreset === undefined || value.settings.previewBotPreset === null || typeof value.settings.previewBotPreset === "string")
+      (value.settings.previewBotPreset === undefined || value.settings.previewBotPreset === null || typeof value.settings.previewBotPreset === "string") &&
+      (value.settings.firstPlayerId === undefined || value.settings.firstPlayerId === null || typeof value.settings.firstPlayerId === "string")
     )) &&
     (value.setSeatBot === undefined || (
       typeof value.setSeatBot === "object" &&
@@ -2231,6 +2319,25 @@ const server = createServer(async (request, response) => {
       ...healthDiagnostics,
     })
     return
+  }
+
+  if (request.method === "PUT" && url.pathname.startsWith("/api/training-results/")) {
+    if (!isLocalTrainingRequest(request)) {
+      sendJson(response, 403, { error: "Training endpoints are local-only." })
+      return
+    }
+
+    try {
+      const body = await readRequestBody(request)
+      writeTrainingResultsFile(url.pathname.replace("/api/training-results/", ""), body)
+      sendJson(response, 200, { ok: true })
+      return
+    } catch (error) {
+      sendJson(response, error?.statusCode ?? 400, {
+        error: error instanceof Error ? error.message : "Could not write training results file.",
+      })
+      return
+    }
   }
 
   if (url.pathname === "/training" || url.pathname === "/manual-training" || url.pathname.startsWith("/training/") || url.pathname.startsWith("/manual-training/")) {
@@ -2708,7 +2815,7 @@ const server = createServer(async (request, response) => {
 
       if (!isValidLobbyUpdate(body)) {
         sendJson(response, 400, {
-          error: "Lobby updates must include clientId and may include playerId, isReady, playerName, startGame, settings, and setSeatBot.",
+          error: "Lobby updates must include clientId and may include playerId, isReady, playerName, startGame, settings, setSeatBot, firstPlayerId, and dynamicDemandEnabled.",
         })
         return
       }
@@ -2761,13 +2868,13 @@ const server = createServer(async (request, response) => {
         return
       }
 
-      const { game, lobby } = getNextLobbySession(session, body)
+      const { game, lobby, staticData } = getNextLobbySession(session, body)
 
       // Run any pending bot turns server-side (important when lobby starts and bots move first)
       let finalGame = game
       if (body.startGame && lobby.status === "started") {
         try {
-          const startedSession = { ...session, game, lobby }
+          const startedSession = { ...session, game, lobby, staticData }
           const hydratedGame = hydrateServerGame(startedSession)
           const gameAfterBots = runServerBotTurns(hydratedGame, startedSession)
           finalGame = dehydrateGame(gameAfterBots)
@@ -2780,6 +2887,7 @@ const server = createServer(async (request, response) => {
         ...session,
         version: session.version + 1,
         updatedAt: new Date().toISOString(),
+        staticData,
         game: finalGame,
         lobby,
       }

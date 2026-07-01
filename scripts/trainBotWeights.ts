@@ -7,14 +7,61 @@ import {
 } from "../src/bots/scriptedBot.ts"
 import { SimWorkerPool, runScriptedBotTrainingParallel } from "./parallelTraining.ts"
 
-const iterations = Number.parseInt(process.argv[2] ?? "12", 10)
-const gamesPerCandidate = Number.parseInt(process.argv[3] ?? "8", 10)
-const playerCount = Number.parseInt(process.argv[4] ?? "4", 10)
-const baseSeed = Number.parseInt(process.argv[5] ?? "1", 10)
-const candidatesPerIteration = Number.parseInt(process.argv[6] ?? "6", 10)
-const mutationSeed = Number.parseInt(process.argv[7] ?? `${baseSeed}`, 10)
-const maxSteps = Number.parseInt(process.argv[8] ?? "2000", 10)
-const warmStartPath = process.argv[9]
+function parseCliArguments(argv: string[]) {
+  const namedArgs = new Map<string, string>()
+  const positionalArgs: string[] = []
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index]
+
+    if (!argument.startsWith("--")) {
+      positionalArgs.push(argument)
+      continue
+    }
+
+    const [rawKey, inlineValue] = argument.slice(2).split("=", 2)
+    const nextValue = inlineValue ?? argv[index + 1]
+
+    if (inlineValue === undefined && nextValue !== undefined && !nextValue.startsWith("--")) {
+      namedArgs.set(rawKey, nextValue)
+      index += 1
+      continue
+    }
+
+    namedArgs.set(rawKey, inlineValue ?? "true")
+  }
+
+  const parseNumber = (namedKey: string, positionalIndex: number, fallback: number) => {
+    const rawValue = namedArgs.get(namedKey) ?? positionalArgs[positionalIndex] ?? `${fallback}`
+    const parsedValue = Number.parseInt(rawValue, 10)
+    return Number.isFinite(parsedValue) ? parsedValue : fallback
+  }
+
+  return {
+    iterations: parseNumber("iterations", 0, 12),
+    gamesPerCandidate: parseNumber("gamesPerCandidate", 1, 8),
+    playerCount: parseNumber("playerCount", 2, 4),
+    baseSeed: parseNumber("baseSeed", 3, 1),
+    candidatesPerIteration: parseNumber("candidatesPerIteration", 4, 6),
+    mutationSeed: parseNumber("mutationSeed", 5, parseNumber("baseSeed", 3, 1)),
+    maxSteps: parseNumber("maxSteps", 6, 2000),
+    warmStartPath:
+      namedArgs.get("warmStartPath") ??
+      namedArgs.get("warmStart") ??
+      positionalArgs[7],
+  }
+}
+
+const {
+  iterations,
+  gamesPerCandidate,
+  playerCount,
+  baseSeed,
+  candidatesPerIteration,
+  mutationSeed,
+  maxSteps,
+  warmStartPath,
+} = parseCliArguments(process.argv.slice(2))
 const outputPath = resolve(process.cwd(), "public/training-results/latest.json")
 const modeOutputPath = resolve(process.cwd(), `public/training-results/latest-${playerCount}p.json`)
 
@@ -58,6 +105,19 @@ function readWarmStartWeights(path: string | undefined) {
 }
 
 async function main() {
+  if (
+    iterations < 1 ||
+    gamesPerCandidate < 1 ||
+    playerCount < 1 ||
+    playerCount > 4 ||
+    candidatesPerIteration < 1 ||
+    maxSteps < 1
+  ) {
+    throw new Error(
+      "Invalid training arguments. Expected iterations >= 1, gamesPerCandidate >= 1, playerCount between 1 and 4, candidatesPerIteration >= 1, and maxSteps >= 1.",
+    )
+  }
+
   const pool = new SimWorkerPool(Math.max(1, cpus().length - 1))
   try {
     const trainingResults = await runScriptedBotTrainingParallel(

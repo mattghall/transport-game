@@ -23,3 +23,41 @@ export function getOwnedVehicleCountsByCardId(player: Player | null | undefined)
 
   return countsByCardId
 }
+
+export function getAssignedVehicleCountsByCardId(
+  assignedVehicleCardIds: Array<string | null | undefined>,
+) {
+  return assignedVehicleCardIds.reduce<Record<string, number>>((countsByCardId, cardId) => {
+    if (!cardId) {
+      return countsByCardId
+    }
+
+    countsByCardId[cardId] = (countsByCardId[cardId] ?? 0) + 1
+    return countsByCardId
+  }, {})
+}
+
+export function getUnassignedOwnedVehicleCardIds(
+  player: Player | null | undefined,
+  assignedVehicleCardIds: Array<string | null | undefined>,
+) {
+  if (!player) {
+    return []
+  }
+
+  const ownedCountsByCardId = getOwnedVehicleCountsByCardId(player)
+  const assignedCountsByCardId = getAssignedVehicleCountsByCardId(assignedVehicleCardIds)
+  const orderedCardIds = [...new Set([
+    ...player.ownedVehicleCardIds,
+    ...Object.keys(ownedCountsByCardId),
+  ])]
+
+  return orderedCardIds.flatMap(cardId => {
+    const unassignedCount = Math.max(
+      0,
+      (ownedCountsByCardId[cardId] ?? 0) - (assignedCountsByCardId[cardId] ?? 0),
+    )
+
+    return Array.from({ length: unassignedCount }, () => cardId)
+  })
+}

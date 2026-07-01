@@ -13,6 +13,7 @@ import {
   confirmAddCityPicks,
   drawCityOffer,
   deleteBureaucracyServicePod,
+  getRequiredCityKeepCount,
   getVehiclePurchaseLimit,
   getVehicleTradeInValue,
   getVisibleVehicleMarketCardIds,
@@ -41,6 +42,8 @@ const MAX_BOT_OPERATION_POD_ACTIONS_PER_CORRIDOR = 6
 const MAX_BOT_OPERATION_POD_SIZE = 4
 const MAX_BOT_OPERATION_POD_SEEDS = 4
 const MAX_BOT_OPERATION_POD_REMOVE_ACTIONS_PER_PLAN = 2
+const MAX_BOT_OPERATION_POD_PRUNE_BEAM = 6
+const servicePodCandidateCache = new WeakMap<GameState, Map<string, string[][]>>()
 
 function getAvailableBotVehicleActions(game: GameState, playerId: string): BotAction[] {
   const player = getPlayerById(game, playerId)
@@ -115,18 +118,33 @@ function getAvailableClaimActions(game: GameState, playerId: string): BotAction[
 
   const keptCityIds = game.activeCityOffer.keptCityIds
   const offerCityIds = game.activeCityOffer.cityIds
+  const requiredKeepCount = getRequiredCityKeepCount(game)
 
-  if (keptCityIds.length === 2) {
+  if (keptCityIds.length === requiredKeepCount) {
     return [{ type: "confirm-add-city-picks" }]
   }
 
-  // Generate all C(n,2) combinations from the offer so the scorer picks the best pair
+  if (requiredKeepCount <= 0) {
+    return [{ type: "confirm-add-city-picks" }]
+  }
+
+  // Generate all C(n,k) combinations from the offer so the scorer picks the best keep set.
   const combos: BotAction[] = []
-  for (let i = 0; i < offerCityIds.length; i++) {
-    for (let j = i + 1; j < offerCityIds.length; j++) {
-      combos.push({ type: "keep-city-offer", cityIds: [offerCityIds[i], offerCityIds[j]] })
+
+  function buildCombinations(startIndex: number, selectedCityIds: string[]) {
+    if (selectedCityIds.length === requiredKeepCount) {
+      combos.push({ type: "keep-city-offer", cityIds: [...selectedCityIds] })
+      return
+    }
+
+    for (let index = startIndex; index < offerCityIds.length; index += 1) {
+      selectedCityIds.push(offerCityIds[index])
+      buildCombinations(index + 1, selectedCityIds)
+      selectedCityIds.pop()
     }
   }
+
+  buildCombinations(0, [])
   return combos
 }
 
@@ -146,6 +164,22 @@ function getAvailableOperationsActions(game: GameState, playerId: string): BotAc
       .filter(option => option.valid && (option.mode === "rail" || option.mode === "air"))
       .filter((option): option is { mode: "rail" | "air"; valid: true } => option.mode === "rail" || option.mode === "air")
       .filter(option => option.mode !== "rail" || railPairIsAdjacent)
+      .filter(option => {
+        if (!player) {
+          return false
+        }
+
+        const cost = calculateClaimRouteCost(
+          game,
+          {
+            mode: option.mode,
+            cityIds: [cityAId, cityBId],
+          },
+          playerId,
+        )
+
+        return cost <= player.money
+      })
       .map(option => ({
         type: "claim-route" as const,
         mode: option.mode,
@@ -223,6 +257,7 @@ function getAvailableOperationsActions(game: GameState, playerId: string): BotAc
   const playerSummary = getCachedBureaucracySummary(game, playerId)
   const assignedVehicleCardIds = new Set(
     (playerSummary?.routePlans ?? [])
+      .filter(plan => plan.selectedCityIds.length >= 2)
       .map(plan => plan.vehicleCard?.id ?? null)
       .filter((cardId): cardId is string => cardId !== null),
   )
@@ -287,9 +322,11 @@ function getAvailableOperationsActions(game: GameState, playerId: string): BotAc
         }
         const cityMap = new Map(game.cities.map(city => [city.id, city]))
         const candidateCityIds = buildServicePodCandidates(
+          game,
           representativePlan.availableCityIds,
           representativePlan.corridorSegmentPairs,
           cityMap,
+          demandByCityId,
         )
           .filter(cityIds => !existingPodKeys.has([...cityIds].sort().join("|")))
         const createNewPodActions =
@@ -425,9 +462,11 @@ function getAvailableOperationsActions(game: GameState, playerId: string): BotAc
 }
 
 function buildServicePodCandidates(
+  game: GameState,
   availableCityIds: string[],
   corridorSegmentPairs: Array<[string, string]>,
   cityMap: Map<string, GameState["cities"][number]>,
+  demandByCityId: Map<string, number>,
 ) {
   if (availableCityIds.length < 3) {
     return []
@@ -446,11 +485,26 @@ function buildServicePodCandidates(
     adjacency.get(cityBId)?.push(cityAId)
   }
 
-  const byPopulationDesc = (cityIdA: string, cityIdB: string) =>
-    (cityMap.get(cityIdB)?.population ?? cityMap.get(cityIdB)?.size ?? 0) -
-      (cityMap.get(cityIdA)?.population ?? cityMap.get(cityIdA)?.size ?? 0) || cityIdA.localeCompare(cityIdB)
+  const cityValue = (cityId: string) =>
+    (demandByCityId.get(cityId) ?? 0) * 1_000_000 +
+    (cityMap.get(cityId)?.population ?? cityMap.get(cityId)?.size ?? 0) * 100 +
+    (adjacency.get(cityId)?.length ?? 0) * 10
+  const byValueDesc = (cityIdA: string, cityIdB: string) =>
+    cityValue(cityIdB) - cityValue(cityIdA) || cityIdA.localeCompare(cityIdB)
+  const scoreCandidate = (cityIds: string[]) =>
+    cityIds.reduce((total, cityId) => total + cityValue(cityId), 0) - Math.max(0, cityIds.length - 2) * 25
+  const cacheKey = [
+    availableCityIds.slice().sort().join("|"),
+    corridorSegmentPairs.map(([cityAId, cityBId]) => `${cityAId}:${cityBId}`).sort().join("|"),
+    [...demandByCityId.entries()].sort(([cityAId], [cityBId]) => cityAId.localeCompare(cityBId)).map(([cityId, demand]) => `${cityId}:${demand}`).join("|"),
+  ].join("::")
+  const cachedByGame = servicePodCandidateCache.get(game)
 
-  const seeds = [...availableCityIds].sort(byPopulationDesc).slice(0, MAX_BOT_OPERATION_POD_SEEDS)
+  if (cachedByGame?.has(cacheKey)) {
+    return cachedByGame.get(cacheKey) ?? []
+  }
+
+  const seeds = [...availableCityIds].sort(byValueDesc).slice(0, MAX_BOT_OPERATION_POD_SEEDS)
   const candidates = new Map<string, string[]>()
 
   const visit = (path: string[]) => {
@@ -464,7 +518,7 @@ function buildServicePodCandidates(
 
     const nextCityIds = [...new Set(path.flatMap(cityId => adjacency.get(cityId) ?? []))]
       .filter(cityId => !path.includes(cityId))
-      .sort(byPopulationDesc)
+      .sort(byValueDesc)
       .slice(0, MAX_BOT_OPERATION_POD_SEEDS)
 
     for (const nextCityId of nextCityIds) {
@@ -482,17 +536,50 @@ function buildServicePodCandidates(
     visit([seedCityId])
   }
 
-  return [...candidates.values()].sort((cityIdsA, cityIdsB) => {
-    const populationA = cityIdsA.reduce(
-      (total, cityId) => total + (cityMap.get(cityId)?.population ?? cityMap.get(cityId)?.size ?? 0),
-      0,
-    )
-    const populationB = cityIdsB.reduce(
-      (total, cityId) => total + (cityMap.get(cityId)?.population ?? cityMap.get(cityId)?.size ?? 0),
-      0,
-    )
-    return populationB - populationA || cityIdsB.length - cityIdsA.length
-  })
+  let beam: string[][] = [[...availableCityIds].sort(byValueDesc)]
+  const seenPruneStates = new Set(beam.map(cityIds => cityIds.slice().sort().join("|")))
+
+  while (beam.length > 0) {
+    const nextBeam = new Map<string, string[]>()
+
+    for (const cityIds of beam) {
+      if (cityIds.length >= 2 && cityIds.length <= maxPodSize && isValidServicePodSelection(cityIds, corridorSegmentPairs)) {
+        candidates.set(cityIds.slice().sort().join("|"), cityIds)
+      }
+
+      if (cityIds.length <= 2) {
+        continue
+      }
+
+      for (const cityId of [...cityIds].sort((cityIdA, cityIdB) => cityValue(cityIdA) - cityValue(cityIdB))) {
+        const remainingCityIds = cityIds.filter(candidateCityId => candidateCityId !== cityId)
+        const remainingKey = remainingCityIds.slice().sort().join("|")
+
+        if (
+          seenPruneStates.has(remainingKey) ||
+          remainingCityIds.length < 2 ||
+          !isValidServicePodSelection(remainingCityIds, corridorSegmentPairs)
+        ) {
+          continue
+        }
+
+        seenPruneStates.add(remainingKey)
+        nextBeam.set(remainingKey, remainingCityIds)
+      }
+    }
+
+    beam = [...nextBeam.values()]
+      .sort((cityIdsA, cityIdsB) => scoreCandidate(cityIdsB) - scoreCandidate(cityIdsA))
+      .slice(0, MAX_BOT_OPERATION_POD_PRUNE_BEAM)
+  }
+
+  const resolvedCandidates = [...candidates.values()].sort((cityIdsA, cityIdsB) =>
+    scoreCandidate(cityIdsB) - scoreCandidate(cityIdsA) || cityIdsB.length - cityIdsA.length,
+  )
+  const nextCachedByGame = cachedByGame ?? new Map<string, string[][]>()
+  nextCachedByGame.set(cacheKey, resolvedCandidates)
+  servicePodCandidateCache.set(game, nextCachedByGame)
+  return resolvedCandidates
 }
 
 function applyCreateServicePodAction(game: GameState, playerId: string, action: Extract<BotAction, { type: "create-service-pod" }>) {

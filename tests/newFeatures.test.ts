@@ -7,16 +7,35 @@ import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 import { createGameState } from "../src/engine/createGameState.ts"
 import { normalizeGameState } from "../src/engine/normalizeGameState.ts"
-import { claimRoute, exchangeVehicleCard, setBureaucracyRouteVehicleCard, setBureaucracyServicePodCities } from "../src/engine/actions.ts"
-import { buildPlayerBureaucracySummary } from "../src/engine/bureaucracy.ts"
+import {
+  claimRoute,
+  drawCityOffer,
+  exchangeVehicleCard,
+  getRequiredCityKeepCount,
+  markOperationsReady,
+  markBureaucracyReady,
+  setBureaucracyAirRouteCities,
+  setBureaucracyRouteVehicleCard,
+  setBureaucracyServicePodCities,
+  validateCityCardAccounting,
+} from "../src/engine/actions.ts"
+import {
+  buildPlayerBureaucracySummary,
+  migrateBureaucracyServiceState,
+  summarizeFinalPodLabels,
+} from "../src/engine/bureaucracy.ts"
 import { runBotSimulation } from "../src/bots/simulate.ts"
 import { usMap } from "../src/data/maps/usMap.ts"
 import { getBotLegalActions } from "../src/bots/actions.ts"
 import { getCachedBureaucracySummary } from "../src/bots/summaryCache.ts"
-import { getTopScoredBotCandidates } from "../src/bots/scriptedBot.ts"
+import { createScriptedBot, getTopScoredBotCandidates } from "../src/bots/scriptedBot.ts"
 import { collapseVehicleQuantityCandidates, selectVehicleCoachingCandidates } from "../src/data/coachingCandidates.ts"
 import { compareOperationsReviewOutcomes, summarizeOperationsReviewOutcome } from "../src/data/coachingReview.ts"
+import { fetchManagedBotPresetWeightOverrides, parseManagedBotPresetStore } from "../src/bots/presets.ts"
 import { deriveCoachedWeights, extractTrainingSignals } from "../scripts/trainFromCoaching.ts"
+import { blendWeightsTowardsCoaching } from "../scripts/autotuneBots.ts"
+import { calculateScriptedBotEvaluationScore } from "../src/bots/training.ts"
+import { readFileSync } from "node:fs"
 
 function makeGame(overrides: Parameters<typeof createGameState>[1] = {}) {
   return createGameState(usMap, {
@@ -26,6 +45,34 @@ function makeGame(overrides: Parameters<typeof createGameState>[1] = {}) {
     ],
     ...overrides,
   })
+}
+
+function padCityDeckToCount(game: ReturnType<typeof createGameState>, targetCount: number) {
+  const trackedCityIds = new Set<string>([
+    ...Object.values(game.cityDeckCardIdsByRegion).flat(),
+    ...game.players.flatMap(player => player.ownedCityCardIds),
+    ...(game.activeCityOffer?.cityIds ?? []),
+  ])
+  const missingCount = Math.max(0, targetCount - trackedCityIds.size)
+
+  for (let index = 0; index < missingCount; index += 1) {
+    const cityId = `test_city_${index + 1}`
+    game.cityDeckCardIdsByRegion.Southeast.push(cityId)
+    game.cities.push({
+      id: cityId,
+      name: `Test City ${index + 1}`,
+      x: 0,
+      y: 0,
+      lat: 0,
+      lng: 0,
+      region: ["Southeast"],
+      population: 100_000,
+      size: 1,
+      adjacentCities: [],
+    })
+  }
+
+  return game
 }
 
 function makeTexasRailBotGame(
@@ -62,6 +109,33 @@ function makeTexasRailBotGame(
     mode: "rail",
     ownerId: player.id,
   })
+
+  return game
+}
+
+function makeRedundantRailTriangleGame() {
+  let game = createGameState(usMap, {
+    players: [
+      { id: "p1", name: "Bot A", color: "#4a7c59", isBot: true, botPreset: "bot-avg" },
+    ],
+  })
+  const trainCard = game.vehicleCatalog.find(card => card.type === "train")
+  assert.ok(trainCard, "expected a train card in the vehicle catalog")
+
+  const player = game.players[0]
+  player.phase = "operations"
+  player.ownedCityCardIds = ["atlanta", "birmingham", "montgomery"]
+  player.ownedVehicleCardIds = [trainCard!.id]
+  player.ownedVehicleCountsByCardId = { [trainCard!.id]: 1 }
+  player.vehicleWeeksOwnedByCardId = { [trainCard!.id]: 0 }
+  game.currentPlayerId = player.id
+  game.currentPhase = "operations"
+
+  for (const cityIds of [["atlanta", "birmingham"], ["atlanta", "montgomery"]] as const) {
+    const claimResult = claimRoute(game, { mode: "rail", cityIds: [...cityIds] }, player.id)
+    assert.ok(claimResult.ok, `expected ${cityIds.join("–")} rail claim to succeed`)
+    game = claimResult.game
+  }
 
   return game
 }
@@ -185,6 +259,121 @@ function makeDisconnectedRailNoTrainGame() {
   return game
 }
 
+function makeRepeatedBusPodGame() {
+  let game = createGameState(usMap, {
+    players: [
+      { id: "p1", name: "Bot A", color: "#4a7c59", isBot: true, botPreset: "bot-avg" },
+    ],
+  })
+  const busCards = game.vehicleCatalog.filter(card => card.type === "bus")
+  assert.ok(busCards.length >= 2, "expected at least two bus cards in the vehicle catalog")
+
+  const player = game.players[0]
+  player.phase = "operations"
+  player.money = 200_000_000
+  player.ownedCityCardIds = ["atlanta", "charlotte", "raleigh_durham"]
+  player.ownedVehicleCardIds = [busCards[0]!.id, busCards[1]!.id]
+  player.ownedVehicleCountsByCardId = { [busCards[0]!.id]: 1, [busCards[1]!.id]: 1 }
+  player.vehicleWeeksOwnedByCardId = { [busCards[0]!.id]: 0, [busCards[1]!.id]: 0 }
+  game.currentPlayerId = player.id
+  game.currentPhase = "operations"
+
+  const summary = buildPlayerBureaucracySummary(game, player.id)
+  assert.ok(summary, "expected a bureaucracy summary for the repeated-bus test game")
+  const busPlan = summary!.routePlans.find(
+    plan => !plan.isDisconnected && plan.route.mode === "bus" && plan.selectedCityIds.length >= 2,
+  )
+  assert.ok(busPlan, "expected a staffed bus plan candidate")
+
+  const setCitiesResult = setBureaucracyServicePodCities(
+    game,
+    busPlan!.corridorId,
+    [busPlan!.id],
+    ["atlanta", "charlotte", "raleigh_durham"],
+    player.id,
+  )
+  assert.ok(setCitiesResult.ok, "expected to expand the bus pod to three cities")
+  game = setCitiesResult.game
+
+  const assignFirstBus = setBureaucracyRouteVehicleCard(game, busPlan!.id, busCards[0]!.id, player.id)
+  assert.ok(assignFirstBus.ok, "expected to assign the first bus")
+  game = assignFirstBus.game
+
+  return { game, extraBusCardId: busCards[1]!.id }
+}
+
+function makeStarvedBusTailGame() {
+  let game = createGameState(usMap, {
+    players: [
+      { id: "p1", name: "Bot A", color: "#4a7c59", isBot: true, botPreset: "bot-avg" },
+    ],
+  })
+  const busCards = game.vehicleCatalog.filter(card => card.type === "bus")
+  assert.ok(busCards.length >= 2, "expected at least two bus cards in the vehicle catalog")
+
+  const player = game.players[0]
+  player.phase = "operations"
+  player.money = 200_000_000
+  player.ownedCityCardIds = ["dallas_fort_worth", "houston", "new_orleans", "oklahoma_city", "fayetteville"]
+  player.ownedVehicleCardIds = [busCards[0]!.id, busCards[1]!.id]
+  player.ownedVehicleCountsByCardId = { [busCards[0]!.id]: 1, [busCards[1]!.id]: 1 }
+  player.vehicleWeeksOwnedByCardId = { [busCards[0]!.id]: 0, [busCards[1]!.id]: 0 }
+  game.currentPlayerId = player.id
+  game.currentPhase = "operations"
+
+  const summary = buildPlayerBureaucracySummary(game, player.id)
+  assert.ok(summary, "expected a bureaucracy summary for the bus tail test game")
+  const busPlan = summary!.routePlans.find(
+    plan => !plan.isDisconnected && plan.route.mode === "bus" && plan.selectedCityIds.length >= 2,
+  )
+  assert.ok(busPlan, "expected a bus plan candidate for the tail-service test")
+
+  const setCitiesResult = setBureaucracyServicePodCities(
+    game,
+    busPlan!.corridorId,
+    [busPlan!.id],
+    ["dallas_fort_worth", "houston", "new_orleans", "oklahoma_city"],
+    player.id,
+  )
+  assert.ok(setCitiesResult.ok, "expected to configure the longer bus corridor")
+  game = setCitiesResult.game
+
+  const assignFirstBus = setBureaucracyRouteVehicleCard(game, busPlan!.id, busCards[0]!.id, player.id)
+  assert.ok(assignFirstBus.ok, "expected to assign the first bus to the long corridor")
+  game = assignFirstBus.game
+
+  return game
+}
+
+function makeSplitBusNetworksGame() {
+  const game = createGameState(usMap, {
+    players: [
+      { id: "p1", name: "Alice", color: "#4a7c59", isBot: false },
+    ],
+  })
+  const busCards = game.vehicleCatalog.filter(card => card.type === "bus")
+  assert.ok(busCards.length >= 2, "expected at least two bus cards in the vehicle catalog")
+
+  const player = game.players[0]
+  player.phase = "operations"
+  player.money = 200_000_000
+  player.ownedCityCardIds = ["atlanta", "charlotte", "louisville", "cincinnati"]
+  player.ownedVehicleCardIds = [busCards[0]!.id, busCards[1]!.id]
+  player.ownedVehicleCountsByCardId = {
+    [busCards[0]!.id]: 1,
+    [busCards[1]!.id]: 1,
+  }
+  player.vehicleWeeksOwnedByCardId = {
+    [busCards[0]!.id]: 0,
+    [busCards[1]!.id]: 0,
+  }
+  game.currentPlayerId = player.id
+  game.currentPhase = "operations"
+  game.currentWeek = 2
+
+  return { game, busCards }
+}
+
 describe("Turn timer", () => {
   it("turnTimerSeconds=0 means no timer (default)", () => {
     const game = makeGame({ turnTimerSeconds: 0 })
@@ -213,6 +402,223 @@ describe("Turn timer", () => {
     game.turnTimerExpiresAt = 9999999999
     const normalized = normalizeGameState(game)
     assert.equal(normalized.turnTimerExpiresAt, 9999999999)
+  })
+})
+
+describe("Overlapping add-city and operations turns", () => {
+  it("does not discard another player's live city offer when claiming a route", () => {
+    const game = createGameState(usMap, {
+      players: [
+        { id: "p1", name: "Alice", color: "#4a7c59", isBot: false },
+        { id: "p2", name: "Bob", color: "#7c4a4a", isBot: false },
+      ],
+    })
+
+    game.players[0].phase = "add-city"
+    game.players[1].phase = "operations"
+    game.players[1].money = 200_000_000
+    game.players[1].ownedCityCardIds = ["atlanta", "charlotte"]
+    game.currentPhase = "add-city"
+    game.currentPlayerId = "p1"
+
+    const drawResult = drawCityOffer(game, "South", "p1")
+    assert.ok(drawResult.ok, "expected Alice to draw a city offer")
+
+    const claimResult = claimRoute(
+      drawResult.game,
+      { mode: "rail", cityIds: ["atlanta", "charlotte"] },
+      "p2",
+    )
+    assert.ok(claimResult.ok, "expected Bob to claim a rail route")
+    assert.deepEqual(
+      claimResult.game.activeCityOffer,
+      drawResult.game.activeCityOffer,
+      "claiming a route should not wipe another player's active city offer",
+    )
+  })
+
+  it("keeps currentPlayerId on the next add-city player when operations finish early", () => {
+    const game = createGameState(usMap, {
+      players: [
+        { id: "p1", name: "Alice", color: "#4a7c59", isBot: false },
+        { id: "p2", name: "Bob", color: "#7c4a4a", isBot: false },
+      ],
+    })
+
+    game.players[0].phase = "add-city"
+    game.players[1].phase = "operations"
+    game.currentPhase = "add-city"
+    game.currentPlayerId = "p2"
+
+    const result = markOperationsReady(game, "p2")
+    assert.ok(result.ok, "expected Bob to finish operations")
+    assert.equal(result.game.currentPhase, "add-city")
+    assert.equal(result.game.currentPlayerId, "p1")
+  })
+})
+
+describe("City card accounting", () => {
+  it("passes for a fresh game", () => {
+    const game = makeGame()
+    assert.doesNotThrow(() => validateCityCardAccounting(game))
+  })
+
+  it("restores a missing city card to its deck at round end", () => {
+    const game = createGameState(usMap, {
+      players: [{ id: "p1", name: "Alice", color: "#4a7c59", isBot: false }],
+    })
+
+    game.players[0].phase = "bureaucracy"
+    game.currentPhase = "bureaucracy"
+    game.cityDeckCardIdsByRegion.South = game.cityDeckCardIdsByRegion.South.filter(
+      cityId => cityId !== "dallas_fort_worth",
+    )
+
+    const result = markBureaucracyReady(game, "p1")
+    assert.ok(result.ok, "expected bureaucracy advance to succeed")
+    assert.ok(
+      result.game.cityDeckCardIdsByRegion.South.includes("dallas_fort_worth"),
+      "expected the missing city card to be restored to the South deck",
+    )
+  })
+})
+
+describe("City draw keep limits", () => {
+  it("keeps 2 city cards every round with 4 players and a 94-card deck", () => {
+    const game = padCityDeckToCount(createGameState(usMap, {
+      players: [
+        { id: "p1", name: "P1", color: "#4a7c59", isBot: false },
+        { id: "p2", name: "P2", color: "#7c4a4a", isBot: false },
+        { id: "p3", name: "P3", color: "#4a5f7c", isBot: false },
+        { id: "p4", name: "P4", color: "#7c6a4a", isBot: false },
+      ],
+    }), 94)
+
+    assert.equal(getRequiredCityKeepCount(game, 1), 2)
+    assert.equal(getRequiredCityKeepCount(game, 8), 2)
+    assert.equal(getRequiredCityKeepCount(game, 10), 2)
+  })
+
+  it("drops to 1 kept city card in rounds 9-10 with 5 players", () => {
+    const game = padCityDeckToCount(createGameState(usMap, {
+      players: [
+        { id: "p1", name: "P1", color: "#4a7c59", isBot: false },
+        { id: "p2", name: "P2", color: "#7c4a4a", isBot: false },
+        { id: "p3", name: "P3", color: "#4a5f7c", isBot: false },
+        { id: "p4", name: "P4", color: "#7c6a4a", isBot: false },
+        { id: "p5", name: "P5", color: "#5f4a7c", isBot: false },
+      ],
+    }), 94)
+
+    assert.equal(getRequiredCityKeepCount(game, 8), 2)
+    assert.equal(getRequiredCityKeepCount(game, 9), 1)
+    assert.equal(getRequiredCityKeepCount(game, 10), 1)
+  })
+
+  it("drops to 1 kept city card in rounds 6-10 with 6 players", () => {
+    const game = padCityDeckToCount(createGameState(usMap, {
+      players: [
+        { id: "p1", name: "P1", color: "#4a7c59", isBot: false },
+        { id: "p2", name: "P2", color: "#7c4a4a", isBot: false },
+        { id: "p3", name: "P3", color: "#4a5f7c", isBot: false },
+        { id: "p4", name: "P4", color: "#7c6a4a", isBot: false },
+        { id: "p5", name: "P5", color: "#5f4a7c", isBot: false },
+        { id: "p6", name: "P6", color: "#4a7c74", isBot: false },
+      ],
+    }), 94)
+
+    assert.equal(getRequiredCityKeepCount(game, 5), 2)
+    assert.equal(getRequiredCityKeepCount(game, 6), 1)
+    assert.equal(getRequiredCityKeepCount(game, 10), 1)
+  })
+})
+
+describe("Air route operations", () => {
+  it("retargets an owned air route to a different owned city pair", () => {
+    let game = createGameState(usMap, {
+      players: [
+        { id: "p1", name: "Alice", color: "#4a7c59", isBot: false },
+      ],
+    })
+    const planeCard = game.vehicleCatalog.find(card => card.type === "air")
+    assert.ok(planeCard, "expected an air card in the vehicle catalog")
+
+    const player = game.players[0]
+    player.phase = "operations"
+    player.ownedCityCardIds = ["atlanta", "miami", "new_orleans", "charlotte"]
+    player.ownedVehicleCardIds = [planeCard!.id]
+    player.ownedVehicleCountsByCardId = { [planeCard!.id]: 1 }
+    player.vehicleWeeksOwnedByCardId = { [planeCard!.id]: 0 }
+    game.currentPlayerId = player.id
+    game.currentPhase = "operations"
+
+    const claimResult = claimRoute(game, { mode: "air", cityIds: ["atlanta", "miami"] }, player.id)
+    assert.ok(claimResult.ok, "expected the initial air claim to succeed")
+    game = claimResult.game
+
+    const summary = buildPlayerBureaucracySummary(game, player.id)
+    const airPlan = summary?.routePlans.find(plan => plan.route.mode === "air")
+    assert.ok(airPlan, "expected an air route plan")
+
+    const retargetResult = setBureaucracyAirRouteCities(
+      game,
+      airPlan!.route.id,
+      ["charlotte", "new_orleans"],
+      player.id,
+    )
+    assert.ok(retargetResult.ok, "expected retargeting the air route to succeed")
+    assert.equal(retargetResult.routeId, "air:charlotte:new_orleans")
+    assert.ok(retargetResult.game.routes.some(route => route.id === "air:charlotte:new_orleans"))
+    assert.ok(!retargetResult.game.routes.some(route => route.id === "air:atlanta:miami"))
+  })
+})
+
+describe("Managed bot preset fallbacks", () => {
+  it("uses the strongest managed fallback for bot-avg when no explicit bot-avg preset exists", async () => {
+    const presetStoreJson = JSON.parse(
+      readFileSync(new URL("../public/training-results/bot-presets.json", import.meta.url), "utf8"),
+    )
+    const presetStore = parseManagedBotPresetStore(presetStoreJson)
+    assert.ok(presetStore, "expected managed preset store to parse")
+    const originalFetch = globalThis.fetch
+
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify(presetStoreJson), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+
+    try {
+      const onePlayerOverrides = await fetchManagedBotPresetWeightOverrides(1)
+      const twoPlayerOverrides = await fetchManagedBotPresetWeightOverrides(2)
+
+      assert.deepEqual(
+        onePlayerOverrides["bot-avg"],
+        presetStore.presets["bot-best-2p"].weights,
+      )
+      assert.deepEqual(
+        onePlayerOverrides["bot-best"],
+        presetStore.presets["bot-best-2p"].weights,
+      )
+      assert.deepEqual(
+        twoPlayerOverrides["bot-avg"],
+        presetStore.presets["bot-best-3p"].weights,
+      )
+      assert.deepEqual(
+        onePlayerOverrides["bot-best-1p"],
+        presetStore.presets["bot-best-2p"].weights,
+      )
+      assert.deepEqual(
+        twoPlayerOverrides["bot-best-2p"],
+        presetStore.presets["bot-best-3p"].weights,
+      )
+      assert.deepEqual(
+        onePlayerOverrides["bot-best-4p"],
+        presetStore.presets["bot-best-2p"].weights,
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   })
 })
 
@@ -411,6 +817,18 @@ describe("Bot rail claim efficiency", () => {
     )
   })
 
+  it("prefers ending operations over closing a redundant three-city rail triangle", () => {
+    const game = makeRedundantRailTriangleGame()
+    const topCandidate = getTopScoredBotCandidates(game, "p1", {}, 10)[0]
+
+    assert.ok(topCandidate, "expected at least one bot action candidate")
+    assert.deepEqual(
+      topCandidate.action,
+      { type: "ready-operations" },
+      "expected the bot to stop instead of buying the third side of an already connected triangle",
+    )
+  })
+
   it("does not prefer buying a train before it has any practical rail path", () => {
     const game = makeNoTrackTrainPurchaseGame()
     const topBuyCandidate = getTopScoredBotCandidates(game, "p1", {}, 10)
@@ -425,6 +843,19 @@ describe("Bot rail claim efficiency", () => {
       "train",
       "expected the bot to avoid buying a train without an immediate rail use",
     )
+  })
+
+  it("does not surface unaffordable rail claims as legal bot actions", () => {
+    const game = makeTexasRailBotGame(["austin", "san_antonio"])
+    const player = game.players[0]
+    player.money = 0
+
+    const legalActions = getBotLegalActions(game, player.id)
+    const railClaims = legalActions.filter(
+      action => action.type === "claim-route" && action.mode === "rail",
+    )
+
+    assert.equal(railClaims.length, 0)
   })
 
   it("includes multi-quantity bus purchases when the rules allow them", () => {
@@ -501,6 +932,258 @@ describe("Bot rail claim efficiency", () => {
     assert.ok(
       unpenalizedClaim.score > penalizedClaim.score,
       "expected lowering the disconnected-rail penalty weight to improve that rail claim's score",
+    )
+  })
+
+  it("prefers adding a second compatible vehicle to a profitable pod before ending operations", () => {
+    const { game, extraBusCardId } = makeRepeatedBusPodGame()
+    const topCandidates = getTopScoredBotCandidates(game, "p1", {}, 10)
+    const expansionCandidate = topCandidates.find(candidate =>
+      (candidate.action.type === "add-second-vehicle-to-pod" &&
+        candidate.action.vehicleCardId === extraBusCardId) ||
+      (candidate.action.type === "create-service-pod" &&
+        [...candidate.action.cityIds].sort().join("|") === ["atlanta", "charlotte", "raleigh_durham"].join("|")),
+    )
+    const readyCandidate = topCandidates.find(candidate => candidate.action.type === "ready-operations") ?? null
+
+    assert.ok(expansionCandidate, "expected the bot to score a second-bus expansion candidate")
+    assert.ok(
+      readyCandidate === null || expansionCandidate.score > readyCandidate.score,
+      "expected the bot to value pod expansion above immediately ending operations",
+    )
+  })
+
+  it("prefers bus tail-service pod splits over ending operations when a corridor leaves cities at zero service", () => {
+    const game = makeStarvedBusTailGame()
+    const topCandidates = getTopScoredBotCandidates(game, "p1", {}, 10)
+    const tailServiceCandidate = topCandidates.find(candidate =>
+      candidate.action.type === "create-service-pod" &&
+      candidate.action.cityIds.includes("new_orleans"),
+    )
+    const readyCandidate = topCandidates.find(candidate => candidate.action.type === "ready-operations") ?? null
+
+    assert.ok(
+      tailServiceCandidate,
+      "expected the bot to consider a pod split that explicitly serves the New Orleans tail",
+    )
+    assert.ok(
+      readyCandidate === null || tailServiceCandidate.score > readyCandidate.score,
+      "expected the bot to prefer relieving a zero-service tail city before ending operations",
+    )
+  })
+
+  it("keeps improving a rail corridor after route claiming is exhausted", () => {
+    const bot = createScriptedBot("planner")
+    const game = makeUnderusedRailPodGame()
+    game.claimedRouteCountsByPlayerIdThisTurn.p1 = 3
+    const action = bot.pickAction({
+      game,
+      playerId: "p1",
+      legalActions: getBotLegalActions(game, "p1"),
+      phase: "operations",
+    })
+
+    assert.equal(action.type, "create-service-pod", "expected the planner to keep editing the profitable rail pod")
+  })
+
+  it("raises city demand after a city is fully served when dynamic demand is enabled", () => {
+    let game = createGameState(usMap, {
+      players: [{ id: "p1", name: "Demand Bot", color: "#4a7c59", isBot: false }],
+    })
+    const player = game.players[0]
+    const starterBusId = player.ownedVehicleCardIds[0]
+    assert.ok(starterBusId, "expected the starter bus to exist")
+
+    game.operatingConfig.dynamicDemand.enabled = true
+    game.operatingConfig.demandPointsPerCitySize = 1
+    game.operatingConfig.passengersPerDemandPoint = 1
+    game.currentPhase = "operations"
+    game.currentPlayerId = player.id
+    player.phase = "operations"
+    player.ownedCityCardIds = ["atlanta", "charlotte"]
+    game.cityDeckCardIdsByRegion = Object.fromEntries(
+      Object.entries(game.cityDeckCardIdsByRegion).map(([region, cityIds]) => [
+        region,
+        cityIds.filter(cityId => cityId !== "atlanta" && cityId !== "charlotte"),
+      ]),
+    ) as typeof game.cityDeckCardIdsByRegion
+    game.cities = game.cities.map(city =>
+      city.id === "atlanta" || city.id === "charlotte"
+        ? { ...city, size: 1, population: 100_000 }
+        : city,
+    )
+
+    const summary = buildPlayerBureaucracySummary(game, player.id)
+    const busPlan = summary?.routePlans.find(
+      plan => !plan.isDisconnected && plan.route.mode === "bus",
+    )
+    assert.ok(busPlan, "expected a bus corridor for the owned city pair")
+
+    const setCitiesResult = setBureaucracyServicePodCities(
+      game,
+      busPlan!.corridorId,
+      [busPlan!.id],
+      ["atlanta", "charlotte"],
+      player.id,
+    )
+    assert.ok(setCitiesResult.ok, "expected to create a bus pod")
+    game = setCitiesResult.game
+
+    const assignBusResult = setBureaucracyRouteVehicleCard(game, busPlan!.id, starterBusId!, player.id)
+    assert.ok(assignBusResult.ok, "expected to assign the starter bus")
+    game = assignBusResult.game
+
+    const readyOperations = markOperationsReady(game, player.id)
+    assert.ok(readyOperations.ok, "expected operations to complete")
+    const readyBureaucracy = markBureaucracyReady(readyOperations.game, player.id)
+    assert.ok(readyBureaucracy.ok, "expected bureaucracy to complete")
+
+    assert.equal(readyBureaucracy.game.cityDemandMultipliersByCityId.atlanta, 1.15)
+    assert.equal(readyBureaucracy.game.cityDemandMultipliersByCityId.charlotte, 1.15)
+  })
+
+  it("lowers city demand after a city receives no service when dynamic demand is enabled", () => {
+    const game = createGameState(usMap, {
+      players: [{ id: "p1", name: "Demand Bot", color: "#4a7c59", isBot: false }],
+    })
+    const player = game.players[0]
+
+    game.operatingConfig.dynamicDemand.enabled = true
+    game.operatingConfig.demandPointsPerCitySize = 1
+    game.operatingConfig.passengersPerDemandPoint = 1
+    game.currentPhase = "operations"
+    game.currentPlayerId = player.id
+    player.phase = "operations"
+    player.ownedCityCardIds = ["atlanta", "charlotte"]
+    player.ownedVehicleCardIds = []
+    player.ownedVehicleCountsByCardId = {}
+    player.vehicleWeeksOwnedByCardId = {}
+    game.cityDeckCardIdsByRegion = Object.fromEntries(
+      Object.entries(game.cityDeckCardIdsByRegion).map(([region, cityIds]) => [
+        region,
+        cityIds.filter(cityId => cityId !== "atlanta" && cityId !== "charlotte"),
+      ]),
+    ) as typeof game.cityDeckCardIdsByRegion
+
+    const readyOperations = markOperationsReady(game, player.id)
+    assert.ok(readyOperations.ok, "expected operations to complete without service")
+    const readyBureaucracy = markBureaucracyReady(readyOperations.game, player.id)
+    assert.ok(readyBureaucracy.ok, "expected bureaucracy to complete without service")
+
+    assert.equal(readyBureaucracy.game.cityDemandMultipliersByCityId.atlanta, 0.9)
+    assert.equal(readyBureaucracy.game.cityDemandMultipliersByCityId.charlotte, 0.9)
+  })
+
+  it("keeps route-plan passengers and revenue aligned with ledger entries", () => {
+    const { game } = makeRepeatedBusPodGame()
+    const summary = buildPlayerBureaucracySummary(game, "p1")
+    assert.ok(summary, "expected a bureaucracy summary")
+
+    for (const plan of summary!.routePlans.filter(plan => !plan.isDisconnected && plan.vehicleCard)) {
+      const ledgerPassengers = plan.simplifiedLedgerEntries.reduce((sum, entry) => sum + entry.passengers, 0)
+      const ledgerRevenue = plan.simplifiedLedgerEntries.reduce(
+        (sum, entry) => sum + entry.passengers * entry.farePerPassenger,
+        0,
+      )
+
+      assert.equal(plan.passengersServed, ledgerPassengers, `expected ${plan.id} passengers to match its ledger`)
+      assert.equal(plan.revenue, ledgerRevenue, `expected ${plan.id} revenue to match passenger fares`)
+    }
+  })
+
+  it("collapses duplicate final pod labels into a counted summary entry", () => {
+    const finalPodLabels = summarizeFinalPodLabels([
+      {
+        isDisconnected: false,
+        vehicleCard: { id: "bus-1" },
+        selectedCityIds: ["atlanta", "charlotte", "raleigh_durham"],
+        routes: [{ id: "r1" }],
+        serviceLabel: "Atlanta - Charlotte - Raleigh-Durham",
+        route: { mode: "bus" },
+      },
+      {
+        isDisconnected: false,
+        vehicleCard: { id: "bus-2" },
+        selectedCityIds: ["atlanta", "charlotte", "raleigh_durham"],
+        routes: [{ id: "r2" }],
+        serviceLabel: "Atlanta - Charlotte - Raleigh-Durham",
+        route: { mode: "bus" },
+      },
+    ] as Parameters<typeof summarizeFinalPodLabels>[0])
+
+    assert.deepEqual(
+      finalPodLabels,
+      ["Atlanta - Charlotte - Raleigh-Durham (Bus) ×2"],
+      "expected duplicate final pods to collapse into one counted label",
+    )
+  })
+
+  it("preserves pods from both source networks when a new city merges the corridors", () => {
+    const { game: previousGame, busCards } = makeSplitBusNetworksGame()
+    const playerId = "p1"
+    const previousSummary = buildPlayerBureaucracySummary(previousGame, playerId)
+    assert.ok(previousSummary, "expected a bureaucracy summary for the split bus networks")
+    const previousPlans = previousSummary!.routePlans.filter(
+      plan => !plan.isDisconnected && plan.route.mode === "bus" && plan.selectedCityIds.length >= 2,
+    )
+    assert.equal(previousPlans.length, 2, "expected two separate starting bus corridors")
+
+    let configuredPreviousGame = previousGame
+    const assignFirstBus = setBureaucracyRouteVehicleCard(
+      configuredPreviousGame,
+      previousPlans[0]!.id,
+      busCards[0]!.id,
+      playerId,
+    )
+    assert.ok(assignFirstBus.ok, "expected to assign the first corridor bus")
+    configuredPreviousGame = assignFirstBus.game
+
+    const assignSecondBus = setBureaucracyRouteVehicleCard(
+      configuredPreviousGame,
+      previousPlans[1]!.id,
+      busCards[1]!.id,
+      playerId,
+    )
+    assert.ok(assignSecondBus.ok, "expected to assign the second corridor bus")
+    configuredPreviousGame = assignSecondBus.game
+
+    const nextGame = structuredClone(configuredPreviousGame)
+    nextGame.players[0]!.ownedCityCardIds = [...nextGame.players[0]!.ownedCityCardIds, "knoxville"]
+    const migratedState = migrateBureaucracyServiceState(configuredPreviousGame, nextGame)
+    const mergedGame = {
+      ...nextGame,
+      ...migratedState,
+    }
+    const mergedSummary = buildPlayerBureaucracySummary(mergedGame, playerId)
+    assert.ok(mergedSummary, "expected a bureaucracy summary after merging the networks")
+
+    const mergedActivePlans = mergedSummary!.routePlans.filter(
+      plan => !plan.isDisconnected && plan.route.mode === "bus" && plan.selectedCityIds.length >= 2,
+    )
+    const mergedPlanCitySets = mergedActivePlans
+      .map(plan => [...plan.selectedCityIds].sort().join("|"))
+      .sort()
+    const mergedVehicleCardIds = mergedActivePlans
+      .map(plan => plan.vehicleCard?.id ?? null)
+      .sort()
+    const disconnectedPlan = mergedSummary!.routePlans.find(
+      plan => plan.isDisconnected && plan.route.mode === "bus",
+    )
+
+    assert.deepEqual(
+      mergedPlanCitySets,
+      [["atlanta", "charlotte"].join("|"), ["cincinnati", "louisville"].join("|")].sort(),
+      "expected both pre-merge pods to survive inside the merged bus corridor",
+    )
+    assert.deepEqual(
+      mergedVehicleCardIds,
+      [busCards[0]!.id, busCards[1]!.id].sort(),
+      "expected both pre-merge vehicle assignments to survive the corridor merge",
+    )
+    assert.deepEqual(
+      disconnectedPlan?.selectedCityIds,
+      ["knoxville"],
+      "expected the newly added bridging city to stay disconnected until the player edits the merged network",
     )
   })
 
@@ -736,6 +1419,48 @@ describe("Bot rail claim efficiency", () => {
     ])
 
     assert.ok(result.changedWeights.length > 0, "expected coaching feedback to produce weight changes")
+  })
+
+  it("blends autotune warm starts toward coached weights", () => {
+    const blended = blendWeightsTowardsCoaching(
+      { vehiclePriorityBus: 100, vehiclePriorityTrain: 50 },
+      { vehiclePriorityBus: 60, vehiclePriorityTrain: 70 },
+      0.25,
+    )
+
+    assert.equal(blended.vehiclePriorityBus, 90, "expected bus priority to move 25% toward coaching")
+    assert.equal(blended.vehiclePriorityTrain, 55, "expected train priority to move 25% toward coaching")
+  })
+
+  it("penalizes structurally bad end states during autotune evaluation", () => {
+    const cleanScore = calculateScriptedBotEvaluationScore({
+      playerCount: 2,
+      averagePassengers: 200_000,
+      averagePassengerMargin: 40_000,
+      winRate: 0.5,
+      averageRank: 1.5,
+      averageConnectedCities: 12,
+      timeoutRate: 0,
+      averageUnassignedVehicleCount: 0,
+      averageUnstaffedPodCount: 0,
+      averageUnstaffedRailPodCount: 0,
+      averageAvoidableDisconnectedCityCount: 0,
+    })
+    const sloppyScore = calculateScriptedBotEvaluationScore({
+      playerCount: 2,
+      averagePassengers: 200_000,
+      averagePassengerMargin: 40_000,
+      winRate: 0.5,
+      averageRank: 1.5,
+      averageConnectedCities: 12,
+      timeoutRate: 0,
+      averageUnassignedVehicleCount: 2,
+      averageUnstaffedPodCount: 2,
+      averageUnstaffedRailPodCount: 1,
+      averageAvoidableDisconnectedCityCount: 3,
+    })
+
+    assert.ok(cleanScore > sloppyScore, "expected structural waste to reduce the autotune score")
   })
 })
 

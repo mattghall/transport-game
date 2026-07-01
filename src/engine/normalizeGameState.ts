@@ -15,6 +15,7 @@ type LegacyActiveCityOffer = Omit<ActiveCityOffer, "playerId"> & { playerId?: st
   | "actionLog"
   | "activeCityOffer"
   | "chanceCardsEnabled"
+  | "cityDemandMultipliersByCityId"
   | "turnTimerSeconds"
   | "turnTimerExpiresAt"
   | "autoPlayUntilWeek"
@@ -23,6 +24,7 @@ type LegacyActiveCityOffer = Omit<ActiveCityOffer, "playerId"> & { playerId?: st
   players: LegacyPlayerState[]
   activeCityOffer: LegacyActiveCityOffer | null
   chanceCardsEnabled?: boolean
+  cityDemandMultipliersByCityId?: Record<string, number>
   bureaucracyReadyPlayerIds?: string[]
   purchasedVehiclePlayerIds?: string[]
   claimedRoutePlayerIdsThisTurn?: string[]
@@ -63,6 +65,9 @@ export function normalizeGameState(game: LegacyGameState): GameState {
     claimedRoutePlayerIdsThisTurn: game.claimedRoutePlayerIdsThisTurn ?? [],
     claimedRouteCountsByPlayerIdThisTurn: game.claimedRouteCountsByPlayerIdThisTurn ?? {},
     chanceCardsEnabled: game.chanceCardsEnabled ?? true,
+    cityDemandMultipliersByCityId:
+      game.cityDemandMultipliersByCityId ??
+      Object.fromEntries((game.cities ?? []).map(city => [city.id, 1])),
     turnTimerSeconds: game.turnTimerSeconds ?? 0,
     turnTimerExpiresAt: game.turnTimerExpiresAt ?? null,
     autoPlayUntilWeek: game.autoPlayUntilWeek ?? 0,
@@ -70,6 +75,20 @@ export function normalizeGameState(game: LegacyGameState): GameState {
       ...game.operatingConfig,
       simulationTicksPerPeriod: game.operatingConfig.simulationTicksPerPeriod ?? 4,
       weeksPerPeriod: game.operatingConfig.weeksPerPeriod ?? 52,
+      cityDrawCount: game.operatingConfig.cityDrawCount ?? 4,
+      cityTargetKeepCount: game.operatingConfig.cityTargetKeepCount ?? 2,
+      cityMinimumKeepCount: game.operatingConfig.cityMinimumKeepCount ?? 1,
+      dynamicDemand: {
+        enabled: game.operatingConfig.dynamicDemand?.enabled ?? false,
+        lowServiceThreshold: game.operatingConfig.dynamicDemand?.lowServiceThreshold ?? 0.25,
+        lowServiceMultiplier: game.operatingConfig.dynamicDemand?.lowServiceMultiplier ?? 0.95,
+        noServiceThreshold: game.operatingConfig.dynamicDemand?.noServiceThreshold ?? 0,
+        noServiceMultiplier: game.operatingConfig.dynamicDemand?.noServiceMultiplier ?? 0.9,
+        highServiceThreshold: game.operatingConfig.dynamicDemand?.highServiceThreshold ?? 0.75,
+        highServiceMultiplier: game.operatingConfig.dynamicDemand?.highServiceMultiplier ?? 1.1,
+        fullServiceThreshold: game.operatingConfig.dynamicDemand?.fullServiceThreshold ?? 1,
+        fullServiceMultiplier: game.operatingConfig.dynamicDemand?.fullServiceMultiplier ?? 1.15,
+      },
     },
     actionLog: game.actionLog.map(entry => ({
       ...entry,

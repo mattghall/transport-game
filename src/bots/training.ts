@@ -16,6 +16,7 @@ import {
   mergeScriptedBotWeights,
   type ScriptedBotWeights,
 } from "./scriptedBot"
+import { measureBotStructure } from "./evaluationMetrics"
 
 export type ScriptedBotWeightSample = {
   seed: number
@@ -27,6 +28,10 @@ export type ScriptedBotWeightSample = {
   connectedCities: number
   money: number
   timedOut: boolean
+  unassignedVehicleCount: number
+  unstaffedPodCount: number
+  unstaffedRailPodCount: number
+  avoidableDisconnectedCityCount: number
 }
 
 export type ScriptedBotWeightEvaluation = {
@@ -39,6 +44,10 @@ export type ScriptedBotWeightEvaluation = {
   averageConnectedCities: number
   averageMoney: number
   timeoutRate: number
+  averageUnassignedVehicleCount: number
+  averageUnstaffedPodCount: number
+  averageUnstaffedRailPodCount: number
+  averageAvoidableDisconnectedCityCount: number
   samples: ScriptedBotWeightSample[]
 }
 
@@ -51,6 +60,10 @@ export type ScriptedBotWeightEvaluationSummary = {
   averageConnectedCities: number
   averageMoney: number
   timeoutRate: number
+  averageUnassignedVehicleCount: number
+  averageUnstaffedPodCount: number
+  averageUnstaffedRailPodCount: number
+  averageAvoidableDisconnectedCityCount: number
   sampleCount: number
   weights: ScriptedBotWeights
 }
@@ -187,6 +200,7 @@ export function evaluateScriptedBotWeights(options: {
     const passengers = candidateStanding?.player.totalPassengersServed ?? 0
     // In 1-player training there is no opponent, so the lead target is measured against zero.
     const opponentPassengers = strongestOpponentStanding?.player.totalPassengersServed ?? 0
+    const structureMetrics = measureBotStructure(result.game, candidatePlayerId)
 
     return {
       seed,
@@ -201,6 +215,7 @@ export function evaluateScriptedBotWeights(options: {
       connectedCities: candidateStanding?.connectedCities ?? 0,
       money: candidateStanding?.player.money ?? 0,
       timedOut: result.timedOut,
+      ...structureMetrics,
     }
   })
   const sampleCount = Math.max(samples.length, 1)
@@ -216,6 +231,14 @@ export function evaluateScriptedBotWeights(options: {
   const averageMoney = samples.reduce((total, sample) => total + sample.money, 0) / sampleCount
   const timeoutRate =
     samples.reduce((total, sample) => total + (sample.timedOut ? 1 : 0), 0) / sampleCount
+  const averageUnassignedVehicleCount =
+    samples.reduce((total, sample) => total + sample.unassignedVehicleCount, 0) / sampleCount
+  const averageUnstaffedPodCount =
+    samples.reduce((total, sample) => total + sample.unstaffedPodCount, 0) / sampleCount
+  const averageUnstaffedRailPodCount =
+    samples.reduce((total, sample) => total + sample.unstaffedRailPodCount, 0) / sampleCount
+  const averageAvoidableDisconnectedCityCount =
+    samples.reduce((total, sample) => total + sample.avoidableDisconnectedCityCount, 0) / sampleCount
 
   return {
     weights: resolvedCandidateWeights,
@@ -226,17 +249,52 @@ export function evaluateScriptedBotWeights(options: {
     averageConnectedCities,
     averageMoney,
     timeoutRate,
-    // In 1-player games passengerMargin === passengers (no opponent), so weight it at
-    // 1/10 to avoid double-counting it against the raw passenger total.
-    score:
-      averagePassengers +
-      averagePassengerMargin * (options.playerCount === 1 ? 0.1 : 1) +
-      winRate * 5_000 -
-      averageRank * 1_000 +
-      averageConnectedCities * 50 -
-      timeoutRate * 250_000,
+    averageUnassignedVehicleCount,
+    averageUnstaffedPodCount,
+    averageUnstaffedRailPodCount,
+    averageAvoidableDisconnectedCityCount,
+    score: calculateScriptedBotEvaluationScore({
+      playerCount: options.playerCount,
+      averagePassengers,
+      averagePassengerMargin,
+      winRate,
+      averageRank,
+      averageConnectedCities,
+      timeoutRate,
+      averageUnassignedVehicleCount,
+      averageUnstaffedPodCount,
+      averageUnstaffedRailPodCount,
+      averageAvoidableDisconnectedCityCount,
+    }),
     samples,
   }
+}
+
+export function calculateScriptedBotEvaluationScore(options: {
+  playerCount?: number
+  averagePassengers: number
+  averagePassengerMargin: number
+  winRate: number
+  averageRank: number
+  averageConnectedCities: number
+  timeoutRate: number
+  averageUnassignedVehicleCount: number
+  averageUnstaffedPodCount: number
+  averageUnstaffedRailPodCount: number
+  averageAvoidableDisconnectedCityCount: number
+}) {
+  return (
+    options.averagePassengers +
+    options.averagePassengerMargin * (options.playerCount === 1 ? 0.1 : 1) +
+    options.winRate * 5_000 -
+    options.averageRank * 1_000 +
+    options.averageConnectedCities * 50 -
+    options.timeoutRate * 250_000 -
+    options.averageUnassignedVehicleCount * 7_500 -
+    options.averageUnstaffedPodCount * 12_000 -
+    options.averageUnstaffedRailPodCount * 18_000 -
+    options.averageAvoidableDisconnectedCityCount * 9_000
+  )
 }
 
 export function summarizeScriptedBotWeightEvaluation(
@@ -251,6 +309,10 @@ export function summarizeScriptedBotWeightEvaluation(
     averageConnectedCities: evaluation.averageConnectedCities,
     averageMoney: evaluation.averageMoney,
     timeoutRate: evaluation.timeoutRate,
+    averageUnassignedVehicleCount: evaluation.averageUnassignedVehicleCount,
+    averageUnstaffedPodCount: evaluation.averageUnstaffedPodCount,
+    averageUnstaffedRailPodCount: evaluation.averageUnstaffedRailPodCount,
+    averageAvoidableDisconnectedCityCount: evaluation.averageAvoidableDisconnectedCityCount,
     sampleCount: evaluation.samples.length,
     weights: evaluation.weights,
   }

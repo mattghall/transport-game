@@ -6,10 +6,10 @@
     "name": "Toyota Sienna",
     "purchasePrice": 35000,
     "vehicleCount": 1,
-    "capacityPerVehicle": 8,
-    "totalPassengerCapacity": 8,
+    "capacityPerVehicle": 7,
+    "totalPassengerCapacity": 7,
     "operatingCostMultiplier": 1.1,
-    "speed": 65,
+    "speed": 45,
     "fuelResource": "diesel",
     "funFact": "The Toyota Sienna is the only minivan in its class offered with standard all-wheel drive, making it a popular choice for small transit operators in snowy regions."
   },

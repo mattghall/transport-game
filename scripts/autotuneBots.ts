@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
 import { cpus } from "node:os"
 import { resolve } from "node:path"
+import { pathToFileURL } from "node:url"
 import {
   DEFAULT_SCRIPTED_BOT_WEIGHTS,
   mergeScriptedBotWeights,
@@ -23,6 +24,7 @@ import {
 const TRAINING_RESULTS_DIR = resolve(process.cwd(), "public/training-results")
 const LATEST_RESULTS_PATH = resolve(TRAINING_RESULTS_DIR, "latest.json")
 const LATEST_IMPORTANCE_RESULTS_PATH = resolve(TRAINING_RESULTS_DIR, "latest-importance.json")
+const COACHED_WEIGHTS_PATH = resolve(TRAINING_RESULTS_DIR, "coached-weights.json")
 const AUTOTUNE_STATUS_PATH = resolve(TRAINING_RESULTS_DIR, "autotune-status.json")
 const AUTOTUNE_HISTORY_PATH = resolve(TRAINING_RESULTS_DIR, "autotune-history.json")
 const AUTOTUNE_STOP_SIGNAL_PATH = resolve(TRAINING_RESULTS_DIR, "autotune-stop-requested")
@@ -39,6 +41,9 @@ type ChampionRecord = {
   playerCount: PlayerCount
   benchmark: ScriptedBotTrainingResults["final"]
   training: ScriptedBotTrainingResults
+}
+type CoachedWeightsRecord = {
+  weights: Partial<ScriptedBotWeights>
 }
 type AutotuneRunRecord = {
   cycle: number
@@ -183,6 +188,44 @@ function parseChampionRecord(value: unknown, playerCount: PlayerCount): Champion
 
 function loadChampion(playerCount: PlayerCount) {
   return parseChampionRecord(readJsonFile(createChampionPath(playerCount)), playerCount)
+}
+
+function loadCoachedWeights() {
+  const parsed = readJsonFile<CoachedWeightsRecord | Partial<ScriptedBotWeights>>(COACHED_WEIGHTS_PATH)
+  if (!parsed) {
+    return null
+  }
+
+  if (isRecord(parsed) && "weights" in parsed && isValidWeights(parsed.weights)) {
+    return mergeScriptedBotWeights(parsed.weights)
+  }
+
+  if (isValidWeights(parsed)) {
+    return mergeScriptedBotWeights(parsed)
+  }
+
+  return null
+}
+
+export function blendWeightsTowardsCoaching(
+  baseWeights: Partial<ScriptedBotWeights>,
+  coachedWeights: Partial<ScriptedBotWeights> | null,
+  factor: number,
+) {
+  const resolvedBase = mergeScriptedBotWeights(baseWeights)
+  if (!coachedWeights || factor <= 0) {
+    return resolvedBase
+  }
+
+  const resolvedCoached = mergeScriptedBotWeights(coachedWeights)
+  const clampedFactor = Math.max(0, Math.min(1, factor))
+  const blended = { ...resolvedBase }
+
+  for (const key of Object.keys(resolvedBase) as Array<keyof ScriptedBotWeights>) {
+    blended[key] = resolvedBase[key] + (resolvedCoached[key] - resolvedBase[key]) * clampedFactor
+  }
+
+  return blended
 }
 
 function loadChampions() {
@@ -440,20 +483,28 @@ function createChampionRecord(
 function buildOpponentPlan(
   playerCount: PlayerCount,
   champions: AutotuneStatus["champions"],
+  coachedWeights: ScriptedBotWeights | null,
 ): {
   label: string
   pool: ScriptedBotWeights[]
 } {
   if (playerCount === 1) {
     return {
-      label: "default",
-      pool: [DEFAULT_SCRIPTED_BOT_WEIGHTS],
+      label: coachedWeights ? "default + coached" : "default",
+      pool: coachedWeights ? [DEFAULT_SCRIPTED_BOT_WEIGHTS, coachedWeights] : [DEFAULT_SCRIPTED_BOT_WEIGHTS],
     }
   }
 
   const labels = ["default"]
   const pool: ScriptedBotWeights[] = [DEFAULT_SCRIPTED_BOT_WEIGHTS]
   const seenLabels = new Set(labels)
+
+  if (coachedWeights) {
+    labels.push("coached")
+    pool.push(coachedWeights)
+    seenLabels.add("coached")
+  }
+
   const preferredCounts = [playerCount, ...PLAYER_COUNTS.filter(count => count !== playerCount && count !== 1)]
 
   for (const count of preferredCounts) {
@@ -556,6 +607,7 @@ async function main() {
 
   try {
     const champions = loadChampions()
+    const coachedWeights = loadCoachedWeights()
     const status = loadStatus(champions)
     const history = loadHistory(status)
     writeStatus(status)
@@ -573,12 +625,21 @@ async function main() {
       const startedFromScratch = !champion || modeCycle % 5 === 0
       const isFirstCycleForMode = modeCycle === 1
       const profileConfig = getTrainingProfile(playerCount, modeCycle, startedFromScratch, cyclesSincePromotion, isFirstCycleForMode)
-      const opponentPlan = buildOpponentPlan(playerCount, status.champions)
+      const opponentPlan = buildOpponentPlan(playerCount, status.champions, coachedWeights)
       const opponent = opponentPlan.label
       const baseSeed = 10_000 + cycle * 500
       const mutationSeed = 100_000 + cycle * 977
       const outputPath = createModeResultsPath(playerCount)
       const frozenWeights = champion?.training.final.weights
+      const championSeedWeights =
+        champion?.training.final.weights ??
+        applyFrozenScriptedBotWeights(DEFAULT_SCRIPTED_BOT_WEIGHTS, frozenWeights)
+      const coachingBlendFactor = startedFromScratch ? 0.45 : 0.25
+      const initialWeights = blendWeightsTowardsCoaching(
+        championSeedWeights,
+        coachedWeights,
+        coachedWeights ? coachingBlendFactor : 0,
+      )
 
       status.currentRun = {
         cycle,
@@ -592,7 +653,15 @@ async function main() {
       status.updatedAt = new Date().toISOString()
       writeStatus(status)
 
-      logRunStart(cycle, playerCount, modeCycle, profileConfig.profile, startedFromScratch, opponent, profileConfig.iterations)
+      logRunStart(
+        cycle,
+        playerCount,
+        modeCycle,
+        profileConfig.profile,
+        startedFromScratch,
+        coachedWeights ? `${opponent}; coaching blend ${coachingBlendFactor.toFixed(2)}` : opponent,
+        profileConfig.iterations,
+      )
 
       const cycleStartMs = Date.now()
       const results = await runScriptedBotTrainingParallel(
@@ -606,9 +675,7 @@ async function main() {
           maxSteps: profileConfig.maxSteps,
           initialTemperature: profileConfig.initialTemperature,
           outputPath,
-          initialWeights: startedFromScratch
-            ? applyFrozenScriptedBotWeights(DEFAULT_SCRIPTED_BOT_WEIGHTS, frozenWeights)
-            : champion?.training.final.weights,
+          initialWeights,
           opponentPoolWeights: opponentPlan.pool,
           frozenWeights,
           onIterationComplete: progress => {
@@ -693,7 +760,9 @@ async function main() {
   }
 }
 
-main().catch(err => {
-  console.error(JSON.stringify({ stage: "fatal", error: String(err) }))
-  process.exit(1)
-})
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch(err => {
+    console.error(JSON.stringify({ stage: "fatal", error: String(err) }))
+    process.exit(1)
+  })
+}

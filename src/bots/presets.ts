@@ -96,6 +96,11 @@ export const BEST_BOT_WEIGHTS: ScriptedBotWeights = {
   podDisconnectedCityReductionBonus: 18,
   podUnstaffedPodPenalty: 90,
   podExistingVehicleAssignedBonus: 40,
+  podZeroServiceCityReliefBonus: 34,
+  podSmallCityCoverageScore: 12,
+  podGrowthCityServiceBonus: 10,
+  readyOperationsZeroServiceCityPenalty: 24,
+  buyVehicleForUnservedCityBonus: 18,
 }
 
 export const BOT_PRESETS: ReadonlyArray<{
@@ -169,6 +174,18 @@ function getStickbugVariantStorageId(playerCount: StickbugVariantPlayerCount): M
   return `bot-best-${playerCount}p`
 }
 
+function getRecommendedManagedPresetStorageId(playerCount?: number): ManagedBotPresetStorageId {
+  switch (playerCount) {
+    case 2:
+      return "bot-best-3p"
+    case 1:
+    case 3:
+    case 4:
+    default:
+      return "bot-best-2p"
+  }
+}
+
 export function getManagedPresetStorageId(
   presetId: ManagedBotPresetId | BotPresetId,
   playerCount?: number,
@@ -184,8 +201,8 @@ export function getManagedPresetStorageId(
   if (presetId === "bot-best-4p") return "bot-best-4p"
 
   // Legacy "bot-best" resolves by player count
-  if (presetId === "bot-best" && (playerCount === 1 || playerCount === 2 || playerCount === 3 || playerCount === 4)) {
-    return getStickbugVariantStorageId(playerCount)
+  if (presetId === "bot-best") {
+    return getRecommendedManagedPresetStorageId(playerCount)
   }
 
   return null
@@ -365,14 +382,20 @@ export async function fetchManagedBotPresetStore() {
 export async function fetchManagedBotPresetWeightOverrides(playerCount?: number) {
   const store = await fetchManagedBotPresetStore()
   const result: Partial<Record<BotPresetId, ScriptedBotWeights>> = {}
+  const recommendedStorageId = getRecommendedManagedPresetStorageId(playerCount)
+  const recommendedEntry = store?.presets[recommendedStorageId]
 
   if (store?.presets["bot-avg"]) {
     result["bot-avg"] = store.presets["bot-avg"].weights
+  } else if (recommendedEntry) {
+    // Keep the easy/default bot seat competitive even when no explicit managed
+    // "bot-avg" promotion has been published yet.
+    result["bot-avg"] = recommendedEntry.weights
   }
 
   // Load all explicit per-count stickbug variants
   for (const pc of [1, 2, 3, 4] as const) {
-    const storageId: ManagedBotPresetStorageId = `bot-best-${pc}p`
+    const storageId = getRecommendedManagedPresetStorageId(pc)
     const entry = store?.presets[storageId]
     if (entry) {
       const presetId: BotPresetId = `bot-best-${pc}p`
@@ -381,10 +404,8 @@ export async function fetchManagedBotPresetWeightOverrides(playerCount?: number)
   }
 
   // Legacy "bot-best": use the player-count-specific variant for backward compat
-  const legacyStorageId = getManagedPresetStorageId("bot-best", playerCount)
-  const legacyEntry = legacyStorageId ? store?.presets[legacyStorageId] : null
-  if (legacyEntry) {
-    result["bot-best"] = legacyEntry.weights
+  if (recommendedEntry) {
+    result["bot-best"] = recommendedEntry.weights
   }
 
   return result

@@ -40,14 +40,21 @@ function cityMatchesDemandBoost(card: ChanceCard | null, city: City) {
 export function getCityDemandSize(game: GameState, city: City) {
   const activeChanceCard = getActiveChanceCard(game)
   const baseDemandSize = city.size ?? 0
+  const chanceAdjustedDemandSize = !cityMatchesDemandBoost(activeChanceCard, city)
+    ? baseDemandSize
+    : baseDemandSize + (activeChanceCard?.demandBoost?.bonusPerCity ?? 0)
+  const demandMultiplier =
+    game.operatingConfig.dynamicDemand.enabled
+      ? Math.max(0.05, game.cityDemandMultipliersByCityId[city.id] ?? 1)
+      : 1
 
-  if (!cityMatchesDemandBoost(activeChanceCard, city)) {
-    return baseDemandSize * game.operatingConfig.demandPointsPerCitySize
-  }
-
-  return (
-    (baseDemandSize + (activeChanceCard?.demandBoost?.bonusPerCity ?? 0)) *
-    game.operatingConfig.demandPointsPerCitySize
+  return Math.max(
+    0,
+    Math.round(
+      chanceAdjustedDemandSize *
+        game.operatingConfig.demandPointsPerCitySize *
+        demandMultiplier,
+    ),
   )
 }
 

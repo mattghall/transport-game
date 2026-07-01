@@ -223,6 +223,90 @@ export type PlayerBureaucracySummary = {
   }>
 }
 
+type CityDemandServiceStat = {
+  generatedDemandCubes: number
+  servedDemandCubes: number
+}
+
+function getDynamicDemandStepMultiplier(
+  game: GameState,
+  servedRatio: number,
+) {
+  const config = game.operatingConfig.dynamicDemand
+
+  if (!config.enabled) {
+    return 1
+  }
+
+  if (servedRatio <= config.noServiceThreshold) {
+    return config.noServiceMultiplier
+  }
+
+  if (servedRatio <= config.lowServiceThreshold) {
+    return config.lowServiceMultiplier
+  }
+
+  if (servedRatio >= config.fullServiceThreshold) {
+    return config.fullServiceMultiplier
+  }
+
+  if (servedRatio >= config.highServiceThreshold) {
+    return config.highServiceMultiplier
+  }
+
+  return 1
+}
+
+function buildCityDemandServiceStats(
+  summaries: PlayerBureaucracySummary[],
+) {
+  const statsByCityId = new Map<string, CityDemandServiceStat>()
+
+  for (const summary of summaries) {
+    for (const plan of summary.routePlans) {
+      if (plan.isDisconnected || plan.selectedCityIds.length < 2) {
+        continue
+      }
+
+      for (const cityStatus of plan.simplifiedCityStatuses) {
+        const existing = statsByCityId.get(cityStatus.cityId) ?? {
+          generatedDemandCubes: 0,
+          servedDemandCubes: 0,
+        }
+
+        statsByCityId.set(cityStatus.cityId, {
+          generatedDemandCubes: Math.max(existing.generatedDemandCubes, cityStatus.outboundCubes),
+          servedDemandCubes: existing.servedDemandCubes + cityStatus.filledCubes,
+        })
+      }
+    }
+  }
+
+  return statsByCityId
+}
+
+export function summarizeFinalPodLabels(routePlans: BureaucracyRoutePlan[]) {
+  const countsByLabel = new Map<string, number>()
+
+  for (const plan of routePlans) {
+    if (
+      plan.isDisconnected ||
+      plan.vehicleCard === null ||
+      plan.selectedCityIds.length < 2 ||
+      plan.routes.length === 0
+    ) {
+      continue
+    }
+
+    const label = `${plan.serviceLabel} (${plan.route.mode === "rail" ? "Rail" : plan.route.mode === "air" ? "Air" : "Bus"})`
+    countsByLabel.set(label, (countsByLabel.get(label) ?? 0) + 1)
+  }
+
+  return Array.from(countsByLabel.entries()).map(([label, count]) =>
+    count > 1 ? `${label} ×${count}` : label,
+  )
+}
+
 function getVehicleTypeForRouteMode(mode: RouteMode): VehicleType {
   switch (mode) {
     case "rail":
@@ -935,21 +1019,27 @@ export function migrateBureaucracyServiceState(
             return groups
           }, new Map<string, PersistedServiceSlotState[]>()),
       )
-      const matchingPreviousSlots =
-        matchingPreviousSlotGroups
-          .sort(([, slotGroupA], [, slotGroupB]) => {
-            const overlapA = new Set(slotGroupA.flatMap(slot => slot.availableCityIds))
-            const overlapB = new Set(slotGroupB.flatMap(slot => slot.availableCityIds))
-            const overlapScoreA = nextServiceGroup.cityIds.filter(cityId => overlapA.has(cityId)).length
-            const overlapScoreB = nextServiceGroup.cityIds.filter(cityId => overlapB.has(cityId)).length
+      const matchingPreviousSlots = matchingPreviousSlotGroups
+        .sort(([, slotGroupA], [, slotGroupB]) => {
+          const overlapA = new Set(slotGroupA.flatMap(slot => slot.availableCityIds))
+          const overlapB = new Set(slotGroupB.flatMap(slot => slot.availableCityIds))
+          const overlapScoreA = nextServiceGroup.cityIds.filter(cityId => overlapA.has(cityId)).length
+          const overlapScoreB = nextServiceGroup.cityIds.filter(cityId => overlapB.has(cityId)).length
 
-            if (overlapScoreA !== overlapScoreB) {
-              return overlapScoreB - overlapScoreA
-            }
+          if (overlapScoreA !== overlapScoreB) {
+            return overlapScoreB - overlapScoreA
+          }
 
-            return slotGroupA[0]?.corridorId.localeCompare(slotGroupB[0]?.corridorId ?? "") ?? 0
-          })[0]?.[1]
-          ?.sort((slotA, slotB) => slotA.slotIndex - slotB.slotIndex) ?? []
+          return slotGroupA[0]?.corridorId.localeCompare(slotGroupB[0]?.corridorId ?? "") ?? 0
+        })
+        .flatMap(([, slotGroup]) => slotGroup)
+        .sort((slotA, slotB) => {
+          if (slotA.corridorId !== slotB.corridorId) {
+            return slotA.corridorId.localeCompare(slotB.corridorId)
+          }
+
+          return slotA.slotIndex - slotB.slotIndex
+        })
 
       if (matchingPreviousSlots.length === 0) {
         // Brand-new corridor with no previous state.
@@ -981,10 +1071,12 @@ export function migrateBureaucracyServiceState(
         ),
         assignedVehicleCardId: slot.assignedVehicleCardId,
         }))
-      const migratedDisconnectedCityIds =
+      const migratedDisconnectedCityIds = [...new Set(
         matchingPreviousSlots
-          .find(slot => slot.isDisconnected)
-          ?.selectedCityIds.filter(cityId => nextServiceGroup.cityIds.includes(cityId)) ?? []
+          .filter(slot => slot.isDisconnected)
+          .flatMap(slot => slot.selectedCityIds)
+          .filter(cityId => nextServiceGroup.cityIds.includes(cityId)),
+      )]
       const assignedCityIds = new Set(
         [...migratedSlots.flatMap(slot => slot.selectedCityIds), ...migratedDisconnectedCityIds],
       )
@@ -1283,9 +1375,6 @@ export function buildPlayerBureaucracySummary(
       const totalCubeMoves = aggSegs.reduce(
         (s, seg) => s + seg.cubesAtoB + seg.cubesBtoA, 0,
       )
-      // Passengers = trips × full vehicle capacity (supply-side model)
-      const passengersServed = vehicleCard === null ? 0 :
-        aggSegs.reduce((s, seg) => s + seg.tripsRun * vehicleCard.totalPassengerCapacity * ownedFleetSize, 0)
 
       // Per-city departure counts (for city status fill display)
       const departedByCityId = new Map<string, number>()
@@ -1323,11 +1412,14 @@ export function buildPlayerBureaucracySummary(
         const segCapacity = vehicleCard === null ? 0 : vehicleCard.totalPassengerCapacity * ownedFleetSize
         const totalSegPassengers = seg.tripsRun * segCapacity
         const totalSegCubes = seg.cubesAtoB + seg.cubesBtoA
-
-        if (seg.cubesAtoB > 0) {
-          const passengers = totalSegCubes > 0
+        const passengersAtoB =
+          totalSegCubes > 0
             ? Math.round((seg.cubesAtoB / totalSegCubes) * totalSegPassengers)
             : 0
+        const passengersBtoA = Math.max(0, totalSegPassengers - passengersAtoB)
+
+        if (seg.cubesAtoB > 0) {
+          const passengers = passengersAtoB
           if (passengers > 0) {
             simplifiedLedgerEntries.push({
               id: `${serviceSlot.id}:${seg.cityAId}:${seg.cityBId}`,
@@ -1350,9 +1442,7 @@ export function buildPlayerBureaucracySummary(
           }
         }
         if (seg.cubesBtoA > 0) {
-          const passengers = totalSegCubes > 0
-            ? Math.round((seg.cubesBtoA / totalSegCubes) * totalSegPassengers)
-            : 0
+          const passengers = passengersBtoA
           if (passengers > 0) {
             simplifiedLedgerEntries.push({
               id: `${serviceSlot.id}:${seg.cityBId}:${seg.cityAId}`,
@@ -1376,6 +1466,7 @@ export function buildPlayerBureaucracySummary(
         }
       }
 
+      const passengersServed = simplifiedLedgerEntries.reduce((sum, entry) => sum + entry.passengers, 0)
       const simplifiedCityStatuses: SimplifiedFlowCityStatus[] = selectedCityIds.map(cityId => {
         const city = game.cities.find(c => c.id === cityId)
         return {
@@ -1703,9 +1794,30 @@ export function getMaxFuelUnitsCapacityForPlayer(
 
 export function applyBureaucracyFuelConsumption(game: GameState): GameState {
   const summaries = buildBureaucracySummaries(game)
+  const cityDemandServiceStats = buildCityDemandServiceStats(summaries)
+  const nextCityDemandMultipliersByCityId = { ...game.cityDemandMultipliersByCityId }
+
+  if (game.operatingConfig.dynamicDemand.enabled) {
+    for (const city of game.cities) {
+      const cityStat = cityDemandServiceStats.get(city.id)
+      const generatedDemandCubes = cityStat?.generatedDemandCubes ?? 0
+      const servedDemandCubes = Math.min(
+        generatedDemandCubes,
+        cityStat?.servedDemandCubes ?? 0,
+      )
+      const servedRatio =
+        generatedDemandCubes > 0 ? servedDemandCubes / generatedDemandCubes : 0
+      const stepMultiplier = getDynamicDemandStepMultiplier(game, servedRatio)
+      nextCityDemandMultipliersByCityId[city.id] = Math.max(
+        0.05,
+        (nextCityDemandMultipliersByCityId[city.id] ?? 1) * stepMultiplier,
+      )
+    }
+  }
 
   return {
     ...game,
+    cityDemandMultipliersByCityId: nextCityDemandMultipliersByCityId,
     bureaucracyFuelUnitsByRouteId: {},
     players: game.players.map(player => {
       const summary = summaries.find(candidate => candidate.player.id === player.id)

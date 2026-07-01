@@ -128,7 +128,6 @@ const WEEKLY_PHASES: WeeklyPhase[] = [
   "bureaucracy",
 ]
 const VISIBLE_ROUTE_CARD_COUNT = 3
-const CITY_DRAW_COUNT = 4
 const VEHICLE_PURCHASE_LIMITS: Record<VehicleType, number> = {
   bus: 6,
   train: 3,
@@ -205,6 +204,18 @@ export type BureaucracyVehicleCardResult =
       game: GameState
       routeId: string
       vehicleCardId: string | null
+    }
+  | {
+      ok: false
+      error: string
+    }
+
+export type BureaucracyAirRouteCitiesResult =
+  | {
+      ok: true
+      game: GameState
+      routeId: string
+      cityIds: [string, string]
     }
   | {
       ok: false
@@ -858,8 +869,9 @@ function getCityDeckFallbackOrder(game: GameState, region: CityDeckRegion) {
 
 function applyKeptCityOfferToCurrentPlayer(game: GameState, playerId = game.currentPlayerId) {
   const keptCityIds = game.activeCityOffer?.keptCityIds ?? []
+  const requiredKeepCount = getRequiredCityKeepCount(game)
 
-  if (keptCityIds.length !== 2) {
+  if (keptCityIds.length !== requiredKeepCount) {
     return game
   }
 
@@ -909,6 +921,134 @@ function returnUnkeptCityOfferCardsToDecks(game: GameState) {
         cityDeckCardIdsByRegion: nextDecks,
       }
     : game
+}
+
+function getTrackedCityDeckCardCount(game: GameState) {
+  const trackedCityIds = new Set<string>()
+
+  for (const deck of Object.values(game.cityDeckCardIdsByRegion)) {
+    for (const cityId of deck) {
+      trackedCityIds.add(cityId)
+    }
+  }
+
+  for (const player of game.players) {
+    for (const cityId of player.ownedCityCardIds) {
+      trackedCityIds.add(cityId)
+    }
+  }
+
+  for (const cityId of game.activeCityOffer?.cityIds ?? []) {
+    trackedCityIds.add(cityId)
+  }
+
+  return trackedCityIds.size
+}
+
+function getCityKeepCountScheduleForWeek(game: GameState, week: number) {
+  const totalRounds = Math.max(1, game.operatingConfig.totalWeeks)
+  const safeWeek = Math.max(1, Math.min(totalRounds, week))
+  const playerCount = Math.max(1, game.players.length)
+  const drawCount = Math.max(1, game.operatingConfig.cityDrawCount)
+  const targetKeepCount = Math.max(0, Math.min(drawCount, game.operatingConfig.cityTargetKeepCount))
+  const minimumKeepCount = Math.max(0, Math.min(targetKeepCount, game.operatingConfig.cityMinimumKeepCount))
+  let remainingCards = getTrackedCityDeckCardCount(game)
+
+  for (let round = 1; round <= safeWeek; round += 1) {
+    const roundsRemainingAfterThisOne = totalRounds - round
+    let keepCountForRound = 0
+
+    for (let candidateKeepCount = targetKeepCount; candidateKeepCount >= 0; candidateKeepCount -= 1) {
+      const remainingAfterRound = remainingCards - candidateKeepCount * playerCount
+      const minimumCardsNeededAfterRound =
+        minimumKeepCount * playerCount * roundsRemainingAfterThisOne
+
+      if (remainingAfterRound >= minimumCardsNeededAfterRound) {
+        keepCountForRound = candidateKeepCount
+        break
+      }
+    }
+
+    if (round === safeWeek) {
+      return keepCountForRound
+    }
+
+    remainingCards -= keepCountForRound * playerCount
+  }
+
+  return minimumKeepCount
+}
+
+export function getCityDrawCount(game: GameState) {
+  return Math.max(1, game.operatingConfig.cityDrawCount)
+}
+
+export function getRequiredCityKeepCount(game: GameState, week = game.currentWeek) {
+  return getCityKeepCountScheduleForWeek(game, week)
+}
+
+export function validateCityCardAccounting(game: GameState) {
+  const cityLocations = new Map<string, string[]>()
+  const noteLocation = (cityId: string, location: string) => {
+    const existing = cityLocations.get(cityId)
+    if (existing) {
+      existing.push(location)
+      return
+    }
+
+    cityLocations.set(cityId, [location])
+  }
+
+  Object.entries(game.cityDeckCardIdsByRegion).forEach(([region, cityIds]) => {
+    cityIds.forEach(cityId => noteLocation(cityId, `deck:${region}`))
+  })
+
+  game.players.forEach(player => {
+    player.ownedCityCardIds.forEach(cityId => noteLocation(cityId, `player:${player.id}`))
+  })
+
+  game.activeCityOffer?.cityIds.forEach(cityId =>
+    noteLocation(cityId, `offer:${game.activeCityOffer?.playerId ?? "unknown"}`),
+  )
+
+  const missingCityIds: string[] = []
+  const duplicatedCityIds: string[] = []
+  const nextDecks = { ...game.cityDeckCardIdsByRegion }
+
+  game.cities.forEach(city => {
+    const locations = cityLocations.get(city.id) ?? []
+
+    if (locations.length === 0) {
+      missingCityIds.push(city.id)
+      const region = getPrimaryCityDeckRegion(city)
+      if (region) {
+        nextDecks[region] = [...(nextDecks[region] ?? []), city.id]
+      }
+      return
+    }
+
+    if (locations.length > 1) {
+      duplicatedCityIds.push(`${city.id} (${locations.join(", ")})`)
+    }
+  })
+
+  if (duplicatedCityIds.length === 0) {
+    if (missingCityIds.length === 0) {
+      return game
+    }
+
+    return {
+      ...game,
+      cityDeckCardIdsByRegion: nextDecks,
+    }
+  }
+
+  const problems = [
+    missingCityIds.length > 0 ? `missing (auto-restored): ${missingCityIds.join(", ")}` : null,
+    duplicatedCityIds.length > 0 ? `duplicates: ${duplicatedCityIds.join("; ")}` : null,
+  ].filter((value): value is string => value !== null)
+
+  throw new Error(`City card accounting failed: ${problems.join(" | ")}`)
 }
 
 function getOrderedCityIdsFromSegmentPairs(segmentPairs: Array<[string, string]>) {
@@ -1452,24 +1592,25 @@ export function drawCityOffer(
   const drawOrder = [region, ...getCityDeckFallbackOrder(game, region)]
   const nextDecks = { ...game.cityDeckCardIdsByRegion }
   const cityIds: string[] = []
+  const cityDrawCount = getCityDrawCount(game)
 
   for (const drawRegion of drawOrder) {
-    if (cityIds.length >= CITY_DRAW_COUNT) {
+    if (cityIds.length >= cityDrawCount) {
       break
     }
 
     const deck = nextDecks[drawRegion]
-    const neededCards = CITY_DRAW_COUNT - cityIds.length
+    const neededCards = cityDrawCount - cityIds.length
     const drawnCards = deck.slice(0, neededCards)
 
     cityIds.push(...drawnCards)
     nextDecks[drawRegion] = deck.slice(drawnCards.length)
   }
 
-  if (cityIds.length < CITY_DRAW_COUNT) {
+  if (cityIds.length < cityDrawCount) {
     return {
       ok: false,
-      error: "There are not enough city cards left across the decks to draw 4 cards.",
+      error: `There are not enough city cards left across the decks to draw ${cityDrawCount} cards.`,
     }
   }
 
@@ -1526,11 +1667,12 @@ export function setActiveCityOfferKeptCityIds(
   const cityIds = [...new Set(requestedCityIds)].filter(cityId =>
     game.activeCityOffer?.cityIds.includes(cityId),
   )
+  const requiredKeepCount = getRequiredCityKeepCount(game)
 
-  if (cityIds.length > 2) {
+  if (cityIds.length > requiredKeepCount) {
     return {
       ok: false,
-      error: "Keep exactly 2 city cards from the draw.",
+      error: `Keep exactly ${requiredKeepCount} city card${requiredKeepCount === 1 ? "" : "s"} from the draw.`,
     }
   }
 
@@ -1579,10 +1721,12 @@ export function confirmAddCityPicks(
     }
   }
 
-  if ((game.activeCityOffer?.keptCityIds.length ?? 0) !== 2) {
+  const requiredKeepCount = getRequiredCityKeepCount(game)
+
+  if ((game.activeCityOffer?.keptCityIds.length ?? 0) !== requiredKeepCount) {
     return {
       ok: false,
-      error: "Keep exactly 2 city cards from the draw first.",
+      error: `Keep exactly ${requiredKeepCount} city card${requiredKeepCount === 1 ? "" : "s"} from the draw first.`,
     }
   }
 
@@ -1697,6 +1841,12 @@ export function markOperationsReady(
   )
   const newCurrentPhase = computeCurrentPhase(updatedPlayers)
   const firstPlayerId = game.players[game.leadPlayerIndex]?.id ?? game.players[0]?.id ?? game.currentPlayerId
+  const nextCurrentPlayerId =
+    newCurrentPhase === "bureaucracy"
+      ? firstPlayerId
+      : newCurrentPhase === "add-city"
+        ? getNextPlayerIdInPhase({ ...game, players: updatedPlayers }, "add-city")
+        : game.currentPlayerId
 
   return {
     ok: true,
@@ -1706,7 +1856,7 @@ export function markOperationsReady(
       ...game,
       players: updatedPlayers,
       currentPhase: newCurrentPhase,
-      currentPlayerId: newCurrentPhase === "bureaucracy" ? firstPlayerId : game.currentPlayerId,
+      currentPlayerId: nextCurrentPlayerId,
       activeCityOffer: newCurrentPhase === "bureaucracy" ? null : game.activeCityOffer,
     },
   }
@@ -1836,7 +1986,7 @@ function advancePhase(game: GameState): GameState {
     }
   })
 
-  return {
+  const nextGame: GameState = {
     ...resolvedGame,
     players,
     randomState,
@@ -1864,6 +2014,8 @@ function advancePhase(game: GameState): GameState {
       jetFuel: jetFuelRefill.remainingSupply,
     },
   }
+
+  return validateCityCardAccounting(nextGame)
 }
 
 export function advanceTurn(game: GameState, playerId = game.currentPlayerId): GameState {
@@ -2274,6 +2426,108 @@ export function setBureaucracyRouteVehicleCard(
     },
     routeId,
     vehicleCardId: vehicleCard.id,
+  }
+}
+
+export function setBureaucracyAirRouteCities(
+  game: GameState,
+  routeId: string,
+  cityIds: [string, string],
+  playerId = game.currentPlayerId,
+): BureaucracyAirRouteCitiesResult {
+  if (isGameLocked(game)) {
+    return {
+      ok: false,
+      error: "The game is over.",
+    }
+  }
+
+  if (!canPlayerEditOperations(game, playerId)) {
+    return {
+      ok: false,
+      error: "Air routes can only be updated after you confirm picks and before you click Next player.",
+    }
+  }
+
+  const routePlan = buildPlayerBureaucracySummary(game, playerId)?.routePlans.find(
+    plan => !plan.isDisconnected && plan.route.mode === "air" && plan.route.id === routeId,
+  )
+
+  if (!routePlan || routePlan.route.mode !== "air") {
+    return {
+      ok: false,
+      error: "That airplane card could not be found.",
+    }
+  }
+
+  const currentPlayer = getPlayerById(game, playerId)
+
+  if (!currentPlayer) {
+    return {
+      ok: false,
+      error: "Current player could not be found.",
+    }
+  }
+
+  const normalizedCityIds = [...new Set(cityIds)].filter(cityId =>
+    currentPlayer.ownedCityCardIds.includes(cityId),
+  )
+
+  if (normalizedCityIds.length !== 2) {
+    return {
+      ok: false,
+      error: "Air routes must connect exactly two owned city cards.",
+    }
+  }
+
+  const [cityAId, cityBId] = normalizedCityIds as [string, string]
+  const nextRouteId = buildRouteId(cityAId, cityBId, "air")
+
+  if (nextRouteId !== routeId && game.routes.some(route => route.id === nextRouteId)) {
+    return {
+      ok: false,
+      error: "You already own an air route between those two cities.",
+    }
+  }
+
+  if (nextRouteId === routeId) {
+    return {
+      ok: true,
+      game,
+      routeId,
+      cityIds: [cityAId, cityBId],
+    }
+  }
+
+  const nextRoutes = game.routes.map(route =>
+    route.id !== routeId
+      ? route
+      : {
+          ...route,
+          id: nextRouteId,
+          cityA: cityAId,
+          cityB: cityBId,
+          distance: calculateDistanceMiles(
+            getCityById(game.cities, cityAId)!,
+            getCityById(game.cities, cityBId)!,
+          ),
+        },
+  )
+  const migratedServiceState = migrateBureaucracyServiceState(game, {
+    ...game,
+    routes: nextRoutes,
+  })
+  const nextGame = {
+    ...game,
+    routes: nextRoutes,
+    ...migratedServiceState,
+  }
+
+  return {
+    ok: true,
+    game: nextGame,
+    routeId: nextRouteId,
+    cityIds: [cityAId, cityBId],
   }
 }
 
@@ -2786,7 +3040,6 @@ export function claimRoute(
   const claimedGame = {
     ...game,
     routes: [...game.routes, ...routes],
-    activeCityOffer: null,
     claimedRoutePlayerIdsThisTurn: dedupePlayerIds([
       ...game.claimedRoutePlayerIdsThisTurn,
       playerId,

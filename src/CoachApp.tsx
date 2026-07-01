@@ -1843,6 +1843,7 @@ export default function CoachApp() {
           onBuyVehicleCard={pendingDecision?.vehicleReview ? handleCoachBuyVehicleCard : noop}
           onUpgradeRailRoute={noop}
           onSetBureaucracyRouteVehicleCard={pendingDecision?.operationsReview ? handleCoachSetBureaucracyRouteVehicleCard : noop}
+          onSetBureaucracyAirRouteCities={noop}
           onAddBureaucracyServiceSplit={pendingDecision?.operationsReview ? handleCoachAddBureaucracyServiceSplit : noop}
           onSetBureaucracyServicePodCities={pendingDecision?.operationsReview ? handleCoachSetBureaucracyServicePodCities : noop}
           onDeleteBureaucracyServicePod={pendingDecision?.operationsReview ? handleCoachDeleteBureaucracyServicePod : noop}

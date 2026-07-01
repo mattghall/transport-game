@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react"
 import {
+  type BureaucracyAirRouteCitiesResult,
   type RailUpgradeResult,
   type BureaucracyServicePodCitiesResult,
   calculateClaimRouteCost,
@@ -15,7 +16,10 @@ import {
   getClaimSegmentPairs,
   getEffectiveClaimCityIds,
   getConnectionOptions,
+  getCityDrawCount,
   getCurrentPlayer,
+  getRequiredCityKeepCount,
+  getVehicleTradeInValue,
   resolveSegmentSelection,
   resolveRouteSelection,
   type DrawCityOfferResult,
@@ -26,6 +30,7 @@ import {
   getMaxFuelUnitsCapacityForPlayer,
   getPayoutMultiplierForDistance,
   isValidServicePodSelection,
+  summarizeFinalPodLabels,
   type BureaucracyRoutePlan,
 } from "../engine/bureaucracy"
 import {
@@ -52,7 +57,6 @@ import {
 import { getPlayerOwnedNetworkRoutes } from "../engine/playerNetwork"
 import { getOwnedVehicleCountsByCardId } from "../engine/playerVehicles"
 import { latLngToWorld } from "../engine/projection"
-import { getVehicleTradeInValue } from "../engine/actions"
 import {
   calculateDistanceMiles,
   calculateRealFuelFromUnits,
@@ -67,6 +71,7 @@ import {
 } from "../engine/debugLogger"
 import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch"
 import type {
+  City,
   CityDeckRegion,
   GameState,
   RouteModeBreakdown,
@@ -164,6 +169,10 @@ type Props = {
     routeId: string,
     vehicleCardId: string | null,
   ) => MaybePromise<BureaucracyVehicleCardResult>
+  onSetBureaucracyAirRouteCities: (
+    routeId: string,
+    cityIds: [string, string],
+  ) => MaybePromise<BureaucracyAirRouteCitiesResult>
   onAddBureaucracyServiceSplit: (
     corridorId: string,
     initialCityIds?: string[],
@@ -1196,12 +1205,20 @@ function getRouteInteractionMessage(phase: WeeklyPhase) {
     : "Routes can only be claimed during the operations phase."
 }
 
-function getPhaseStatusMessage(phase: WeeklyPhase) {
+function formatCityCardCount(count: number) {
+  return `${count} city card${count === 1 ? "" : "s"}`
+}
+
+function getAddCityInstruction(drawCount: number, keepCount: number) {
+  return `Draw ${drawCount} city cards and keep exactly ${keepCount}.`
+}
+
+function getPhaseStatusMessage(phase: WeeklyPhase, drawCount = 4, keepCount = 2) {
   switch (phase) {
     case "purchase-equipment":
       return "Make 1 vehicle purchase this turn. Buses can buy up to 6, trains up to 3, planes 1."
     case "add-city":
-      return "Draw 4 city cards and keep exactly 2, then go straight into Operations for this turn."
+      return `${getAddCityInstruction(drawCount, keepCount)} Then go straight into Operations for this turn.`
     case "operations":
       return "Build tracks, assign vehicles, and split service routes before running the year."
     case "bureaucracy":
@@ -1386,6 +1403,7 @@ export default function Board({
   onExchangeVehicleCard,
   onUpgradeRailRoute,
   onSetBureaucracyRouteVehicleCard,
+  onSetBureaucracyAirRouteCities,
   onAddBureaucracyServiceSplit,
   onSetBureaucracyServicePodCities,
   onDeleteBureaucracyServicePod,
@@ -1412,6 +1430,7 @@ export default function Board({
     hasSiblings: boolean
   } | null>(null)
   const [expandedPlayerId, setExpandedPlayerId] = useState<string | null>(null)
+  const [pendingAirRouteCityIdsByCardId, setPendingAirRouteCityIdsByCardId] = useState<Record<string, [string, string]>>({})
   const [isResourceMarketOpen, setIsResourceMarketOpen] = useState(false)
   const [isVehicleMarketOpen, setIsVehicleMarketOpen] = useState(false)
   const [isBureaucracyOpen, setIsBureaucracyOpen] = useState(false)
@@ -1455,7 +1474,7 @@ export default function Board({
   )
   const [hasDismissedAutoPlayBanner, setHasDismissedAutoPlayBanner] = useState(false)
   const [statusMessage, setStatusMessage] = useState<string>(
-    getPhaseStatusMessage(game.currentPhase),
+    getPhaseStatusMessage(game.currentPhase, getCityDrawCount(game), getRequiredCityKeepCount(game)),
   )
   const [leftPanelWidth, setLeftPanelWidth] = useState(DEFAULT_LEFT_PANEL_WIDTH)
   const [isLeftPanelCollapsed, setIsLeftPanelCollapsed] = useState(false)
@@ -2427,6 +2446,10 @@ export default function Board({
       ? game.currentWeek
       : game.currentWeek - 1
   const isPeriodSummaryVisible = !suppressPeriodSummary && isPeriodSummaryOpen && completedPeriod >= 1
+  const transformScenePeriod = isPeriodSummaryVisible ? completedPeriod : game.currentWeek
+  const transformSceneKey = isPeriodSummaryVisible
+    ? `summary:${transformScenePeriod}:${game.isGameOver ? "game-over" : "active"}`
+    : `board:${transformScenePeriod}:${game.isGameOver ? "game-over" : "active"}`
   const effectiveFuelPriceByResource = useMemo(
     () => ({
       diesel:
@@ -2598,16 +2621,9 @@ export default function Board({
         return {
           standing,
           summary,
-          finalPodLabels:
-            bureaucracySummary?.routePlans
-              .filter(
-                plan =>
-                  !plan.isDisconnected &&
-                  plan.vehicleCard !== null &&
-                  plan.selectedCityIds.length >= 2 &&
-                  plan.routes.length > 0,
-              )
-              .map(plan => `${plan.serviceLabel} (${MODE_LABELS[plan.route.mode]})`) ?? [],
+          finalPodLabels: bureaucracySummary
+            ? summarizeFinalPodLabels(bureaucracySummary.routePlans)
+            : [],
           periodHistory,
           passengersByMode,
           podCountByMode,
@@ -3121,7 +3137,7 @@ export default function Board({
         selectedFleetSize: number
         demandFleetSize: number
         movablePassengerCapacity: number
-        passengerDemand: number
+        passengerLoad: number
       }
     > = {}
 
@@ -3134,13 +3150,13 @@ export default function Board({
         selectedFleetSize: 0,
         demandFleetSize: 0,
         movablePassengerCapacity: 0,
-        passengerDemand: 0,
+        passengerLoad: 0,
       }
 
       current.selectedFleetSize += plan.selectedFleetSize
       current.demandFleetSize += plan.demandFleetSize
       current.movablePassengerCapacity += plan.maxTripsByTime * plan.vehicleCard.totalPassengerCapacity
-      current.passengerDemand += getDemandCapacityForCityIds(game, plan.selectedCityIds)
+      current.passengerLoad += plan.passengersServed
 
       demandByCardId[plan.vehicleCard.id] = current
     })
@@ -3191,9 +3207,12 @@ export default function Board({
   const pendingVehiclePurchaseTotalCost = pendingVehiclePurchaseCard
     ? pendingVehiclePurchaseCard.purchasePrice * pendingVehiclePurchaseQuantity
     : 0
+  const cityDrawCount = getCityDrawCount(game)
+  const requiredCityKeepCount = getRequiredCityKeepCount(game)
+  const cityDrawInstruction = getAddCityInstruction(cityDrawCount, requiredCityKeepCount)
   const canConfirmPicks =
     canManageCurrentCityOffer &&
-    (game.activeCityOffer?.keptCityIds.length ?? 0) === 2
+    (game.activeCityOffer?.keptCityIds.length ?? 0) === requiredCityKeepCount
   const currentPlayerVehicleTotals = currentPlayer
     ? [
         currentPlayer.inventory.vehicles.buses > 0
@@ -3237,18 +3256,79 @@ export default function Board({
     canEditOperations &&
     ((selectedRouteMode !== null && selectedCityIds.length >= 2) || selectedRailSegmentKeys.length > 0)
   const unassignedVehicleCardCount = canEditOperations
-    ? Math.max(0, currentPlayerOwnedVehicleCards.length - currentPlayerActiveBureaucracyPlans.length)
+    ? Math.max(
+        0,
+        currentPlayerOwnedVehicleCards.length -
+          currentPlayerActiveBureaucracyPlans.filter(plan => plan.selectedCityIds.length >= 2).length,
+      )
     : 0
   const assignedVehicleCardIds = new Set(
     canEditOperations
-      ? currentPlayerActiveBureaucracyPlans.map(plan => plan.vehicleCard?.id).filter((id): id is string => id !== undefined)
+      ? currentPlayerActiveBureaucracyPlans
+          .filter(plan => plan.selectedCityIds.length >= 2)
+          .map(plan => plan.vehicleCard?.id)
+          .filter((id): id is string => id !== undefined)
       : [],
   )
   const unassignedVehicleCards = canEditOperations
     ? currentPlayerOwnedVehicleCards.filter(card => !assignedVehicleCardIds.has(card.id))
     : []
+  const unassignedAirVehicleCards = unassignedVehicleCards.filter(card => card.type === "air")
+  const hasAssignableServiceNetworks = canEditOperations &&
+    (currentPlayerBureaucracySummary?.routePlans.some(
+      plan => !plan.isDisconnected && plan.availableCityIds.length >= 2,
+    ) ?? false)
+  const currentPlayerOperationsWarnings = useMemo(() => {
+    if (!canEditOperations || !currentPlayerBureaucracySummary) {
+      return []
+    }
+
+    const warnings: string[] = []
+    const unstaffedPlans = currentPlayerBureaucracySummary.routePlans.filter(
+      plan => !plan.isDisconnected && plan.selectedCityIds.length >= 2 && !plan.vehicleCard,
+    )
+    if (unstaffedPlans.length > 0) {
+      warnings.push(
+        `Unstaffed service lines: ${unstaffedPlans
+          .map(plan => plan.serviceLabel)
+          .slice(0, 3)
+          .join(", ")}${unstaffedPlans.length > 3 ? ` +${unstaffedPlans.length - 3} more` : ""}.`,
+      )
+    }
+
+    const connectedCityIds = new Set(
+      currentPlayerBureaucracySummary.routePlans
+        .filter(plan => !plan.isDisconnected)
+        .flatMap(plan => plan.availableCityIds),
+    )
+    const isolatedOwnedCities = currentPlayerOwnedCityCards.filter(city => !connectedCityIds.has(city.id))
+    if (isolatedOwnedCities.length > 0) {
+      warnings.push(
+        `Owned cities with no active network: ${isolatedOwnedCities
+          .map(city => city.name)
+          .slice(0, 4)
+          .join(", ")}${isolatedOwnedCities.length > 4 ? ` +${isolatedOwnedCities.length - 4} more` : ""}.`,
+      )
+    }
+
+    const disconnectedPlans = currentPlayerBureaucracySummary.routePlans.filter(
+      plan => plan.isDisconnected && plan.selectedCityIds.length > 0,
+    )
+    if (disconnectedPlans.length > 0) {
+      const disconnectedCityNames = [...new Set(disconnectedPlans.flatMap(plan => plan.selectedCityIds))]
+        .map(cityId => cityMap[cityId]?.name ?? cityId)
+      warnings.push(
+        `Disconnected demand is still stranded in ${disconnectedCityNames
+          .slice(0, 4)
+          .join(", ")}${disconnectedCityNames.length > 4 ? ` +${disconnectedCityNames.length - 4} more` : ""}.`,
+      )
+    }
+
+    return warnings
+  }, [canEditOperations, cityMap, currentPlayerBureaucracySummary, currentPlayerOwnedCityCards])
   const isAdvanceBlocked =
-    (canManageCurrentCityOffer && (game.activeCityOffer?.keptCityIds.length ?? 0) !== 2) ||
+    (canManageCurrentCityOffer &&
+      (game.activeCityOffer?.keptCityIds.length ?? 0) !== requiredCityKeepCount) ||
     hasPendingOperationsRouteSelection ||
     hasInvalidOperationsPods
   const advanceTurnLabel = game.isGameOver
@@ -3449,7 +3529,7 @@ export default function Board({
             Fix the red routes before leaving Operations.
           </div>
         )}
-        {unassignedVehicleCardCount > 0 && (
+        {hasAssignableServiceNetworks && unassignedVehicleCardCount > 0 && (
           <div
             style={{
               border: "1px solid #d7c97a",
@@ -4299,7 +4379,9 @@ export default function Board({
     return `${formatDecimal(units)} ${getResourceLabel(resource).toLowerCase()} unit${units === 1 ? "" : "s"} = ${formatDecimal(realFuel)} ${getRealFuelLabel(resource)}`
   }
 
-  function resetSelection(message = getPhaseStatusMessage(game.currentPhase)) {
+  function resetSelection(
+    message = getPhaseStatusMessage(game.currentPhase, cityDrawCount, requiredCityKeepCount),
+  ) {
     setSelectedRouteMode(null)
     setSelectedDrawCityIds([])
     setSelectedOwnedCityIds([])
@@ -4315,7 +4397,7 @@ export default function Board({
     setSelectedRailSegmentKeys([])
     setPendingVehiclePurchaseCardId(null)
     setRevealedVehicleFunFactCardId(null)
-    setStatusMessage(getPhaseStatusMessage(viewerPhase))
+    setStatusMessage(getPhaseStatusMessage(viewerPhase, cityDrawCount, requiredCityKeepCount))
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [viewerPhase])
 
@@ -4335,7 +4417,6 @@ export default function Board({
       if (summaryKey !== lastShownPeriodSummaryKey) {
         /* eslint-disable react-hooks/set-state-in-effect */
         setIsPeriodSummaryOpen(true)
-        setIsBureaucracyOpen(false)
         setLastShownPeriodSummaryKey(summaryKey)
         /* eslint-enable react-hooks/set-state-in-effect */
       }
@@ -4357,6 +4438,10 @@ export default function Board({
   }, [isPeriodSummaryVisible, onPeriodSummaryVisibilityChange])
 
   useEffect(() => {
+    if (isPeriodSummaryVisible) {
+      return
+    }
+
     /* eslint-disable react-hooks/set-state-in-effect */
     setIsResourceMarketOpen(false)
     setIsVehicleMarketOpen(viewerPhase === "purchase-equipment")
@@ -4365,7 +4450,7 @@ export default function Board({
     setIsWikiOpen(false)
     setWikiPreviousPanel(null)
     /* eslint-enable react-hooks/set-state-in-effect */
-  }, [viewerPhase, game.isGameOver])
+  }, [viewerPhase, game.isGameOver, isPeriodSummaryVisible])
 
   function restorePhasePanel() {
     setIsResourceMarketOpen(false)
@@ -4430,7 +4515,7 @@ export default function Board({
 
   function handleCityClick() {
     if (isSelectingCityCards) {
-      setStatusMessage("Use the table lane to draw 4 city cards and keep exactly 2.")
+      setStatusMessage(`Use the table lane to ${cityDrawInstruction.toLowerCase()}`)
       return
     }
 
@@ -4459,12 +4544,12 @@ export default function Board({
 
       const nextCityIds = selectedDrawCityIds.includes(cityId)
         ? selectedDrawCityIds.filter(candidate => candidate !== cityId)
-        : selectedDrawCityIds.length >= 2
+        : selectedDrawCityIds.length >= requiredCityKeepCount
           ? null
           : [...selectedDrawCityIds, cityId]
 
       if (nextCityIds === null) {
-        setStatusMessage("Keep exactly 2 city cards from the draw.")
+        setStatusMessage(`Keep exactly ${formatCityCardCount(requiredCityKeepCount)} from the draw.`)
         return
       }
 
@@ -4476,9 +4561,9 @@ export default function Board({
       }
 
       setStatusMessage(
-        result.cityIds.length === 2
-          ? "Kept 2 city cards. Confirm picks to add them to your hand and end the turn."
-          : "Keep exactly 2 city cards from the draw.",
+        result.cityIds.length === requiredCityKeepCount
+          ? `Kept ${formatCityCardCount(requiredCityKeepCount)}. Confirm picks to add ${requiredCityKeepCount === 1 ? "it" : "them"} to your hand and end the turn.`
+          : `Keep exactly ${formatCityCardCount(requiredCityKeepCount)} from the draw.`,
       )
       return
     }
@@ -4521,7 +4606,7 @@ export default function Board({
     setSelectedOwnedCityIds([])
     setSelectedRailSegmentKeys([])
     setStatusMessage(
-      `Drew ${result.cityIds.length} city cards from the ${region} deck. Keep exactly 2 to use this turn.`,
+      `Drew ${result.cityIds.length} city cards from the ${region} deck. Keep exactly ${requiredCityKeepCount} to use this turn.`,
     )
   }
 
@@ -4598,7 +4683,7 @@ export default function Board({
 
   async function handleConfirmPicks() {
     if (!canConfirmPicks) {
-      setStatusMessage("Keep exactly 2 city cards from the draw first.")
+      setStatusMessage(`Keep exactly ${formatCityCardCount(requiredCityKeepCount)} from the draw first.`)
       return
     }
 
@@ -4617,9 +4702,9 @@ export default function Board({
   async function handleAdvanceTurnClick() {
     if (
       canManageCurrentCityOffer &&
-      (game.activeCityOffer?.keptCityIds.length ?? 0) !== 2
+      (game.activeCityOffer?.keptCityIds.length ?? 0) !== requiredCityKeepCount
     ) {
-      setStatusMessage("Draw 4 city cards and keep exactly 2 before ending the turn.")
+      setStatusMessage(`${cityDrawInstruction} Do that before ending the turn.`)
       return
     }
 
@@ -4639,7 +4724,7 @@ export default function Board({
       )
       const warningLines: string[] = []
 
-      if (unassignedVehicleCards.length > 0) {
+      if (hasAssignableServiceNetworks && unassignedVehicleCards.length > 0) {
         warningLines.push(
           unassignedVehicleCards.length === 1
             ? "You still have 1 vehicle not assigned to any pod."
@@ -4764,24 +4849,22 @@ export default function Board({
 
   function renderDemandUtilizationBar(
     movablePassengerCapacity: number,
-    passengerDemand: number,
+    passengerLoad: number,
     accentColor: string,
   ) {
     const safeCapacity = Math.max(0, movablePassengerCapacity)
-    const safeDemand = Math.max(0, passengerDemand)
+    const safeLoad = Math.max(0, passengerLoad)
 
     if (safeCapacity <= 0) {
       return null
     }
 
-    const rawUtilizationRatio = safeDemand / safeCapacity
+    const rawUtilizationRatio = safeLoad / safeCapacity
     const utilizationRatio = clamp(rawUtilizationRatio, 0, 1)
     const utilizationPercent = Math.round(utilizationRatio * 100)
-    const rawUtilizationPercent = Math.round(rawUtilizationRatio * 100)
-    const hasExtraCapacity = safeCapacity > safeDemand
-    const demandExceedsCapacity = safeDemand > safeCapacity
+    const hasExtraCapacity = safeCapacity > safeLoad
     const fillColor =
-      safeDemand === 0
+      safeLoad === 0
         ? "#7d8d80"
         : hasExtraCapacity
           ? accentColor
@@ -4799,8 +4882,8 @@ export default function Board({
             fontWeight: 700,
           }}
         >
-          <span>{demandExceedsCapacity ? "Overcrowded" : "Seats filled"}</span>
-          <span>{formatDecimal(demandExceedsCapacity ? rawUtilizationPercent : utilizationPercent, 0)}%</span>
+          <span>Seats filled</span>
+          <span>{formatDecimal(utilizationPercent, 0)}%</span>
         </div>
         <div
           style={{
@@ -4824,6 +4907,27 @@ export default function Board({
     )
   }
 
+  function getDynamicCitySizeLabel(city: City) {
+    const baseSize = city.size ?? 0
+    if (!game.operatingConfig.dynamicDemand.enabled) {
+      return `${baseSize}`
+    }
+
+    const multiplier = Math.max(0.05, game.cityDemandMultipliersByCityId[city.id] ?? 1)
+    const effectiveSize = baseSize * multiplier
+
+    if (effectiveSize >= baseSize + 1) {
+      return `${Math.floor(effectiveSize)}`
+    }
+
+    const growthProgress = effectiveSize - baseSize
+    if (growthProgress <= 0) {
+      return `${baseSize}`
+    }
+
+    return growthProgress >= 0.5 ? `${baseSize}++` : `${baseSize}+`
+  }
+
   function renderPodVehicleCard(
     plan: BureaucracyRoutePlan,
     onRemove?: (() => void) | null,
@@ -4839,7 +4943,7 @@ export default function Board({
     const cardBorderColor = colorWithOpacity(accentColor, 0.55)
     const fleetCount = plan.selectedFleetSize
     const isDemandShortfall = fleetCount < plan.demandFleetSize
-    const podPassengerDemand = getDemandCapacityForCityIds(game, plan.selectedCityIds)
+    const podPassengerLoad = plan.passengersServed
     const podMovablePassengerCapacity = plan.maxTripsByTime * card.totalPassengerCapacity
     const stackedDiceValues = [fleetCount, fleetCount - 6, fleetCount - 12]
       .filter(v => v > 0)
@@ -4925,7 +5029,7 @@ export default function Board({
             {fleetCount}/{plan.demandFleetSize}
           </span>
         </div>
-        {renderDemandUtilizationBar(podMovablePassengerCapacity, podPassengerDemand, accentColor)}
+        {renderDemandUtilizationBar(podMovablePassengerCapacity, podPassengerLoad, accentColor)}
         {/* Stats */}
         <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 8px", color: "#324236", fontSize: 11, lineHeight: 1.25 }}>
           <span>👥 {card.totalPassengerCapacity.toLocaleString()} seats</span>
@@ -5155,7 +5259,7 @@ export default function Board({
         {isOwnedSection &&
           renderDemandUtilizationBar(
             demandCoverage?.movablePassengerCapacity ?? 0,
-            demandCoverage?.passengerDemand ?? 0,
+            demandCoverage?.passengerLoad ?? 0,
             accentColor,
           )}
         <div
@@ -5846,7 +5950,7 @@ export default function Board({
                 {game.currentPhase === "purchase-equipment"
                   ? "Choose from the cards laid out across the table below instead of opening a market menu."
                   : game.currentPhase === "add-city"
-                    ? "Draw 4 city cards and keep exactly 2. This step only adds cities to your hand."
+                    ? `${cityDrawInstruction} This step only adds cities to your hand.`
                     : game.currentPhase === "operations"
                       ? "Build tracks, split routes, assign service, and set up routes."
                       : "Review passenger flow and route ledgers before ending the year."}
@@ -5942,6 +6046,7 @@ export default function Board({
         <div style={BOARD_STAGE_STYLE}>
           <div style={BOARD_INNER_STYLE}>
             <TransformWrapper
+              key={transformSceneKey}
               minScale={0.5}
               maxScale={6}
               centerOnInit
@@ -7550,7 +7655,7 @@ export default function Board({
                               >
                                 <div style={{ fontSize: 12 }}>
                                   <strong>{city.name}</strong>
-                                  {" • "}size {city.size}
+                                  {" • "}size {getDynamicCitySizeLabel(city)}
                                 </div>
                                 <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
                                   {renderDemandPointBoxes(absorptionSize, 0)}
@@ -7566,6 +7671,25 @@ export default function Board({
                     </div>
                   ) : (
                   <>
+                  {canEditOperations && currentPlayerOperationsWarnings.length > 0 && (
+                    <div
+                      style={{
+                        border: "1px solid #f1d18a",
+                        borderRadius: 10,
+                        padding: 10,
+                        background: "#fff8e8",
+                        display: "grid",
+                        gap: 6,
+                      }}
+                    >
+                      <strong style={{ fontSize: 13, color: "#7c5314" }}>Operations checks</strong>
+                      {currentPlayerOperationsWarnings.map(warning => (
+                        <div key={warning} style={{ color: "#7c5314", fontSize: 12 }}>
+                          {warning}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {canEditOperations
                     ? currentPlayerBureaucracyPlansByMode.map(({ mode, plans }) => (
                       <div
@@ -7583,12 +7707,13 @@ export default function Board({
                         <div>
                           <strong>{MODE_LABELS[mode]}</strong>
                         </div>
-                        {plans.length === 0 ? (
+                        {plans.length === 0 && !(mode === "air" && unassignedAirVehicleCards.length > 0) ? (
                           <div style={{ color: "#56635a", fontSize: 13 }}>
                             No {MODE_LABELS[mode].toLowerCase()} services to operate.
                           </div>
                         ) : (
-                          plans.map(plan => {
+                          <>
+                          {plans.map(plan => {
                             const podCityIds =
                               plan.availableCityIds.length > 0
                                 ? plan.availableCityIds
@@ -7596,8 +7721,8 @@ export default function Board({
                             const airSelectedCityIds =
                               plan.route.mode === "air"
                                 ? [
-                                    plan.selectedCityIds[0] ?? plan.availableCityIds[0] ?? "",
-                                    plan.selectedCityIds[1] ?? plan.availableCityIds[1] ?? "",
+                                    plan.selectedCityIds[0] ?? plan.route.cityA ?? currentPlayerOwnedCityCards[0]?.id ?? "",
+                                    plan.selectedCityIds[1] ?? plan.route.cityB ?? currentPlayerOwnedCityCards[1]?.id ?? "",
                                   ]
                                 : null
                             return (
@@ -7653,10 +7778,9 @@ export default function Board({
                                               return
                                             }
                                             void (async () => {
-                                              const result = await onSetBureaucracyServicePodCities(
-                                                plan.corridorId,
-                                                [plan.id],
-                                                nextCityIds,
+                                              const result = await onSetBureaucracyAirRouteCities(
+                                                plan.route.id,
+                                                nextCityIds as [string, string],
                                               )
                                               if (!result.ok) {
                                                 setStatusMessage(result.error)
@@ -7673,12 +7797,12 @@ export default function Board({
                                             color: "#223024",
                                           }}
                                         >
-                                          {plan.availableCityIds.map(cityId => (
+                                          {currentPlayerOwnedCityCards.map(city => (
                                             <option
-                                              key={`${plan.id}-air-option-${index}-${cityId}`}
-                                              value={cityId}
+                                              key={`${plan.id}-air-option-${index}-${city.id}`}
+                                              value={city.id}
                                             >
-                                              {cityMap[cityId]?.name ?? cityId}
+                                              {city.name}
                                             </option>
                                           ))}
                                         </select>
@@ -7758,7 +7882,106 @@ export default function Board({
                                 )}
                               </div>
                             )
-                          })
+                          })}
+                          {mode === "air" &&
+                            unassignedAirVehicleCards.map(card => {
+                              const defaultFromCityId = currentPlayerOwnedCityCards[0]?.id ?? ""
+                              const defaultToCityId =
+                                currentPlayerOwnedCityCards.find(city => city.id !== defaultFromCityId)?.id ??
+                                defaultFromCityId
+                              const draftCityIds =
+                                pendingAirRouteCityIdsByCardId[card.id] ?? [defaultFromCityId, defaultToCityId]
+                              const canCreateAirRoute =
+                                currentPlayerOwnedCityCards.length >= 2 &&
+                                draftCityIds[0] !== "" &&
+                                draftCityIds[1] !== "" &&
+                                draftCityIds[0] !== draftCityIds[1]
+
+                              return (
+                                <div
+                                  key={`unassigned-air-${card.id}`}
+                                  style={{
+                                    border: "1px dashed #bfd5e3",
+                                    borderRadius: 8,
+                                    padding: 10,
+                                    display: "grid",
+                                    gap: 10,
+                                    background: "#f7fbff",
+                                  }}
+                                >
+                                  <div style={{ display: "grid", gap: 4 }}>
+                                    <div>
+                                      <strong>{`#${card.number} ${card.name}`}</strong>
+                                    </div>
+                                    <div style={{ color: "#56635a", fontSize: 12 }}>
+                                      Unassigned airplane. Pick exactly two owned cities for this card.
+                                    </div>
+                                  </div>
+                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+                                    {(["From", "To"] as const).map((label, index) => (
+                                      <label
+                                        key={`${card.id}-${label}`}
+                                        style={{ display: "flex", alignItems: "center", gap: 6 }}
+                                      >
+                                        <span style={{ color: "#56635a", minWidth: 28 }}>{label}</span>
+                                        <select
+                                          value={draftCityIds[index]}
+                                          onChange={event => {
+                                            const nextCityIds: [string, string] = [...draftCityIds] as [string, string]
+                                            nextCityIds[index] = event.target.value
+                                            setPendingAirRouteCityIdsByCardId(current => ({
+                                              ...current,
+                                              [card.id]: nextCityIds,
+                                            }))
+                                          }}
+                                          style={{
+                                            minWidth: 150,
+                                            padding: "6px 8px",
+                                            borderRadius: 8,
+                                            border: "1px solid #c7d0c4",
+                                            background: "#ffffff",
+                                            color: "#223024",
+                                          }}
+                                        >
+                                          {currentPlayerOwnedCityCards.map(city => (
+                                            <option key={`${card.id}-${index}-${city.id}`} value={city.id}>
+                                              {city.name}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      </label>
+                                    ))}
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (!canCreateAirRoute) {
+                                          setStatusMessage("Pick two different owned cities for this airplane.")
+                                          return
+                                        }
+                                        void (async () => {
+                                          const result = await onClaimRoute("air", draftCityIds)
+                                          if (!result.ok) {
+                                            setStatusMessage(result.error)
+                                          }
+                                        })()
+                                      }}
+                                      disabled={!canCreateAirRoute}
+                                      style={{
+                                        borderRadius: 999,
+                                        border: "1px solid #8aa7c7",
+                                        padding: "6px 12px",
+                                        background: canCreateAirRoute ? "#d7ebff" : "#eef3f7",
+                                        color: canCreateAirRoute ? "#17395c" : "#8795a0",
+                                        cursor: canCreateAirRoute ? "pointer" : "not-allowed",
+                                      }}
+                                    >
+                                      Create air route
+                                    </button>
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </>
                         )}
                       </div>
                     ))
@@ -8075,7 +8298,7 @@ export default function Board({
                                             userSelect: "none",
                                           }}
                                         >{city.name}</strong>
-                                        {" • "}size {city.size}
+                                        {" • "}size {getDynamicCitySizeLabel(city)}
                                       </div>
                                       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "flex-start" }}>
                                         {destOrder.map(dest => {
@@ -8985,7 +9208,7 @@ export default function Board({
                 At year end, each vehicle deck with no purchases discards its lowest-number remaining card before the next phase.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
-                2. <strong>Claim Routes</strong>: each turn draw 4 city cards and keep exactly 2 to grow your hand.
+                2. <strong>Add City</strong>: each turn draw {cityDrawCount} city cards and keep exactly {requiredCityKeepCount} to grow your hand.
               </div>
               <div style={{ color: "#324236", fontSize: 13 }}>
                 3. <strong>Operations</strong>: build rail/air links, assign vehicles, and split services. Bus routes follow connected owned cities automatically.
@@ -9447,7 +9670,7 @@ export default function Board({
                 : game.currentPhase === "purchase-equipment"
                 ? "Your current vehicle models appear first in one row, followed by market purchase options."
                 : game.currentPhase === "add-city"
-                  ? "Draw regional city cards and keep exactly 2 to add them to your hand."
+                  ? `Draw regional city cards and keep exactly ${requiredCityKeepCount} to add ${requiredCityKeepCount === 1 ? "it" : "them"} to your hand.`
                   : game.currentPhase === "operations"
                   ? "Build tracks/routes and configure service routes by mode before running operations."
                   : game.currentPhase === "bureaucracy"
@@ -9607,7 +9830,7 @@ export default function Board({
                       Regional city decks
                     </div>
                     <div style={{ color: "#56635a", fontSize: 12 }}>
-                      Draw 4 city cards each turn starting from one region, filling from nearby decks if that region runs low, then keep exactly 2. The 2 kept cards do not need to connect.
+                      Draw {cityDrawCount} city cards each turn starting from one region, filling from nearby decks if that region runs low, then keep exactly {requiredCityKeepCount}. The kept cards do not need to connect.
                     </div>
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8 }}>
                       {cityDecksByRegion.map(({ region, remainingCount }) => {
@@ -9616,7 +9839,7 @@ export default function Board({
                           canManageCurrentCityOffer &&
                           !activeCityOffer &&
                           remainingCount > 0 &&
-                          totalCityDeckCount >= 4
+                          totalCityDeckCount >= cityDrawCount
 
                         return (
                           <button
@@ -9642,7 +9865,7 @@ export default function Board({
                               <strong style={{ fontSize: 13, color: regionStyle.text }}>{region}</strong>
                               <span style={{ color: "#56635a", fontSize: 12 }}>
                                 {remainingCount} cards left
-                                {remainingCount > 0 && remainingCount < 4 && totalCityDeckCount >= 4
+                                {remainingCount > 0 && remainingCount < cityDrawCount && totalCityDeckCount >= cityDrawCount
                                   ? " • fills from nearby decks"
                                   : ""}
                               </span>
@@ -9672,7 +9895,7 @@ export default function Board({
                             : `${activeCityOffer.region} deck + ${activeCityOfferRegions
                                 .filter(region => region !== activeCityOffer.region)
                                 .join(", ")}`}{" "}
-                          • draw 4, then keep exactly 2. The 2 kept cards become part of your hand.
+                          • draw {cityDrawCount}, then keep exactly {requiredCityKeepCount}. The kept cards become part of your hand.
                         </div>
                         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                           {activeCityOffer.cityIds.map(cityId => {
@@ -10066,7 +10289,7 @@ export default function Board({
                   gap: 8,
                 }}
               >
-                <div>Draw 4 city cards and keep exactly 2. Those cards are added to your hand when you confirm picks.</div>
+                <div>{cityDrawInstruction} Those cards are added to your hand when you confirm picks.</div>
                 <div>Route building happens during Operations.</div>
               </div>
             </>

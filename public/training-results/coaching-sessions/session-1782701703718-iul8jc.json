@@ -1,0 +1,5077 @@
+{
+  "id": "session-1782701703718-iul8jc",
+  "startedAt": "2026-06-29T02:55:03.718Z",
+  "endedAt": "2026-06-29T03:18:14.508Z",
+  "playerCount": 3,
+  "decisions": [
+    {
+      "id": "decision-1782701706473-hexht9",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T02:55:06.473Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "cities",
+      "week": 1,
+      "phase": "add-city",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Southeast"
+          },
+          "score": 36,
+          "label": "Draw city cards from Southeast deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Southeast",
+            "deckSize": 18,
+            "deckSizeScore": 36,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Midwest"
+          },
+          "score": 36,
+          "label": "Draw city cards from Midwest deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Midwest",
+            "deckSize": 18,
+            "deckSizeScore": 36,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Northeast"
+          },
+          "score": 32,
+          "label": "Draw city cards from Northeast deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Northeast",
+            "deckSize": 16,
+            "deckSizeScore": 32,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "South"
+          },
+          "score": 26,
+          "label": "Draw city cards from South deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "South",
+            "deckSize": 13,
+            "deckSizeScore": 26,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Pacific"
+          },
+          "score": 22,
+          "label": "Draw city cards from Pacific deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Pacific",
+            "deckSize": 11,
+            "deckSizeScore": 22,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Mountain"
+          },
+          "score": 22,
+          "label": "Draw city cards from Mountain deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Mountain",
+            "deckSize": 11,
+            "deckSizeScore": 22,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "fine",
+      "preferredIndex": null
+    },
+    {
+      "id": "decision-1782701713554-36o3sf",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T02:55:13.554Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "cities",
+      "week": 1,
+      "phase": "add-city",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "jacksonville",
+              "charlotte"
+            ]
+          },
+          "score": 47.243300000000005,
+          "label": "Keep cities: Jacksonville + Charlotte",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 4724330,
+            "populationScore": 47.243300000000005,
+            "populationWeight": 10,
+            "avgDistanceMiles": null,
+            "networkProximityScore": 0,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 0,
+            "regionMatchScore": 0,
+            "regionMatchWeight": 4,
+            "topRegion": null,
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "birmingham",
+              "charlotte"
+            ]
+          },
+          "score": 41.36596,
+          "label": "Keep cities: Birmingham + Charlotte",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 4136596,
+            "populationScore": 41.36596,
+            "populationWeight": 10,
+            "avgDistanceMiles": null,
+            "networkProximityScore": 0,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 0,
+            "regionMatchScore": 0,
+            "regionMatchWeight": 4,
+            "topRegion": null,
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "jackson_ms",
+              "charlotte"
+            ]
+          },
+          "score": 35.48677,
+          "label": "Keep cities: Jackson + Charlotte",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 3548677,
+            "populationScore": 35.48677,
+            "populationWeight": 10,
+            "avgDistanceMiles": null,
+            "networkProximityScore": 0,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 0,
+            "regionMatchScore": 0,
+            "regionMatchWeight": 4,
+            "topRegion": null,
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "birmingham",
+              "jacksonville"
+            ]
+          },
+          "score": 29.83266,
+          "label": "Keep cities: Birmingham + Jacksonville",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 2983266,
+            "populationScore": 29.83266,
+            "populationWeight": 10,
+            "avgDistanceMiles": null,
+            "networkProximityScore": 0,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 0,
+            "regionMatchScore": 0,
+            "regionMatchWeight": 4,
+            "topRegion": null,
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "jackson_ms",
+              "jacksonville"
+            ]
+          },
+          "score": 23.953470000000003,
+          "label": "Keep cities: Jackson + Jacksonville",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 2395347,
+            "populationScore": 23.953470000000003,
+            "populationWeight": 10,
+            "avgDistanceMiles": null,
+            "networkProximityScore": 0,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 0,
+            "regionMatchScore": 0,
+            "regionMatchWeight": 4,
+            "topRegion": null,
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "jackson_ms",
+              "birmingham"
+            ]
+          },
+          "score": 18.07613,
+          "label": "Keep cities: Jackson + Birmingham",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 1807613,
+            "populationScore": 18.07613,
+            "populationWeight": 10,
+            "avgDistanceMiles": null,
+            "networkProximityScore": 0,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 0,
+            "regionMatchScore": 0,
+            "regionMatchWeight": 4,
+            "topRegion": null,
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "great",
+      "preferredIndex": null
+    },
+    {
+      "id": "decision-1782701718906-svd633",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T02:55:18.906Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "operations-review",
+      "week": 1,
+      "phase": "add-city",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "ready-operations"
+          },
+          "score": 0,
+          "label": "Accept reviewed operations layout",
+          "breakdown": null
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "good",
+      "preferredIndex": null,
+      "reviewEdits": [],
+      "operationsReviewComparison": {
+        "botPlan": {
+          "totalPassengersServed": 0,
+          "totalRevenue": 0,
+          "totalOperatingCost": 0,
+          "netRevenue": 0,
+          "stuckCubeCount": 0,
+          "podCount": 0
+        },
+        "reviewedPlan": {
+          "totalPassengersServed": 0,
+          "totalRevenue": 0,
+          "totalOperatingCost": 0,
+          "netRevenue": 0,
+          "stuckCubeCount": 0,
+          "podCount": 0
+        },
+        "delta": {
+          "totalPassengersServed": 0,
+          "totalRevenue": 0,
+          "totalOperatingCost": 0,
+          "netRevenue": 0,
+          "stuckCubeCount": 0,
+          "podCount": 0
+        }
+      }
+    },
+    {
+      "id": "decision-1782701749503-lzj4e9",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T02:55:49.503Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "vehicles-review",
+      "week": 2,
+      "phase": "purchase-equipment",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-greyhound-americruiser",
+            "quantity": 6
+          },
+          "score": 384.03,
+          "label": "Buy 6× #5 Greyhound MC-12 'Americruiser' (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 5,
+            "cardName": "Greyhound MC-12 'Americruiser'",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 282,
+            "speed": 70,
+            "operatingCostMultiplier": 1.1,
+            "purchasePriceM": 7.2,
+            "pricePenalty": 7.2,
+            "cityBonus": 48,
+            "cityBonusReason": "2 owned cities × 4",
+            "duplicatePenalty": 210,
+            "duplicateCount": 1,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-gillig-low-floor",
+            "quantity": 6
+          },
+          "score": 377.70000000000005,
+          "label": "Buy 6× #3 Gillig Low Floor (29-foot) (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 3,
+            "cardName": "Gillig Low Floor (29-foot)",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 120,
+            "speed": 45,
+            "operatingCostMultiplier": 1,
+            "purchasePriceM": 3.6,
+            "pricePenalty": 3.6,
+            "cityBonus": 48,
+            "cityBonusReason": "2 owned cities × 4",
+            "duplicatePenalty": 210,
+            "duplicateCount": 1,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-toyota-sienna",
+            "quantity": 4
+          },
+          "score": 297.34000000000003,
+          "label": "Buy 4× #1 Toyota Sienna (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 1,
+            "cardName": "Toyota Sienna",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 32,
+            "speed": 65,
+            "operatingCostMultiplier": 1.1,
+            "purchasePriceM": 0.14,
+            "pricePenalty": 0.14,
+            "cityBonus": 32,
+            "cityBonusReason": "2 owned cities × 4",
+            "duplicatePenalty": 100,
+            "duplicateCount": 1,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "end-turn"
+          },
+          "score": 0,
+          "label": "End turn",
+          "breakdown": null
+        },
+        {
+          "action": {
+            "type": "exchange-vehicle",
+            "newCardId": "bus-greyhound-americruiser",
+            "oldCardId": "bus-toyota-sienna"
+          },
+          "score": -6.788,
+          "label": "Replace #1 Toyota Sienna with #5 Greyhound MC-12 'Americruiser'",
+          "breakdown": null
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "train-siemens-viaggio-comfort",
+            "quantity": 1
+          },
+          "score": null,
+          "label": "Other: Buy 1× #2 Siemens Viaggio Comfort (train)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 2,
+            "cardName": "Siemens Viaggio Comfort",
+            "vehicleType": "train",
+            "typePriority": 58,
+            "totalPassengerCapacity": 500,
+            "speed": 80,
+            "operatingCostMultiplier": 1,
+            "purchasePriceM": 12,
+            "pricePenalty": 12,
+            "cityBonus": -80,
+            "cityBonusReason": "penalty: no rail claims or existing rail network to justify a train",
+            "duplicatePenalty": 0,
+            "duplicateCount": 0,
+            "firstOfTypeBonus": 0
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 5,
+      "rating": "good",
+      "preferredIndex": null,
+      "reviewEdits": [
+        "Other: Buy 1× #2 Siemens Viaggio Comfort (train)"
+      ]
+    },
+    {
+      "id": "decision-1782701752790-bbbc32",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T02:55:52.790Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "cities",
+      "week": 2,
+      "phase": "add-city",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Southeast"
+          },
+          "score": 48,
+          "label": "Draw city cards from Southeast deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Southeast",
+            "deckSize": 16,
+            "deckSizeScore": 32,
+            "ownedInRegion": 2,
+            "ownedInRegionScore": 16,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "South"
+          },
+          "score": 42,
+          "label": "Draw city cards from South deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "South",
+            "deckSize": 13,
+            "deckSizeScore": 26,
+            "ownedInRegion": 2,
+            "ownedInRegionScore": 16,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Pacific"
+          },
+          "score": 22,
+          "label": "Draw city cards from Pacific deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Pacific",
+            "deckSize": 11,
+            "deckSizeScore": 22,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Mountain"
+          },
+          "score": 22,
+          "label": "Draw city cards from Mountain deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Mountain",
+            "deckSize": 11,
+            "deckSizeScore": 22,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Midwest"
+          },
+          "score": 16,
+          "label": "Draw city cards from Midwest deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Midwest",
+            "deckSize": 14,
+            "deckSizeScore": 28,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 4,
+            "opponentPenalty": 12,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Northeast"
+          },
+          "score": 12,
+          "label": "Draw city cards from Northeast deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Northeast",
+            "deckSize": 12,
+            "deckSizeScore": 24,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 4,
+            "opponentPenalty": 12,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "great",
+      "preferredIndex": null
+    },
+    {
+      "id": "decision-1782701760206-dwemle",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T02:56:00.206Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "cities",
+      "week": 2,
+      "phase": "add-city",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "orlando",
+              "richmond_va"
+            ]
+          },
+          "score": 160.15692962430836,
+          "label": "Keep cities: Orlando + Richmond",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 4347010,
+            "populationScore": 43.4701,
+            "populationWeight": 10,
+            "avgDistanceMiles": 189,
+            "networkProximityScore": 108.68682962430836,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "Southeast",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "knoxville",
+              "orlando"
+            ]
+          },
+          "score": 157.96841391635562,
+          "label": "Keep cities: Knoxville + Orlando",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 3925809,
+            "populationScore": 39.25809,
+            "populationWeight": 10,
+            "avgDistanceMiles": 155,
+            "networkProximityScore": 110.7103239163556,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "Southeast",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "tallahassee",
+              "orlando"
+            ]
+          },
+          "score": 152.96659562946874,
+          "label": "Keep cities: Tallahassee + Orlando",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 3355114,
+            "populationScore": 33.55114,
+            "populationWeight": 10,
+            "avgDistanceMiles": 143,
+            "networkProximityScore": 111.41545562946875,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "Southeast",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "knoxville",
+              "richmond_va"
+            ]
+          },
+          "score": 138.72468560183947,
+          "label": "Keep cities: Knoxville + Richmond",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 2357475,
+            "populationScore": 23.57475,
+            "populationWeight": 10,
+            "avgDistanceMiles": 214,
+            "networkProximityScore": 107.14993560183947,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "Southeast",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "tallahassee",
+              "richmond_va"
+            ]
+          },
+          "score": 133.72286731495268,
+          "label": "Keep cities: Tallahassee + Richmond",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 1786780,
+            "populationScore": 17.8678,
+            "populationWeight": 10,
+            "avgDistanceMiles": 202,
+            "networkProximityScore": 107.85506731495266,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "Southeast",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "tallahassee",
+              "knoxville"
+            ]
+          },
+          "score": 131.5343516069999,
+          "label": "Keep cities: Tallahassee + Knoxville",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 1365579,
+            "populationScore": 13.655790000000001,
+            "populationWeight": 10,
+            "avgDistanceMiles": 169,
+            "networkProximityScore": 109.8785616069999,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "Southeast",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "great",
+      "preferredIndex": null
+    },
+    {
+      "id": "decision-1782701767106-pot6s9",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T02:56:07.106Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "operations-review",
+      "week": 2,
+      "phase": "operations",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "ready-operations"
+          },
+          "score": 0,
+          "label": "Accept reviewed operations layout",
+          "breakdown": null
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "good",
+      "preferredIndex": null,
+      "reviewEdits": [],
+      "operationsReviewComparison": {
+        "botPlan": {
+          "totalPassengersServed": 19500,
+          "totalRevenue": 1755000,
+          "totalOperatingCost": 37512.15,
+          "netRevenue": 1717487.85,
+          "stuckCubeCount": 0,
+          "podCount": 2
+        },
+        "reviewedPlan": {
+          "totalPassengersServed": 19500,
+          "totalRevenue": 1755000,
+          "totalOperatingCost": 37512.15,
+          "netRevenue": 1717487.85,
+          "stuckCubeCount": 0,
+          "podCount": 2
+        },
+        "delta": {
+          "totalPassengersServed": 0,
+          "totalRevenue": 0,
+          "totalOperatingCost": 0,
+          "netRevenue": 0,
+          "stuckCubeCount": 0,
+          "podCount": 0
+        }
+      }
+    },
+    {
+      "id": "decision-1782701778023-xckplt",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T02:56:18.023Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "vehicles",
+      "week": 3,
+      "phase": "purchase-equipment",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-toyota-sienna",
+            "quantity": 6
+          },
+          "score": 434.01,
+          "label": "Buy 6× #1 Toyota Sienna (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 1,
+            "cardName": "Toyota Sienna",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 48,
+            "speed": 65,
+            "operatingCostMultiplier": 1.1,
+            "purchasePriceM": 0.21,
+            "pricePenalty": 0.21,
+            "cityBonus": 96,
+            "cityBonusReason": "4 owned cities × 4",
+            "duplicatePenalty": 210,
+            "duplicateCount": 1,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-greyhound-americruiser",
+            "quantity": 6
+          },
+          "score": 432.03,
+          "label": "Buy 6× #5 Greyhound MC-12 'Americruiser' (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 5,
+            "cardName": "Greyhound MC-12 'Americruiser'",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 282,
+            "speed": 70,
+            "operatingCostMultiplier": 1.1,
+            "purchasePriceM": 7.2,
+            "pricePenalty": 7.2,
+            "cityBonus": 96,
+            "cityBonusReason": "4 owned cities × 4",
+            "duplicatePenalty": 210,
+            "duplicateCount": 1,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-gillig-low-floor",
+            "quantity": 6
+          },
+          "score": 425.70000000000005,
+          "label": "Buy 6× #3 Gillig Low Floor (29-foot) (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 3,
+            "cardName": "Gillig Low Floor (29-foot)",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 120,
+            "speed": 45,
+            "operatingCostMultiplier": 1,
+            "purchasePriceM": 3.6,
+            "pricePenalty": 3.6,
+            "cityBonus": 96,
+            "cityBonusReason": "4 owned cities × 4",
+            "duplicatePenalty": 210,
+            "duplicateCount": 1,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "train-siemens-viaggio-comfort",
+            "quantity": 3
+          },
+          "score": 285.1613055,
+          "label": "Buy 3× #2 Siemens Viaggio Comfort (train)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 2,
+            "cardName": "Siemens Viaggio Comfort",
+            "vehicleType": "train",
+            "typePriority": 58,
+            "totalPassengerCapacity": 1500,
+            "speed": 80,
+            "operatingCostMultiplier": 1,
+            "purchasePriceM": 36,
+            "pricePenalty": 36,
+            "cityBonus": 18,
+            "cityBonusReason": "fallback: existing rail network/service pod can use another train",
+            "duplicatePenalty": 60,
+            "duplicateCount": 1,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "train-emd-f-locomotive-set",
+            "quantity": 3
+          },
+          "score": 109.04999999999998,
+          "label": "Buy 3× #3 EMD F7 Locomotive Set (train)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 3,
+            "cardName": "EMD F7 Locomotive Set",
+            "vehicleType": "train",
+            "typePriority": 58,
+            "totalPassengerCapacity": 720,
+            "speed": 75,
+            "operatingCostMultiplier": 1.2,
+            "purchasePriceM": 45,
+            "pricePenalty": 45,
+            "cityBonus": 18,
+            "cityBonusReason": "fallback: existing rail network/service pod can use another train",
+            "duplicatePenalty": 60,
+            "duplicateCount": 1,
+            "firstOfTypeBonus": 0
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "fine",
+      "preferredIndex": null
+    },
+    {
+      "id": "decision-1782701781274-jdgo2d",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T02:56:21.274Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "cities",
+      "week": 3,
+      "phase": "add-city",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Southeast"
+          },
+          "score": 60,
+          "label": "Draw city cards from Southeast deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Southeast",
+            "deckSize": 14,
+            "deckSizeScore": 28,
+            "ownedInRegion": 4,
+            "ownedInRegionScore": 32,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "South"
+          },
+          "score": 58,
+          "label": "Draw city cards from South deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "South",
+            "deckSize": 13,
+            "deckSizeScore": 26,
+            "ownedInRegion": 4,
+            "ownedInRegionScore": 32,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Pacific"
+          },
+          "score": 22,
+          "label": "Draw city cards from Pacific deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Pacific",
+            "deckSize": 11,
+            "deckSizeScore": 22,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Mountain"
+          },
+          "score": 22,
+          "label": "Draw city cards from Mountain deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Mountain",
+            "deckSize": 11,
+            "deckSizeScore": 22,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Midwest"
+          },
+          "score": 16,
+          "label": "Draw city cards from Midwest deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Midwest",
+            "deckSize": 14,
+            "deckSizeScore": 28,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 4,
+            "opponentPenalty": 12,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Northeast"
+          },
+          "score": 2,
+          "label": "Draw city cards from Northeast deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Northeast",
+            "deckSize": 10,
+            "deckSizeScore": 20,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 6,
+            "opponentPenalty": 18,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "great",
+      "preferredIndex": null
+    },
+    {
+      "id": "decision-1782701785856-2yqb3s",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T02:56:25.856Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "cities",
+      "week": 3,
+      "phase": "add-city",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "hampton_roads",
+              "raleigh_durham"
+            ]
+          },
+          "score": 155.21222288619705,
+          "label": "Keep cities: Hampton Roads + Raleigh-Durham",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 3392933,
+            "populationScore": 33.92933,
+            "populationWeight": 10,
+            "avgDistanceMiles": 112,
+            "networkProximityScore": 113.28289288619706,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "Southeast",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "hampton_roads",
+              "nashville"
+            ]
+          },
+          "score": 154.94270707841085,
+          "label": "Keep cities: Hampton Roads + Nashville",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 3994629,
+            "populationScore": 39.946290000000005,
+            "populationWeight": 10,
+            "avgDistanceMiles": 217,
+            "networkProximityScore": 106.99641707841084,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "Southeast",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "nashville",
+              "raleigh_durham"
+            ]
+          },
+          "score": 151.84510931951638,
+          "label": "Keep cities: Nashville + Raleigh-Durham",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 3793136,
+            "populationScore": 37.93136,
+            "populationWeight": 10,
+            "avgDistanceMiles": 235,
+            "networkProximityScore": 105.9137493195164,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "Southeast",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "mobile",
+              "hampton_roads"
+            ]
+          },
+          "score": 135.8372827721566,
+          "label": "Keep cities: Mobile + Hampton Roads",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 2208871,
+            "populationScore": 22.08871,
+            "populationWeight": 10,
+            "avgDistanceMiles": 238,
+            "networkProximityScore": 105.74857277215662,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "Southeast",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "mobile",
+              "raleigh_durham"
+            ]
+          },
+          "score": 132.73968501326218,
+          "label": "Keep cities: Mobile + Raleigh-Durham",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 2007378,
+            "populationScore": 20.07378,
+            "populationWeight": 10,
+            "avgDistanceMiles": 256,
+            "networkProximityScore": 104.66590501326218,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "Southeast",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "mobile",
+              "nashville"
+            ]
+          },
+          "score": 132.470169205476,
+          "label": "Keep cities: Mobile + Nashville",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 2609074,
+            "populationScore": 26.09074,
+            "populationWeight": 10,
+            "avgDistanceMiles": 360,
+            "networkProximityScore": 98.37942920547599,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "Southeast",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "great",
+      "preferredIndex": null
+    },
+    {
+      "id": "decision-1782701834073-tkpr9n",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T02:57:14.073Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "operations-review",
+      "week": 3,
+      "phase": "add-city",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "ready-operations"
+          },
+          "score": 0,
+          "label": "Accept reviewed operations layout",
+          "breakdown": null
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "good",
+      "preferredIndex": null,
+      "reviewEdits": [
+        "set pod cities on corridor service:implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:raleigh_durham:richmond_va to Charlotte, Hampton Roads, Raleigh-Durham, Richmond",
+        "deleted Jacksonville - Orlando and moved 2 cities to disconnected",
+        "set pod cities on corridor service:implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:raleigh_durham:richmond_va to Hampton Roads, Raleigh-Durham, Richmond",
+        "set pod cities on corridor service:implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:raleigh_durham:richmond_va to Hampton Roads, Raleigh-Durham, Richmond, Charlotte"
+      ],
+      "operationsReviewComparison": {
+        "botPlan": {
+          "totalPassengersServed": 19500,
+          "totalRevenue": 1755000,
+          "totalOperatingCost": 36541.05,
+          "netRevenue": 1718458.95,
+          "stuckCubeCount": 750,
+          "podCount": 1
+        },
+        "reviewedPlan": {
+          "totalPassengersServed": 27788,
+          "totalRevenue": 2458080,
+          "totalOperatingCost": 95769.23215384615,
+          "netRevenue": 2362310.767846154,
+          "stuckCubeCount": 0,
+          "podCount": 2
+        },
+        "delta": {
+          "totalPassengersServed": 8288,
+          "totalRevenue": 703080,
+          "totalOperatingCost": 59228.18215384615,
+          "netRevenue": 643851.8178461541,
+          "stuckCubeCount": -750,
+          "podCount": 1
+        }
+      }
+    },
+    {
+      "id": "decision-1782701853139-5wcrbr",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T02:57:33.139Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "vehicles",
+      "week": 4,
+      "phase": "purchase-equipment",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-toyota-sienna",
+            "quantity": 6
+          },
+          "score": 787.8988195846155,
+          "label": "Buy 6× #1 Toyota Sienna (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 1,
+            "cardName": "Toyota Sienna",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 48,
+            "speed": 65,
+            "operatingCostMultiplier": 1.1,
+            "purchasePriceM": 0.21,
+            "pricePenalty": 0.21,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 210,
+            "duplicateCount": 1,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-greyhound-americruiser",
+            "quantity": 6
+          },
+          "score": 630.0300000000002,
+          "label": "Buy 6× #5 Greyhound MC-12 'Americruiser' (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 5,
+            "cardName": "Greyhound MC-12 'Americruiser'",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 282,
+            "speed": 70,
+            "operatingCostMultiplier": 1.1,
+            "purchasePriceM": 7.2,
+            "pricePenalty": 7.2,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 210,
+            "duplicateCount": 1,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-gillig-low-floor",
+            "quantity": 6
+          },
+          "score": 623.7,
+          "label": "Buy 6× #3 Gillig Low Floor (29-foot) (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 3,
+            "cardName": "Gillig Low Floor (29-foot)",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 120,
+            "speed": 45,
+            "operatingCostMultiplier": 1,
+            "purchasePriceM": 3.6,
+            "pricePenalty": 3.6,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 210,
+            "duplicateCount": 1,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "train-siemens-viaggio-comfort",
+            "quantity": 3
+          },
+          "score": 429.4991084999999,
+          "label": "Buy 3× #2 Siemens Viaggio Comfort (train)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 2,
+            "cardName": "Siemens Viaggio Comfort",
+            "vehicleType": "train",
+            "typePriority": 58,
+            "totalPassengerCapacity": 1500,
+            "speed": 80,
+            "operatingCostMultiplier": 1,
+            "purchasePriceM": 36,
+            "pricePenalty": 36,
+            "cityBonus": 114,
+            "cityBonusReason": "4 rail claim opportunities",
+            "duplicatePenalty": 60,
+            "duplicateCount": 1,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "train-british-rail-class",
+            "quantity": 3
+          },
+          "score": 201,
+          "label": "Buy 3× #4 British Rail Class 43 (HST) (train)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 4,
+            "cardName": "British Rail Class 43 (HST)",
+            "vehicleType": "train",
+            "typePriority": 58,
+            "totalPassengerCapacity": 1350,
+            "speed": 125,
+            "operatingCostMultiplier": 1.04,
+            "purchasePriceM": 66,
+            "pricePenalty": 66,
+            "cityBonus": 114,
+            "cityBonusReason": "4 rail claim opportunities",
+            "duplicatePenalty": 60,
+            "duplicateCount": 1,
+            "firstOfTypeBonus": 0
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 4,
+      "rating": "better",
+      "preferredIndex": 4
+    },
+    {
+      "id": "decision-1782701857726-fyzri6",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T02:57:37.726Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "cities",
+      "week": 4,
+      "phase": "purchase-equipment",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "South"
+          },
+          "score": 74,
+          "label": "Draw city cards from South deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "South",
+            "deckSize": 13,
+            "deckSizeScore": 26,
+            "ownedInRegion": 6,
+            "ownedInRegionScore": 48,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Southeast"
+          },
+          "score": 72,
+          "label": "Draw city cards from Southeast deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Southeast",
+            "deckSize": 12,
+            "deckSizeScore": 24,
+            "ownedInRegion": 6,
+            "ownedInRegionScore": 48,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Pacific"
+          },
+          "score": 22,
+          "label": "Draw city cards from Pacific deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Pacific",
+            "deckSize": 11,
+            "deckSizeScore": 22,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Mountain"
+          },
+          "score": 22,
+          "label": "Draw city cards from Mountain deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Mountain",
+            "deckSize": 11,
+            "deckSizeScore": 22,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Midwest"
+          },
+          "score": 6,
+          "label": "Draw city cards from Midwest deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Midwest",
+            "deckSize": 12,
+            "deckSizeScore": 24,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 6,
+            "opponentPenalty": 18,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Northeast"
+          },
+          "score": 2,
+          "label": "Draw city cards from Northeast deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Northeast",
+            "deckSize": 10,
+            "deckSizeScore": 20,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 6,
+            "opponentPenalty": 18,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 1,
+      "rating": "better",
+      "preferredIndex": 1
+    },
+    {
+      "id": "decision-1782701862106-ti94ey",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T02:57:42.106Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "cities",
+      "week": 4,
+      "phase": "purchase-equipment",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "charleston_sc",
+              "tampa_bay"
+            ]
+          },
+          "score": 163.07037609297868,
+          "label": "Keep cities: Charleston + Tampa Bay",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 4308158,
+            "populationScore": 43.081579999999995,
+            "populationWeight": 10,
+            "avgDistanceMiles": 134,
+            "networkProximityScore": 111.98879609297869,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "Southeast",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "memphis",
+              "tampa_bay"
+            ]
+          },
+          "score": 157.30362967799067,
+          "label": "Keep cities: Memphis + Tampa Bay",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 4760307,
+            "populationScore": 47.60307,
+            "populationWeight": 10,
+            "avgDistanceMiles": 305,
+            "networkProximityScore": 101.70055967799067,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "Southeast",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "montgomery",
+              "tampa_bay"
+            ]
+          },
+          "score": 154.10637854314376,
+          "label": "Keep cities: Montgomery + Tampa Bay",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 3807642,
+            "populationScore": 38.07642,
+            "populationWeight": 10,
+            "avgDistanceMiles": 200,
+            "networkProximityScore": 108.02995854314375,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "Southeast",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "charleston_sc",
+              "memphis"
+            ]
+          },
+          "score": 129.43083267755014,
+          "label": "Keep cities: Charleston + Memphis",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 2230675,
+            "populationScore": 22.30675,
+            "populationWeight": 10,
+            "avgDistanceMiles": 348,
+            "networkProximityScore": 99.12408267755015,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "Southeast",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "montgomery",
+              "charleston_sc"
+            ]
+          },
+          "score": 126.23358154270322,
+          "label": "Keep cities: Montgomery + Charleston",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 1278010,
+            "populationScore": 12.780100000000001,
+            "populationWeight": 10,
+            "avgDistanceMiles": 242,
+            "networkProximityScore": 105.45348154270322,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "Southeast",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "montgomery",
+              "memphis"
+            ]
+          },
+          "score": 120.46683512771521,
+          "label": "Keep cities: Montgomery + Memphis",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 1730159,
+            "populationScore": 17.30159,
+            "populationWeight": 10,
+            "avgDistanceMiles": 414,
+            "networkProximityScore": 95.16524512771521,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "Southeast",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "great",
+      "preferredIndex": null
+    },
+    {
+      "id": "decision-1782701978073-6ohshw",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T02:59:38.073Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "operations-review",
+      "week": 4,
+      "phase": "purchase-equipment",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "ready-operations"
+          },
+          "score": 0,
+          "label": "Accept reviewed operations layout",
+          "breakdown": null
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "good",
+      "preferredIndex": null,
+      "reviewEdits": [
+        "claimed a rail route across Charlotte - Raleigh-Durham",
+        "claimed a rail route across Raleigh-Durham - Richmond",
+        "set pod cities on corridor service:rail:charlotte:raleigh_durham|rail:raleigh_durham:richmond_va to Charlotte, Raleigh-Durham, Richmond",
+        "claimed a rail route across Hampton Roads - Richmond",
+        "set pod cities on corridor service:rail:charlotte:raleigh_durham|rail:hampton_roads:richmond_va|rail:raleigh_durham:richmond_va to Charlotte, Raleigh-Durham, Richmond, Hampton Roads",
+        "set pod cities on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va to Charlotte, Raleigh-Durham, Richmond",
+        "set pod cities on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va to Charlotte, Raleigh-Durham",
+        "set pod cities on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va to Charlotte",
+        "set pod cities on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va to Charlotte, Charleston",
+        "set pod cities on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va to Charleston, Charlotte, Jacksonville",
+        "set pod cities on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va to Charleston, Charlotte, Jacksonville, Raleigh-Durham",
+        "set pod cities on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va to Charleston, Charlotte, Jacksonville",
+        "set pod cities on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va to Charleston, Charlotte, Jacksonville, Raleigh-Durham",
+        "set pod cities on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va to Charleston, Charlotte, Jacksonville, Raleigh-Durham, Richmond",
+        "set pod cities on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va to Charleston, Charlotte, Jacksonville, Raleigh-Durham"
+      ],
+      "operationsReviewComparison": {
+        "botPlan": {
+          "totalPassengersServed": 20444,
+          "totalRevenue": 1814760,
+          "totalOperatingCost": 94574.88230769231,
+          "netRevenue": 1720185.1176923078,
+          "stuckCubeCount": 1474,
+          "podCount": 2
+        },
+        "reviewedPlan": {
+          "totalPassengersServed": 66890,
+          "totalRevenue": 5862600,
+          "totalOperatingCost": 204583.7790153846,
+          "netRevenue": 5658016.220984615,
+          "stuckCubeCount": 891,
+          "podCount": 3
+        },
+        "delta": {
+          "totalPassengersServed": 46446,
+          "totalRevenue": 4047840,
+          "totalOperatingCost": 110008.8967076923,
+          "netRevenue": 3937831.103292308,
+          "stuckCubeCount": -583,
+          "podCount": 1
+        }
+      }
+    },
+    {
+      "id": "decision-1782701999673-iet4oy",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T02:59:59.673Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "vehicles",
+      "week": 5,
+      "phase": "purchase-equipment",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-toyota-sienna",
+            "quantity": 6
+          },
+          "score": 635.5262424923078,
+          "label": "Buy 6× #1 Toyota Sienna (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 1,
+            "cardName": "Toyota Sienna",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 48,
+            "speed": 65,
+            "operatingCostMultiplier": 1.1,
+            "purchasePriceM": 0.21,
+            "pricePenalty": 0.21,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 210,
+            "duplicateCount": 1,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-greyhound-americruiser",
+            "quantity": 6
+          },
+          "score": 480.03,
+          "label": "Buy 6× #5 Greyhound MC-12 'Americruiser' (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 5,
+            "cardName": "Greyhound MC-12 'Americruiser'",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 282,
+            "speed": 70,
+            "operatingCostMultiplier": 1.1,
+            "purchasePriceM": 7.2,
+            "pricePenalty": 7.2,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 210,
+            "duplicateCount": 1,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-gillig-low-floor",
+            "quantity": 6
+          },
+          "score": 473.70000000000005,
+          "label": "Buy 6× #3 Gillig Low Floor (29-foot) (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 3,
+            "cardName": "Gillig Low Floor (29-foot)",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 120,
+            "speed": 45,
+            "operatingCostMultiplier": 1,
+            "purchasePriceM": 3.6,
+            "pricePenalty": 3.6,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 210,
+            "duplicateCount": 1,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "train-siemens-viaggio-comfort",
+            "quantity": 1
+          },
+          "score": 133.72897625000002,
+          "label": "Buy 1× #2 Siemens Viaggio Comfort (train)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 2,
+            "cardName": "Siemens Viaggio Comfort",
+            "vehicleType": "train",
+            "typePriority": 58,
+            "totalPassengerCapacity": 500,
+            "speed": 80,
+            "operatingCostMultiplier": 1,
+            "purchasePriceM": 12,
+            "pricePenalty": 12,
+            "cityBonus": 38,
+            "cityBonusReason": "1 rail claim opportunities",
+            "duplicatePenalty": 20,
+            "duplicateCount": 2,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "exchange-vehicle",
+            "newCardId": "bus-greyhound-americruiser",
+            "oldCardId": "bus-toyota-sienna"
+          },
+          "score": 5.921020207692308,
+          "label": "Replace #1 Toyota Sienna with #5 Greyhound MC-12 'Americruiser'",
+          "breakdown": null
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 4,
+      "rating": "slightly-better",
+      "preferredIndex": 4
+    },
+    {
+      "id": "decision-1782702008622-97119d",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T03:00:08.622Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "cities",
+      "week": 5,
+      "phase": "add-city",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "South"
+          },
+          "score": 90,
+          "label": "Draw city cards from South deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "South",
+            "deckSize": 13,
+            "deckSizeScore": 26,
+            "ownedInRegion": 8,
+            "ownedInRegionScore": 64,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Southeast"
+          },
+          "score": 84,
+          "label": "Draw city cards from Southeast deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Southeast",
+            "deckSize": 10,
+            "deckSizeScore": 20,
+            "ownedInRegion": 8,
+            "ownedInRegionScore": 64,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Pacific"
+          },
+          "score": 22,
+          "label": "Draw city cards from Pacific deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Pacific",
+            "deckSize": 11,
+            "deckSizeScore": 22,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Mountain"
+          },
+          "score": 22,
+          "label": "Draw city cards from Mountain deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Mountain",
+            "deckSize": 11,
+            "deckSizeScore": 22,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Midwest"
+          },
+          "score": -14,
+          "label": "Draw city cards from Midwest deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Midwest",
+            "deckSize": 8,
+            "deckSizeScore": 16,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 10,
+            "opponentPenalty": 30,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Northeast"
+          },
+          "score": -16.584806666666665,
+          "label": "Draw city cards from Northeast deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Northeast",
+            "deckSize": 6,
+            "deckSizeScore": 12,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 10,
+            "opponentPenalty": 30,
+            "bigCityScarcitySignal": 0.28303866666666666,
+            "bigCityScarcityScore": 1.4151933333333333
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "fine",
+      "preferredIndex": null
+    },
+    {
+      "id": "decision-1782702011605-lj1x5b",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T03:00:11.605Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "cities",
+      "week": 5,
+      "phase": "add-city",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "new_orleans",
+              "little_rock"
+            ]
+          },
+          "score": 103.61449793828295,
+          "label": "Keep cities: New Orleans + Little Rock",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 1748456,
+            "populationScore": 17.484560000000002,
+            "populationWeight": 10,
+            "avgDistanceMiles": 565,
+            "networkProximityScore": 86.12993793828295,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 0,
+            "regionMatchScore": 0,
+            "regionMatchWeight": 4,
+            "topRegion": "Southeast",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "new_orleans",
+              "fayetteville_ar"
+            ]
+          },
+          "score": 99.01600367229015,
+          "label": "Keep cities: New Orleans + Fayetteville",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 1593026,
+            "populationScore": 15.93026,
+            "populationWeight": 10,
+            "avgDistanceMiles": 615,
+            "networkProximityScore": 83.08574367229015,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 0,
+            "regionMatchScore": 0,
+            "regionMatchWeight": 4,
+            "topRegion": "Southeast",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "little_rock",
+              "fayetteville_ar"
+            ]
+          },
+          "score": 92.06549852528723,
+          "label": "Keep cities: Little Rock + Fayetteville",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 1399784,
+            "populationScore": 13.99784,
+            "populationWeight": 10,
+            "avgDistanceMiles": 699,
+            "networkProximityScore": 78.06765852528723,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 0,
+            "regionMatchScore": 0,
+            "regionMatchWeight": 4,
+            "topRegion": "Southeast",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "new_orleans",
+              "el_paso"
+            ]
+          },
+          "score": 80.2561464849592,
+          "label": "Keep cities: New Orleans + El Paso",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 1852140,
+            "populationScore": 18.5214,
+            "populationWeight": 10,
+            "avgDistanceMiles": 971,
+            "networkProximityScore": 61.73474648495921,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 0,
+            "regionMatchScore": 0,
+            "regionMatchWeight": 4,
+            "topRegion": "Southeast",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "little_rock",
+              "el_paso"
+            ]
+          },
+          "score": 73.30564133795627,
+          "label": "Keep cities: Little Rock + El Paso",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 1658898,
+            "populationScore": 16.58898,
+            "populationWeight": 10,
+            "avgDistanceMiles": 1055,
+            "networkProximityScore": 56.71666133795628,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 0,
+            "regionMatchScore": 0,
+            "regionMatchWeight": 4,
+            "topRegion": "Southeast",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "fayetteville_ar",
+              "el_paso"
+            ]
+          },
+          "score": 68.70714707196349,
+          "label": "Keep cities: Fayetteville + El Paso",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 1503468,
+            "populationScore": 15.03468,
+            "populationWeight": 10,
+            "avgDistanceMiles": 1105,
+            "networkProximityScore": 53.67246707196349,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 0,
+            "regionMatchScore": 0,
+            "regionMatchWeight": 4,
+            "topRegion": "Southeast",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "good",
+      "preferredIndex": null
+    },
+    {
+      "id": "decision-1782702117389-1rb2sb",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T03:01:57.389Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "operations-review",
+      "week": 5,
+      "phase": "operations",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "ready-operations"
+          },
+          "score": 0,
+          "label": "Accept reviewed operations layout",
+          "breakdown": null
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "good",
+      "preferredIndex": null,
+      "reviewEdits": [
+        "added split service on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va",
+        "assigned Greyhound MC-12 'Americruiser' to Charleston - Charlotte - Jacksonville - Raleigh-Durham",
+        "assigned Greyhound MC-12 'Americruiser' to Charleston - Charlotte - Jacksonville - Raleigh-Durham",
+        "assigned no vehicle to Charleston - Jacksonville - Orlando - Tampa Bay",
+        "assigned no vehicle to Charleston - Jacksonville - Orlando - Tampa Bay",
+        "deleted Charleston - Jacksonville - Orlando - Tampa Bay and moved 2 cities to disconnected",
+        "set pod cities on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va to Charleston, Charlotte, Jacksonville",
+        "set pod cities on corridor service:rail:jacksonville:orlando|rail:orlando:tampa_bay to Jacksonville, Orlando, Tampa Bay",
+        "added split service on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va",
+        "deleted Charleston - Charlotte - Jacksonville",
+        "added split service on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va",
+        "assigned Greyhound MC-12 'Americruiser' to Charleston - Charlotte - Hampton Roads - Jacksonville - Orlando - Raleigh-Durham - Richmond - Tampa Bay (select cities)",
+        "assigned Greyhound MC-12 'Americruiser' to Charleston - Charlotte - Hampton Roads - Jacksonville - Orlando - Raleigh-Durham - Richmond - Tampa Bay (select cities)",
+        "deleted Charleston - Charlotte - Jacksonville",
+        "deleted Charleston - Charlotte - Jacksonville",
+        "set pod cities on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va to Raleigh-Durham",
+        "set pod cities on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va to Raleigh-Durham, Hampton Roads",
+        "set pod cities on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va to Hampton Roads, Raleigh-Durham, Charleston",
+        "assigned Toyota Sienna to Charleston - Hampton Roads - Raleigh-Durham",
+        "set pod cities on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va to Charleston, Raleigh-Durham",
+        "set pod cities on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va to Charleston, Raleigh-Durham, Hampton Roads"
+      ],
+      "operationsReviewComparison": {
+        "botPlan": {
+          "totalPassengersServed": 80562,
+          "totalRevenue": 6971760,
+          "totalOperatingCost": 226611.9487978022,
+          "netRevenue": 6745148.051202198,
+          "stuckCubeCount": 351,
+          "podCount": 4
+        },
+        "reviewedPlan": {
+          "totalPassengersServed": 96036,
+          "totalRevenue": 8325990,
+          "totalOperatingCost": 242117.6311846154,
+          "netRevenue": 8083872.368815385,
+          "stuckCubeCount": 394,
+          "podCount": 4
+        },
+        "delta": {
+          "totalPassengersServed": 15474,
+          "totalRevenue": 1354230,
+          "totalOperatingCost": 15505.68238681319,
+          "netRevenue": 1338724.3176131872,
+          "stuckCubeCount": 43,
+          "podCount": 0
+        }
+      }
+    },
+    {
+      "id": "decision-1782702128189-24yv7n",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T03:02:08.189Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "vehicles",
+      "week": 6,
+      "phase": "purchase-equipment",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-greyhound-americruiser",
+            "quantity": 6
+          },
+          "score": 1133.907874714286,
+          "label": "Buy 6× #5 Greyhound MC-12 'Americruiser' (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 5,
+            "cardName": "Greyhound MC-12 'Americruiser'",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 282,
+            "speed": 70,
+            "operatingCostMultiplier": 1.1,
+            "purchasePriceM": 7.2,
+            "pricePenalty": 7.2,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 270,
+            "duplicateCount": 2,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-toyota-sienna",
+            "quantity": 6
+          },
+          "score": 531.2087256461539,
+          "label": "Buy 6× #1 Toyota Sienna (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 1,
+            "cardName": "Toyota Sienna",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 48,
+            "speed": 65,
+            "operatingCostMultiplier": 1.1,
+            "purchasePriceM": 0.21,
+            "pricePenalty": 0.21,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 270,
+            "duplicateCount": 2,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-twin-coach-gwft",
+            "quantity": 6
+          },
+          "score": 414.09000000000003,
+          "label": "Buy 6× #2 Twin Coach GWFT (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 2,
+            "cardName": "Twin Coach GWFT",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 246,
+            "speed": 38,
+            "operatingCostMultiplier": 1.08,
+            "purchasePriceM": 3,
+            "pricePenalty": 3,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 270,
+            "duplicateCount": 2,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-gillig-low-floor",
+            "quantity": 6
+          },
+          "score": 413.70000000000005,
+          "label": "Buy 6× #3 Gillig Low Floor (29-foot) (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 3,
+            "cardName": "Gillig Low Floor (29-foot)",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 120,
+            "speed": 45,
+            "operatingCostMultiplier": 1,
+            "purchasePriceM": 3.6,
+            "pricePenalty": 3.6,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 270,
+            "duplicateCount": 2,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "exchange-vehicle",
+            "newCardId": "bus-twin-coach-gwft",
+            "oldCardId": "bus-toyota-sienna"
+          },
+          "score": 1.2718938038461536,
+          "label": "Replace #1 Toyota Sienna with #2 Twin Coach GWFT",
+          "breakdown": null
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "good",
+      "preferredIndex": null
+    },
+    {
+      "id": "decision-1782702131271-4beucb",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T03:02:11.271Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "cities",
+      "week": 6,
+      "phase": "add-city",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "South"
+          },
+          "score": 102,
+          "label": "Draw city cards from South deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "South",
+            "deckSize": 11,
+            "deckSizeScore": 22,
+            "ownedInRegion": 10,
+            "ownedInRegionScore": 80,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Southeast"
+          },
+          "score": 84,
+          "label": "Draw city cards from Southeast deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Southeast",
+            "deckSize": 10,
+            "deckSizeScore": 20,
+            "ownedInRegion": 8,
+            "ownedInRegionScore": 64,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Pacific"
+          },
+          "score": 22,
+          "label": "Draw city cards from Pacific deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Pacific",
+            "deckSize": 11,
+            "deckSizeScore": 22,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Mountain"
+          },
+          "score": 22,
+          "label": "Draw city cards from Mountain deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Mountain",
+            "deckSize": 11,
+            "deckSizeScore": 22,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Midwest"
+          },
+          "score": -14,
+          "label": "Draw city cards from Midwest deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Midwest",
+            "deckSize": 8,
+            "deckSizeScore": 16,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 10,
+            "opponentPenalty": 30,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Northeast"
+          },
+          "score": -26.90324,
+          "label": "Draw city cards from Northeast deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Northeast",
+            "deckSize": 4,
+            "deckSizeScore": 8,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 12,
+            "opponentPenalty": 36,
+            "bigCityScarcitySignal": 0.219352,
+            "bigCityScarcityScore": 1.09676
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "great",
+      "preferredIndex": null
+    },
+    {
+      "id": "decision-1782702135121-y9yv3b",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T03:02:15.121Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "cities",
+      "week": 6,
+      "phase": "add-city",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "dallas_fort_worth",
+              "austin"
+            ]
+          },
+          "score": 216.8900191561528,
+          "label": "Keep cities: Dallas-Fort Worth + Austin",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 11098102,
+            "populationScore": 110.98102,
+            "populationWeight": 10,
+            "avgDistanceMiles": 368,
+            "networkProximityScore": 97.90899915615279,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "dallas_fort_worth",
+              "oklahoma_city"
+            ]
+          },
+          "score": 210.12818142107932,
+          "label": "Keep cities: Dallas-Fort Worth + Oklahoma City",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 9989970,
+            "populationScore": 99.8997,
+            "populationWeight": 10,
+            "avgDistanceMiles": 296,
+            "networkProximityScore": 102.22848142107932,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "dallas_fort_worth",
+              "odessa"
+            ]
+          },
+          "score": 187.26190458056277,
+          "label": "Keep cities: Dallas-Fort Worth + Odessa",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 8650958,
+            "populationScore": 86.50958,
+            "populationWeight": 10,
+            "avgDistanceMiles": 454,
+            "networkProximityScore": 92.75232458056279,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "oklahoma_city",
+              "austin"
+            ]
+          },
+          "score": 147.03212003547358,
+          "label": "Keep cities: Oklahoma City + Austin",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 4133758,
+            "populationScore": 41.33758,
+            "populationWeight": 10,
+            "avgDistanceMiles": 372,
+            "networkProximityScore": 97.69454003547358,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "odessa",
+              "austin"
+            ]
+          },
+          "score": 124.16584319495706,
+          "label": "Keep cities: Odessa + Austin",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 2794746,
+            "populationScore": 27.94746,
+            "populationWeight": 10,
+            "avgDistanceMiles": 530,
+            "networkProximityScore": 88.21838319495706,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "odessa",
+              "oklahoma_city"
+            ]
+          },
+          "score": 117.40400545988358,
+          "label": "Keep cities: Odessa + Oklahoma City",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 1686614,
+            "populationScore": 16.86614,
+            "populationWeight": 10,
+            "avgDistanceMiles": 458,
+            "networkProximityScore": 92.53786545988358,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "great",
+      "preferredIndex": null
+    },
+    {
+      "id": "decision-1782702215222-vi0h0w",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T03:03:35.222Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "operations-review",
+      "week": 6,
+      "phase": "add-city",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "ready-operations"
+          },
+          "score": 0,
+          "label": "Accept reviewed operations layout",
+          "breakdown": null
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "good",
+      "preferredIndex": null,
+      "reviewEdits": [
+        "set pod cities on corridor service:implicit-bus:austin:dallas_fort_worth|implicit-bus:dallas_fort_worth:little_rock to Austin, Dallas-Fort Worth, Little Rock",
+        "assigned Toyota Sienna to Austin - Dallas-Fort Worth - Little Rock",
+        "deleted Charleston - Charlotte - Hampton Roads - Raleigh-Durham and moved 2 cities to disconnected",
+        "set pod cities on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va to Charleston, Charlotte, Jacksonville, Tampa Bay, Raleigh-Durham",
+        "set pod cities on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va to Charleston, Charlotte, Jacksonville, Raleigh-Durham, Tampa Bay, Hampton Roads",
+        "set pod cities on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va to Charleston, Charlotte, Hampton Roads, Jacksonville, Raleigh-Durham, Tampa Bay, Richmond",
+        "set pod cities on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va to Charleston, Charlotte, Hampton Roads, Jacksonville, Raleigh-Durham, Richmond, Tampa Bay, Orlando",
+        "set pod cities on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va to Charleston, Charlotte, Hampton Roads, Jacksonville, Raleigh-Durham, Richmond, Tampa Bay"
+      ],
+      "operationsReviewComparison": {
+        "botPlan": {
+          "totalPassengersServed": 49400,
+          "totalRevenue": 4106250,
+          "totalOperatingCost": 188794.11146153847,
+          "netRevenue": 3917455.888538461,
+          "stuckCubeCount": 1649,
+          "podCount": 3
+        },
+        "reviewedPlan": {
+          "totalPassengersServed": 195156,
+          "totalRevenue": 17347410,
+          "totalOperatingCost": 264382.7358527472,
+          "netRevenue": 17083027.26414725,
+          "stuckCubeCount": 0,
+          "podCount": 4
+        },
+        "delta": {
+          "totalPassengersServed": 145756,
+          "totalRevenue": 13241160,
+          "totalOperatingCost": 75588.62439120875,
+          "netRevenue": 13165571.37560879,
+          "stuckCubeCount": -1649,
+          "podCount": 1
+        }
+      }
+    },
+    {
+      "id": "decision-1782702350473-mjwqy8",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T03:05:50.473Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "vehicles-review",
+      "week": 7,
+      "phase": "purchase-equipment",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-greyhound-americruiser",
+            "quantity": 6
+          },
+          "score": 2277.994956942857,
+          "label": "Buy 6× #5 Greyhound MC-12 'Americruiser' (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 5,
+            "cardName": "Greyhound MC-12 'Americruiser'",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 282,
+            "speed": 70,
+            "operatingCostMultiplier": 1.1,
+            "purchasePriceM": 7.2,
+            "pricePenalty": 7.2,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 270,
+            "duplicateCount": 2,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-toyota-sienna",
+            "quantity": 6
+          },
+          "score": 535.5377925230769,
+          "label": "Buy 6× #1 Toyota Sienna (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 1,
+            "cardName": "Toyota Sienna",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 48,
+            "speed": 65,
+            "operatingCostMultiplier": 1.1,
+            "purchasePriceM": 0.21,
+            "pricePenalty": 0.21,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 270,
+            "duplicateCount": 2,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-twin-coach-gwft",
+            "quantity": 6
+          },
+          "score": 414.09000000000003,
+          "label": "Buy 6× #2 Twin Coach GWFT (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 2,
+            "cardName": "Twin Coach GWFT",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 246,
+            "speed": 38,
+            "operatingCostMultiplier": 1.08,
+            "purchasePriceM": 3,
+            "pricePenalty": 3,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 270,
+            "duplicateCount": 2,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-gillig-low-floor",
+            "quantity": 6
+          },
+          "score": 413.70000000000005,
+          "label": "Buy 6× #3 Gillig Low Floor (29-foot) (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 3,
+            "cardName": "Gillig Low Floor (29-foot)",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 120,
+            "speed": 45,
+            "operatingCostMultiplier": 1,
+            "purchasePriceM": 3.6,
+            "pricePenalty": 3.6,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 270,
+            "duplicateCount": 2,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "train-siemens-viaggio-comfort",
+            "quantity": 1
+          },
+          "score": 105.76405875,
+          "label": "Buy 1× #2 Siemens Viaggio Comfort (train)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 2,
+            "cardName": "Siemens Viaggio Comfort",
+            "vehicleType": "train",
+            "typePriority": 58,
+            "totalPassengerCapacity": 500,
+            "speed": 80,
+            "operatingCostMultiplier": 1,
+            "purchasePriceM": 12,
+            "pricePenalty": 12,
+            "cityBonus": 6,
+            "cityBonusReason": "fallback: existing rail network/service pod can use another train",
+            "duplicatePenalty": 20,
+            "duplicateCount": 2,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "exchange-vehicle",
+            "newCardId": "bus-twin-coach-gwft",
+            "oldCardId": "bus-toyota-sienna"
+          },
+          "score": 1.604649376923076,
+          "label": "Other: Replace #1 Toyota Sienna with #2 Twin Coach GWFT",
+          "breakdown": null
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 5,
+      "rating": "good",
+      "preferredIndex": null,
+      "reviewEdits": [
+        "Other: Replace #1 Toyota Sienna with #2 Twin Coach GWFT"
+      ]
+    },
+    {
+      "id": "decision-1782702353172-8cfb8t",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T03:05:53.172Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "cities",
+      "week": 7,
+      "phase": "purchase-equipment",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "South"
+          },
+          "score": 114,
+          "label": "Draw city cards from South deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "South",
+            "deckSize": 9,
+            "deckSizeScore": 18,
+            "ownedInRegion": 12,
+            "ownedInRegionScore": 96,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Southeast"
+          },
+          "score": 84,
+          "label": "Draw city cards from Southeast deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Southeast",
+            "deckSize": 10,
+            "deckSizeScore": 20,
+            "ownedInRegion": 8,
+            "ownedInRegionScore": 64,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Pacific"
+          },
+          "score": 22,
+          "label": "Draw city cards from Pacific deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Pacific",
+            "deckSize": 11,
+            "deckSizeScore": 22,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Mountain"
+          },
+          "score": 22,
+          "label": "Draw city cards from Mountain deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Mountain",
+            "deckSize": 11,
+            "deckSizeScore": 22,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Midwest"
+          },
+          "score": -20.17386666666667,
+          "label": "Draw city cards from Midwest deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Midwest",
+            "deckSize": 6,
+            "deckSizeScore": 12,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 12,
+            "opponentPenalty": 36,
+            "bigCityScarcitySignal": 0.7652266666666666,
+            "bigCityScarcityScore": 3.826133333333333
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Northeast"
+          },
+          "score": -26.90324,
+          "label": "Draw city cards from Northeast deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Northeast",
+            "deckSize": 4,
+            "deckSizeScore": 8,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 12,
+            "opponentPenalty": 36,
+            "bigCityScarcitySignal": 0.219352,
+            "bigCityScarcityScore": 1.09676
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "great",
+      "preferredIndex": null
+    },
+    {
+      "id": "decision-1782702358005-tk7fu5",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T03:05:58.005Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "cities",
+      "week": 7,
+      "phase": "purchase-equipment",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "houston",
+              "corpus_christi"
+            ]
+          },
+          "score": 202.02617648864052,
+          "label": "Keep cities: Houston + Corpus Christi",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 8355818,
+            "populationScore": 83.55818,
+            "populationWeight": 10,
+            "avgDistanceMiles": 159,
+            "networkProximityScore": 110.46799648864052,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "houston",
+              "shreveport"
+            ]
+          },
+          "score": 201.24892305266715,
+          "label": "Keep cities: Houston + Shreveport",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 8288101,
+            "populationScore": 82.88100999999999,
+            "populationWeight": 10,
+            "avgDistanceMiles": 161,
+            "networkProximityScore": 110.36791305266716,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "houston",
+              "amarillo"
+            ]
+          },
+          "score": 195.37444680951103,
+          "label": "Keep cities: Houston + Amarillo",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 8180862,
+            "populationScore": 81.80861999999999,
+            "populationWeight": 10,
+            "avgDistanceMiles": 241,
+            "networkProximityScore": 105.56582680951104,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "shreveport",
+              "corpus_christi"
+            ]
+          },
+          "score": 125.97410179367866,
+          "label": "Keep cities: Shreveport + Corpus Christi",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 834665,
+            "populationScore": 8.34665,
+            "populationWeight": 10,
+            "avgDistanceMiles": 173,
+            "networkProximityScore": 109.62745179367866,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "amarillo",
+              "corpus_christi"
+            ]
+          },
+          "score": 120.09962555052253,
+          "label": "Keep cities: Amarillo + Corpus Christi",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 727426,
+            "populationScore": 7.27426,
+            "populationWeight": 10,
+            "avgDistanceMiles": 253,
+            "networkProximityScore": 104.82536555052253,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "amarillo",
+              "shreveport"
+            ]
+          },
+          "score": 119.32237211454917,
+          "label": "Keep cities: Amarillo + Shreveport",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 659709,
+            "populationScore": 6.59709,
+            "populationWeight": 10,
+            "avgDistanceMiles": 255,
+            "networkProximityScore": 104.72528211454917,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "great",
+      "preferredIndex": null
+    },
+    {
+      "id": "decision-1782702493954-bv7kii",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T03:08:13.954Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "operations-review",
+      "week": 7,
+      "phase": "purchase-equipment",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "ready-operations"
+          },
+          "score": 0,
+          "label": "Accept reviewed operations layout",
+          "breakdown": null
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "good",
+      "preferredIndex": null,
+      "reviewEdits": [
+        "set pod cities on corridor service:implicit-bus:austin:dallas_fort_worth|implicit-bus:austin:houston|implicit-bus:corpus_christi:houston|implicit-bus:dallas_fort_worth:houston|implicit-bus:dallas_fort_worth:little_rock|implicit-bus:houston:new_orleans to Austin, Dallas-Fort Worth, Houston",
+        "set pod cities on corridor service:implicit-bus:austin:dallas_fort_worth|implicit-bus:austin:houston|implicit-bus:corpus_christi:houston|implicit-bus:dallas_fort_worth:houston|implicit-bus:dallas_fort_worth:little_rock|implicit-bus:houston:new_orleans to Austin, Dallas-Fort Worth, Houston, Little Rock",
+        "assigned Toyota Sienna to Austin - Dallas-Fort Worth - Houston - New Orleans",
+        "assigned British Rail Class 43 (HST) to Charlotte - Hampton Roads - Raleigh-Durham - Richmond",
+        "assigned British Rail Class 43 (HST) to Jacksonville - Orlando - Tampa Bay",
+        "added split service on corridor service:implicit-bus:austin:dallas_fort_worth|implicit-bus:austin:houston|implicit-bus:corpus_christi:houston|implicit-bus:dallas_fort_worth:houston|implicit-bus:dallas_fort_worth:little_rock|implicit-bus:houston:new_orleans",
+        "deleted Austin - Dallas-Fort Worth - Houston - New Orleans",
+        "assigned Greyhound MC-12 'Americruiser' to Austin - Dallas-Fort Worth - Houston - New Orleans",
+        "assigned Greyhound MC-12 'Americruiser' to Charleston - Charlotte - Hampton Roads - Jacksonville - Raleigh-Durham - Richmond - Tampa Bay",
+        "assigned Twin Coach GWFT to Austin - Dallas-Fort Worth - Houston - New Orleans",
+        "assigned Toyota Sienna to Austin - Dallas-Fort Worth - Houston - New Orleans"
+      ],
+      "operationsReviewComparison": {
+        "botPlan": {
+          "totalPassengersServed": 185633,
+          "totalRevenue": 17032950,
+          "totalOperatingCost": 284963.7905921342,
+          "netRevenue": 16747986.209407866,
+          "stuckCubeCount": 277,
+          "podCount": 5
+        },
+        "reviewedPlan": {
+          "totalPassengersServed": 190170,
+          "totalRevenue": 17446905,
+          "totalOperatingCost": 289088.6608350492,
+          "netRevenue": 17157816.33916495,
+          "stuckCubeCount": 277,
+          "podCount": 5
+        },
+        "delta": {
+          "totalPassengersServed": 4537,
+          "totalRevenue": 413955,
+          "totalOperatingCost": 4124.870242915,
+          "netRevenue": 409830.12975708395,
+          "stuckCubeCount": 0,
+          "podCount": 0
+        }
+      }
+    },
+    {
+      "id": "decision-1782702506887-42b7w7",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T03:08:26.887Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "vehicles",
+      "week": 8,
+      "phase": "purchase-equipment",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-greyhound-americruiser",
+            "quantity": 6
+          },
+          "score": 2217.994956942857,
+          "label": "Buy 6× #5 Greyhound MC-12 'Americruiser' (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 5,
+            "cardName": "Greyhound MC-12 'Americruiser'",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 282,
+            "speed": 70,
+            "operatingCostMultiplier": 1.1,
+            "purchasePriceM": 7.2,
+            "pricePenalty": 7.2,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 330,
+            "duplicateCount": 3,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-twin-coach-gwft",
+            "quantity": 6
+          },
+          "score": 733.6586242105266,
+          "label": "Buy 6× #2 Twin Coach GWFT (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 2,
+            "cardName": "Twin Coach GWFT",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 246,
+            "speed": 38,
+            "operatingCostMultiplier": 1.08,
+            "purchasePriceM": 3,
+            "pricePenalty": 3,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 330,
+            "duplicateCount": 3,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-toyota-sienna",
+            "quantity": 6
+          },
+          "score": 495.66781629230775,
+          "label": "Buy 6× #1 Toyota Sienna (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 1,
+            "cardName": "Toyota Sienna",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 48,
+            "speed": 65,
+            "operatingCostMultiplier": 1.1,
+            "purchasePriceM": 0.21,
+            "pricePenalty": 0.21,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 330,
+            "duplicateCount": 3,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-gm-new-look-fishbowl",
+            "quantity": 6
+          },
+          "score": 355.47,
+          "label": "Buy 6× #4 GM New Look 'Fishbowl' (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 4,
+            "cardName": "GM New Look 'Fishbowl'",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 318,
+            "speed": 46,
+            "operatingCostMultiplier": 1.05,
+            "purchasePriceM": 5.1,
+            "pricePenalty": 5.1,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 330,
+            "duplicateCount": 3,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-gillig-low-floor",
+            "quantity": 6
+          },
+          "score": 353.70000000000005,
+          "label": "Buy 6× #3 Gillig Low Floor (29-foot) (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 3,
+            "cardName": "Gillig Low Floor (29-foot)",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 120,
+            "speed": 45,
+            "operatingCostMultiplier": 1,
+            "purchasePriceM": 3.6,
+            "pricePenalty": 3.6,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 330,
+            "duplicateCount": 3,
+            "firstOfTypeBonus": 0
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "fine",
+      "preferredIndex": null
+    },
+    {
+      "id": "decision-1782702510739-nkzjrh",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T03:08:30.739Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "cities",
+      "week": 8,
+      "phase": "add-city",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "South"
+          },
+          "score": 120,
+          "label": "Draw city cards from South deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "South",
+            "deckSize": 7,
+            "deckSizeScore": 14,
+            "ownedInRegion": 14,
+            "ownedInRegionScore": 112,
+            "opponentCitiesInRegion": 2,
+            "opponentPenalty": 6,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Southeast"
+          },
+          "score": 74,
+          "label": "Draw city cards from Southeast deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Southeast",
+            "deckSize": 8,
+            "deckSizeScore": 16,
+            "ownedInRegion": 8,
+            "ownedInRegionScore": 64,
+            "opponentCitiesInRegion": 2,
+            "opponentPenalty": 6,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Pacific"
+          },
+          "score": 22,
+          "label": "Draw city cards from Pacific deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Pacific",
+            "deckSize": 11,
+            "deckSizeScore": 22,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Mountain"
+          },
+          "score": 22,
+          "label": "Draw city cards from Mountain deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Mountain",
+            "deckSize": 11,
+            "deckSizeScore": 22,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Northeast"
+          },
+          "score": -36.8509875,
+          "label": "Draw city cards from Northeast deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Northeast",
+            "deckSize": 2,
+            "deckSizeScore": 4,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 14,
+            "opponentPenalty": 42,
+            "bigCityScarcitySignal": 0.2298025,
+            "bigCityScarcityScore": 1.1490125
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Midwest"
+          },
+          "score": -42.539585,
+          "label": "Draw city cards from Midwest deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Midwest",
+            "deckSize": 2,
+            "deckSizeScore": 4,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 16,
+            "opponentPenalty": 48,
+            "bigCityScarcitySignal": 0.292083,
+            "bigCityScarcityScore": 1.4604149999999998
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "great",
+      "preferredIndex": null
+    },
+    {
+      "id": "decision-1782702513655-ww03d4",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T03:08:33.655Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "cities",
+      "week": 8,
+      "phase": "add-city",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "san_antonio",
+              "fayetteville_ar"
+            ]
+          },
+          "score": 155.9586323692127,
+          "label": "Keep cities: San Antonio + Fayetteville",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 3435317,
+            "populationScore": 34.35317,
+            "populationWeight": 10,
+            "avgDistanceMiles": 107,
+            "networkProximityScore": 113.60546236921269,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "san_antonio",
+              "el_paso"
+            ]
+          },
+          "score": 146.89398704859082,
+          "label": "Keep cities: San Antonio + El Paso",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 3694431,
+            "populationScore": 36.94431,
+            "populationWeight": 10,
+            "avgDistanceMiles": 301,
+            "networkProximityScore": 101.94967704859081,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "san_antonio",
+              "odessa"
+            ]
+          },
+          "score": 146.81056670366274,
+          "label": "Keep cities: San Antonio + Odessa",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 2986941,
+            "populationScore": 29.86941,
+            "populationWeight": 10,
+            "avgDistanceMiles": 184,
+            "networkProximityScore": 108.94115670366276,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "fayetteville_ar",
+              "el_paso"
+            ]
+          },
+          "score": 122.9943930143423,
+          "label": "Keep cities: Fayetteville + El Paso",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 1503468,
+            "populationScore": 15.03468,
+            "populationWeight": 10,
+            "avgDistanceMiles": 334,
+            "networkProximityScore": 99.9597130143423,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "fayetteville_ar",
+              "odessa"
+            ]
+          },
+          "score": 122.91097266941425,
+          "label": "Keep cities: Fayetteville + Odessa",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 795978,
+            "populationScore": 7.959779999999999,
+            "populationWeight": 10,
+            "avgDistanceMiles": 217,
+            "networkProximityScore": 106.95119266941425,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "el_paso",
+              "odessa"
+            ]
+          },
+          "score": 113.84632734879237,
+          "label": "Keep cities: El Paso + Odessa",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 1055092,
+            "populationScore": 10.55092,
+            "populationWeight": 10,
+            "avgDistanceMiles": 412,
+            "networkProximityScore": 95.29540734879237,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 2,
+            "regionMatchScore": 8,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "great",
+      "preferredIndex": null
+    },
+    {
+      "id": "decision-1782702806137-pzder4",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T03:13:26.137Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "operations-review",
+      "week": 8,
+      "phase": "operations",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "ready-operations"
+          },
+          "score": 0,
+          "label": "Accept reviewed operations layout",
+          "breakdown": null
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "good",
+      "preferredIndex": null,
+      "reviewEdits": [
+        "assigned Siemens Viaggio Comfort to Dallas-Fort Worth - Houston",
+        "set pod cities on corridor service:implicit-bus:charleston_sc:charlotte|implicit-bus:charleston_sc:jacksonville|implicit-bus:charleston_sc:raleigh_durham|implicit-bus:charlotte:raleigh_durham|implicit-bus:hampton_roads:raleigh_durham|implicit-bus:hampton_roads:richmond_va|implicit-bus:jacksonville:orlando|implicit-bus:jacksonville:tampa_bay|implicit-bus:orlando:tampa_bay|implicit-bus:raleigh_durham:richmond_va to Charleston, Charlotte, Hampton Roads, Jacksonville, Raleigh-Durham, Richmond, Tampa Bay, Orlando",
+        "set pod cities on corridor service:implicit-bus:austin:dallas_fort_worth|implicit-bus:austin:houston|implicit-bus:austin:san_antonio|implicit-bus:corpus_christi:houston|implicit-bus:corpus_christi:san_antonio|implicit-bus:dallas_fort_worth:houston|implicit-bus:dallas_fort_worth:little_rock|implicit-bus:fayetteville_ar:little_rock|implicit-bus:houston:new_orleans|implicit-bus:houston:san_antonio to Austin, Dallas-Fort Worth, Houston",
+        "set pod cities on corridor service:implicit-bus:austin:dallas_fort_worth|implicit-bus:austin:houston|implicit-bus:austin:san_antonio|implicit-bus:corpus_christi:houston|implicit-bus:corpus_christi:san_antonio|implicit-bus:dallas_fort_worth:houston|implicit-bus:dallas_fort_worth:little_rock|implicit-bus:fayetteville_ar:little_rock|implicit-bus:houston:new_orleans|implicit-bus:houston:san_antonio to Austin, Dallas-Fort Worth, Houston, San Antonio",
+        "set pod cities on corridor service:implicit-bus:austin:dallas_fort_worth|implicit-bus:austin:houston|implicit-bus:austin:san_antonio|implicit-bus:corpus_christi:houston|implicit-bus:corpus_christi:san_antonio|implicit-bus:dallas_fort_worth:houston|implicit-bus:dallas_fort_worth:little_rock|implicit-bus:fayetteville_ar:little_rock|implicit-bus:houston:new_orleans|implicit-bus:houston:san_antonio to Austin, Dallas-Fort Worth, Houston, San Antonio, New Orleans",
+        "set pod cities on corridor service:implicit-bus:austin:dallas_fort_worth|implicit-bus:austin:houston|implicit-bus:austin:san_antonio|implicit-bus:corpus_christi:houston|implicit-bus:corpus_christi:san_antonio|implicit-bus:dallas_fort_worth:houston|implicit-bus:dallas_fort_worth:little_rock|implicit-bus:fayetteville_ar:little_rock|implicit-bus:houston:new_orleans|implicit-bus:houston:san_antonio to Austin, Houston, New Orleans, San Antonio",
+        "set pod cities on corridor service:implicit-bus:austin:dallas_fort_worth|implicit-bus:austin:houston|implicit-bus:austin:san_antonio|implicit-bus:corpus_christi:houston|implicit-bus:corpus_christi:san_antonio|implicit-bus:dallas_fort_worth:houston|implicit-bus:dallas_fort_worth:little_rock|implicit-bus:fayetteville_ar:little_rock|implicit-bus:houston:new_orleans|implicit-bus:houston:san_antonio to Austin, Houston, New Orleans, San Antonio, Corpus Christi",
+        "set pod cities on corridor service:implicit-bus:austin:dallas_fort_worth|implicit-bus:austin:houston|implicit-bus:austin:san_antonio|implicit-bus:corpus_christi:houston|implicit-bus:corpus_christi:san_antonio|implicit-bus:dallas_fort_worth:houston|implicit-bus:dallas_fort_worth:little_rock|implicit-bus:fayetteville_ar:little_rock|implicit-bus:houston:new_orleans|implicit-bus:houston:san_antonio to Austin, Dallas-Fort Worth, Little Rock"
+      ],
+      "operationsReviewComparison": {
+        "botPlan": {
+          "totalPassengersServed": 192349,
+          "totalRevenue": 17639685,
+          "totalOperatingCost": 327483.7927320995,
+          "netRevenue": 17312201.207267903,
+          "stuckCubeCount": 841,
+          "podCount": 5
+        },
+        "reviewedPlan": {
+          "totalPassengersServed": 218037,
+          "totalRevenue": 19940130,
+          "totalOperatingCost": 334419.3553707345,
+          "netRevenue": 19605710.644629266,
+          "stuckCubeCount": 336,
+          "podCount": 5
+        },
+        "delta": {
+          "totalPassengersServed": 25688,
+          "totalRevenue": 2300445,
+          "totalOperatingCost": 6935.562638635049,
+          "netRevenue": 2293509.4373613633,
+          "stuckCubeCount": -505,
+          "podCount": 0
+        }
+      }
+    },
+    {
+      "id": "decision-1782702826103-mu7ldu",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T03:13:46.103Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "vehicles",
+      "week": 9,
+      "phase": "purchase-equipment",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-greyhound-americruiser",
+            "quantity": 6
+          },
+          "score": 2621.4697552285716,
+          "label": "Buy 6× #5 Greyhound MC-12 'Americruiser' (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 5,
+            "cardName": "Greyhound MC-12 'Americruiser'",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 282,
+            "speed": 70,
+            "operatingCostMultiplier": 1.1,
+            "purchasePriceM": 7.2,
+            "pricePenalty": 7.2,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 330,
+            "duplicateCount": 3,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-twin-coach-gwft",
+            "quantity": 6
+          },
+          "score": 757.1873052631579,
+          "label": "Buy 6× #2 Twin Coach GWFT (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 2,
+            "cardName": "Twin Coach GWFT",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 246,
+            "speed": 38,
+            "operatingCostMultiplier": 1.08,
+            "purchasePriceM": 3,
+            "pricePenalty": 3,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 330,
+            "duplicateCount": 3,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-toyota-sienna",
+            "quantity": 6
+          },
+          "score": 499.59677266153835,
+          "label": "Buy 6× #1 Toyota Sienna (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 1,
+            "cardName": "Toyota Sienna",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 48,
+            "speed": 65,
+            "operatingCostMultiplier": 1.1,
+            "purchasePriceM": 0.21,
+            "pricePenalty": 0.21,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 330,
+            "duplicateCount": 3,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-gm-new-look-fishbowl",
+            "quantity": 6
+          },
+          "score": 355.47,
+          "label": "Buy 6× #4 GM New Look 'Fishbowl' (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 4,
+            "cardName": "GM New Look 'Fishbowl'",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 318,
+            "speed": 46,
+            "operatingCostMultiplier": 1.05,
+            "purchasePriceM": 5.1,
+            "pricePenalty": 5.1,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 330,
+            "duplicateCount": 3,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-gillig-low-floor",
+            "quantity": 6
+          },
+          "score": 353.70000000000005,
+          "label": "Buy 6× #3 Gillig Low Floor (29-foot) (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 3,
+            "cardName": "Gillig Low Floor (29-foot)",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 120,
+            "speed": 45,
+            "operatingCostMultiplier": 1,
+            "purchasePriceM": 3.6,
+            "pricePenalty": 3.6,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 330,
+            "duplicateCount": 3,
+            "firstOfTypeBonus": 0
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 1,
+      "rating": "better",
+      "preferredIndex": 1
+    },
+    {
+      "id": "decision-1782702843079-otaksm",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T03:14:03.079Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "cities",
+      "week": 9,
+      "phase": "add-city",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "South"
+          },
+          "score": 132.227614,
+          "label": "Draw city cards from South deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "South",
+            "deckSize": 5,
+            "deckSizeScore": 10,
+            "ownedInRegion": 16,
+            "ownedInRegionScore": 128,
+            "opponentCitiesInRegion": 3,
+            "opponentPenalty": 9,
+            "bigCityScarcitySignal": 0.6455228000000001,
+            "bigCityScarcityScore": 3.2276140000000004
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Southeast"
+          },
+          "score": 69,
+          "label": "Draw city cards from Southeast deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Southeast",
+            "deckSize": 7,
+            "deckSizeScore": 14,
+            "ownedInRegion": 8,
+            "ownedInRegionScore": 64,
+            "opponentCitiesInRegion": 3,
+            "opponentPenalty": 9,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Pacific"
+          },
+          "score": 22,
+          "label": "Draw city cards from Pacific deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Pacific",
+            "deckSize": 11,
+            "deckSizeScore": 22,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Mountain"
+          },
+          "score": 22,
+          "label": "Draw city cards from Mountain deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Mountain",
+            "deckSize": 11,
+            "deckSizeScore": 22,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Northeast"
+          },
+          "score": -41.170175,
+          "label": "Draw city cards from Northeast deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Northeast",
+            "deckSize": 1,
+            "deckSizeScore": 2,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 15,
+            "opponentPenalty": 45,
+            "bigCityScarcitySignal": 0.365965,
+            "bigCityScarcityScore": 1.829825
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Midwest"
+          },
+          "score": -42.539585,
+          "label": "Draw city cards from Midwest deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Midwest",
+            "deckSize": 2,
+            "deckSizeScore": 4,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 16,
+            "opponentPenalty": 48,
+            "bigCityScarcitySignal": 0.292083,
+            "bigCityScarcityScore": 1.4604149999999998
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 2,
+      "rating": "better",
+      "preferredIndex": 2
+    },
+    {
+      "id": "decision-1782702847554-wex57a",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T03:14:07.554Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "cities",
+      "week": 9,
+      "phase": "add-city",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "los_angeles",
+              "sf_bay_area"
+            ]
+          },
+          "score": 214.16909355728066,
+          "label": "Keep cities: Los Angeles + San Francisco",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 17474482,
+            "populationScore": 174.74481999999998,
+            "populationWeight": 10,
+            "avgDistanceMiles": 1343,
+            "networkProximityScore": 39.424273557280685,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 0,
+            "regionMatchScore": 0,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "los_angeles",
+              "san_diego"
+            ]
+          },
+          "score": 211.42115494866937,
+          "label": "Keep cities: Los Angeles + San Diego",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 16126689,
+            "populationScore": 161.26689,
+            "populationWeight": 10,
+            "avgDistanceMiles": 1164,
+            "networkProximityScore": 50.15426494866937,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 0,
+            "regionMatchScore": 0,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "spokane",
+              "los_angeles"
+            ]
+          },
+          "score": 175.53471964236445,
+          "label": "Keep cities: Spokane + Los Angeles",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 13452453,
+            "populationScore": 134.52453,
+            "populationWeight": 10,
+            "avgDistanceMiles": 1316,
+            "networkProximityScore": 41.01018964236444,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 0,
+            "regionMatchScore": 0,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "san_diego",
+              "sf_bay_area"
+            ]
+          },
+          "score": 120.8014521857816,
+          "label": "Keep cities: San Diego + San Francisco",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 7912289,
+            "populationScore": 79.12289,
+            "populationWeight": 10,
+            "avgDistanceMiles": 1305,
+            "networkProximityScore": 41.6785621857816,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 0,
+            "regionMatchScore": 0,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "spokane",
+              "sf_bay_area"
+            ]
+          },
+          "score": 84.91501687947667,
+          "label": "Keep cities: Spokane + San Francisco",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 5238053,
+            "populationScore": 52.38053,
+            "populationWeight": 10,
+            "avgDistanceMiles": 1458,
+            "networkProximityScore": 32.53448687947666,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 0,
+            "regionMatchScore": 0,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "spokane",
+              "san_diego"
+            ]
+          },
+          "score": 82.16707827086535,
+          "label": "Keep cities: Spokane + San Diego",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 3890260,
+            "populationScore": 38.9026,
+            "populationWeight": 10,
+            "avgDistanceMiles": 1279,
+            "networkProximityScore": 43.26447827086534,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 0,
+            "regionMatchScore": 0,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "great",
+      "preferredIndex": null
+    },
+    {
+      "id": "decision-1782702947010-sl2xr8",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T03:15:47.010Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "operations-review",
+      "week": 9,
+      "phase": "add-city",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "ready-operations"
+          },
+          "score": 0,
+          "label": "Accept reviewed operations layout",
+          "breakdown": null
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "good",
+      "preferredIndex": null,
+      "reviewEdits": [
+        "deleted Charlotte - Hampton Roads - Raleigh-Durham - Richmond and moved 4 cities to disconnected",
+        "assigned British Rail Class 43 (HST) to Dallas-Fort Worth - Houston",
+        "assigned British Rail Class 43 (HST) to Jacksonville - Orlando - Tampa Bay",
+        "assigned Siemens Viaggio Comfort to Dallas-Fort Worth - Houston",
+        "set pod cities on corridor service:implicit-bus:austin:dallas_fort_worth|implicit-bus:austin:houston|implicit-bus:austin:san_antonio|implicit-bus:corpus_christi:houston|implicit-bus:corpus_christi:san_antonio|implicit-bus:dallas_fort_worth:houston|implicit-bus:dallas_fort_worth:little_rock|implicit-bus:fayetteville_ar:little_rock|implicit-bus:houston:new_orleans|implicit-bus:houston:san_antonio to Austin, Dallas-Fort Worth, Houston, Little Rock, New Orleans"
+      ],
+      "operationsReviewComparison": {
+        "botPlan": {
+          "totalPassengersServed": 230975,
+          "totalRevenue": 21298230,
+          "totalOperatingCost": 361446.8044395605,
+          "netRevenue": 20936783.19556044,
+          "stuckCubeCount": 263,
+          "podCount": 5
+        },
+        "reviewedPlan": {
+          "totalPassengersServed": 239267,
+          "totalRevenue": 22450995,
+          "totalOperatingCost": 360078.8937917872,
+          "netRevenue": 22090916.106208216,
+          "stuckCubeCount": 263,
+          "podCount": 5
+        },
+        "delta": {
+          "totalPassengersServed": 8292,
+          "totalRevenue": 1152765,
+          "totalOperatingCost": -1367.9106477733003,
+          "netRevenue": 1154132.910647776,
+          "stuckCubeCount": 0,
+          "podCount": 0
+        }
+      }
+    },
+    {
+      "id": "decision-1782702981057-mncguk",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T03:16:21.057Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "vehicles",
+      "week": 10,
+      "phase": "purchase-equipment",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-greyhound-americruiser",
+            "quantity": 6
+          },
+          "score": 2621.4697552285716,
+          "label": "Buy 6× #5 Greyhound MC-12 'Americruiser' (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 5,
+            "cardName": "Greyhound MC-12 'Americruiser'",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 282,
+            "speed": 70,
+            "operatingCostMultiplier": 1.1,
+            "purchasePriceM": 7.2,
+            "pricePenalty": 7.2,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 330,
+            "duplicateCount": 3,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-twin-coach-gwft",
+            "quantity": 6
+          },
+          "score": 1228.5427989473683,
+          "label": "Buy 6× #2 Twin Coach GWFT (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 2,
+            "cardName": "Twin Coach GWFT",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 246,
+            "speed": 38,
+            "operatingCostMultiplier": 1.08,
+            "purchasePriceM": 3,
+            "pricePenalty": 3,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 330,
+            "duplicateCount": 3,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-toyota-sienna",
+            "quantity": 6
+          },
+          "score": 435.3099220615385,
+          "label": "Buy 6× #1 Toyota Sienna (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 1,
+            "cardName": "Toyota Sienna",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 48,
+            "speed": 65,
+            "operatingCostMultiplier": 1.1,
+            "purchasePriceM": 0.21,
+            "pricePenalty": 0.21,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 330,
+            "duplicateCount": 3,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "train-siemens-viaggio-comfort",
+            "quantity": 3
+          },
+          "score": 419.194704,
+          "label": "Buy 3× #2 Siemens Viaggio Comfort (train)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 2,
+            "cardName": "Siemens Viaggio Comfort",
+            "vehicleType": "train",
+            "typePriority": 58,
+            "totalPassengerCapacity": 1500,
+            "speed": 80,
+            "operatingCostMultiplier": 1,
+            "purchasePriceM": 36,
+            "pricePenalty": 36,
+            "cityBonus": 114,
+            "cityBonusReason": "1 rail claim opportunities",
+            "duplicatePenalty": 90,
+            "duplicateCount": 2,
+            "firstOfTypeBonus": 0
+          }
+        },
+        {
+          "action": {
+            "type": "buy-vehicle",
+            "cardId": "bus-gm-new-look-fishbowl",
+            "quantity": 6
+          },
+          "score": 355.47,
+          "label": "Buy 6× #4 GM New Look 'Fishbowl' (bus)",
+          "breakdown": {
+            "kind": "buy-vehicle",
+            "cardNumber": 4,
+            "cardName": "GM New Look 'Fishbowl'",
+            "vehicleType": "bus",
+            "typePriority": 88,
+            "totalPassengerCapacity": 318,
+            "speed": 46,
+            "operatingCostMultiplier": 1.05,
+            "purchasePriceM": 5.1,
+            "pricePenalty": 5.1,
+            "cityBonus": 144,
+            "cityBonusReason": "6 owned cities × 4",
+            "duplicatePenalty": 330,
+            "duplicateCount": 3,
+            "firstOfTypeBonus": 0
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 1,
+      "rating": "way-better",
+      "preferredIndex": 1
+    },
+    {
+      "id": "decision-1782702990009-reuppk",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T03:16:30.009Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "cities",
+      "week": 10,
+      "phase": "purchase-equipment",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "South"
+          },
+          "score": 129.227614,
+          "label": "Draw city cards from South deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "South",
+            "deckSize": 5,
+            "deckSizeScore": 10,
+            "ownedInRegion": 16,
+            "ownedInRegionScore": 128,
+            "opponentCitiesInRegion": 4,
+            "opponentPenalty": 12,
+            "bigCityScarcitySignal": 0.6455228000000001,
+            "bigCityScarcityScore": 3.2276140000000004
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Southeast"
+          },
+          "score": 68.455435,
+          "label": "Draw city cards from Southeast deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Southeast",
+            "deckSize": 6,
+            "deckSizeScore": 12,
+            "ownedInRegion": 8,
+            "ownedInRegionScore": 64,
+            "opponentCitiesInRegion": 4,
+            "opponentPenalty": 12,
+            "bigCityScarcitySignal": 0.891087,
+            "bigCityScarcityScore": 4.455435
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Pacific"
+          },
+          "score": 34,
+          "label": "Draw city cards from Pacific deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Pacific",
+            "deckSize": 9,
+            "deckSizeScore": 18,
+            "ownedInRegion": 2,
+            "ownedInRegionScore": 16,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Mountain"
+          },
+          "score": 22,
+          "label": "Draw city cards from Mountain deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Mountain",
+            "deckSize": 11,
+            "deckSizeScore": 22,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 0,
+            "opponentPenalty": 0,
+            "bigCityScarcitySignal": 0,
+            "bigCityScarcityScore": 0
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Northeast"
+          },
+          "score": -41.170175,
+          "label": "Draw city cards from Northeast deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Northeast",
+            "deckSize": 1,
+            "deckSizeScore": 2,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 15,
+            "opponentPenalty": 45,
+            "bigCityScarcitySignal": 0.365965,
+            "bigCityScarcityScore": 1.829825
+          }
+        },
+        {
+          "action": {
+            "type": "draw-city-offer",
+            "region": "Midwest"
+          },
+          "score": -47.65236,
+          "label": "Draw city cards from Midwest deck",
+          "breakdown": {
+            "kind": "draw-city",
+            "region": "Midwest",
+            "deckSize": 1,
+            "deckSizeScore": 2,
+            "ownedInRegion": 0,
+            "ownedInRegionScore": 0,
+            "opponentCitiesInRegion": 17,
+            "opponentPenalty": 51,
+            "bigCityScarcitySignal": 0.269528,
+            "bigCityScarcityScore": 1.34764
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 2,
+      "rating": "way-better",
+      "preferredIndex": 2
+    },
+    {
+      "id": "decision-1782702992342-71pjfw",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T03:16:32.342Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "cities",
+      "week": 10,
+      "phase": "purchase-equipment",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "sacramento",
+              "portland"
+            ]
+          },
+          "score": 150.7508889704202,
+          "label": "Keep cities: Sacramento + Portland",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 5019556,
+            "populationScore": 50.19556,
+            "populationWeight": 10,
+            "avgDistanceMiles": 324,
+            "networkProximityScore": 100.55532897042019,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 0,
+            "regionMatchScore": 0,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "sacramento",
+              "fresno"
+            ]
+          },
+          "score": 148.92962535976338,
+          "label": "Keep cities: Sacramento + Fresno",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 3680657,
+            "populationScore": 36.80657,
+            "populationWeight": 10,
+            "avgDistanceMiles": 131,
+            "networkProximityScore": 112.12305535976338,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 0,
+            "regionMatchScore": 0,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "fresno",
+              "portland"
+            ]
+          },
+          "score": 136.26904154873318,
+          "label": "Keep cities: Fresno + Portland",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 3745665,
+            "populationScore": 37.456649999999996,
+            "populationWeight": 10,
+            "avgDistanceMiles": 353,
+            "networkProximityScore": 98.81239154873319,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 0,
+            "regionMatchScore": 0,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "sacramento",
+              "medford"
+            ]
+          },
+          "score": 134.12040077457166,
+          "label": "Keep cities: Sacramento + Medford",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 2699069,
+            "populationScore": 26.99069,
+            "populationWeight": 10,
+            "avgDistanceMiles": 215,
+            "networkProximityScore": 107.12971077457166,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 0,
+            "regionMatchScore": 0,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "medford",
+              "portland"
+            ]
+          },
+          "score": 121.45981696354148,
+          "label": "Keep cities: Medford + Portland",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 2764077,
+            "populationScore": 27.64077,
+            "populationWeight": 10,
+            "avgDistanceMiles": 436,
+            "networkProximityScore": 93.81904696354148,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 0,
+            "regionMatchScore": 0,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        },
+        {
+          "action": {
+            "type": "keep-city-offer",
+            "cityIds": [
+              "fresno",
+              "medford"
+            ]
+          },
+          "score": 119.63855335288466,
+          "label": "Keep cities: Fresno + Medford",
+          "breakdown": {
+            "kind": "keep-city",
+            "totalPopulation": 1425178,
+            "populationScore": 14.25178,
+            "populationWeight": 10,
+            "avgDistanceMiles": 244,
+            "networkProximityScore": 105.38677335288466,
+            "networkProximityWeight": 6,
+            "regionMatchCount": 0,
+            "regionMatchScore": 0,
+            "regionMatchWeight": 4,
+            "topRegion": "South",
+            "adjacencyPotential": 0,
+            "adjacencyPotentialScore": 0,
+            "adjacencyPotentialWeight": 5
+          }
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "great",
+      "preferredIndex": null
+    },
+    {
+      "id": "decision-1782703090241-cexa7r",
+      "sessionId": "session-1782701703718-iul8jc",
+      "timestamp": "2026-06-29T03:18:10.241Z",
+      "botPlayerId": "p1",
+      "botPlayerName": "Stickbug 1",
+      "decisionType": "operations-review",
+      "week": 10,
+      "phase": "purchase-equipment",
+      "weightsSnapshot": {},
+      "candidates": [
+        {
+          "action": {
+            "type": "ready-operations"
+          },
+          "score": 0,
+          "label": "Accept reviewed operations layout",
+          "breakdown": null
+        }
+      ],
+      "botChoiceIndex": 0,
+      "chosenIndex": 0,
+      "rating": "good",
+      "preferredIndex": null,
+      "reviewEdits": [
+        "claimed a rail route across Austin - Houston, Austin - San Antonio",
+        "set pod cities on corridor service:rail:austin:houston|rail:austin:san_antonio|rail:dallas_fort_worth:houston to Dallas-Fort Worth, Houston, Austin",
+        "set pod cities on corridor service:rail:austin:houston|rail:austin:san_antonio|rail:dallas_fort_worth:houston to Austin, Dallas-Fort Worth, Houston, San Antonio",
+        "assigned British Rail Class 43 (HST) to Austin - Dallas-Fort Worth - Houston - San Antonio",
+        "assigned Siemens Viaggio Comfort to Austin - Dallas-Fort Worth - Houston - San Antonio",
+        "assigned Siemens Viaggio Comfort to Jacksonville - Orlando - Tampa Bay",
+        "set pod cities on corridor service:implicit-bus:austin:dallas_fort_worth|implicit-bus:austin:houston|implicit-bus:austin:san_antonio|implicit-bus:corpus_christi:houston|implicit-bus:corpus_christi:san_antonio|implicit-bus:dallas_fort_worth:houston|implicit-bus:dallas_fort_worth:little_rock|implicit-bus:fayetteville_ar:little_rock|implicit-bus:houston:new_orleans|implicit-bus:houston:san_antonio to Austin, Dallas-Fort Worth, Houston, Little Rock, New Orleans, Corpus Christi",
+        "set pod cities on corridor service:implicit-bus:austin:dallas_fort_worth|implicit-bus:austin:houston|implicit-bus:austin:san_antonio|implicit-bus:corpus_christi:houston|implicit-bus:corpus_christi:san_antonio|implicit-bus:dallas_fort_worth:houston|implicit-bus:dallas_fort_worth:little_rock|implicit-bus:fayetteville_ar:little_rock|implicit-bus:houston:new_orleans|implicit-bus:houston:san_antonio to Austin, Corpus Christi, Dallas-Fort Worth, Houston, Little Rock, New Orleans, Fayetteville",
+        "assigned Greyhound MC-12 'Americruiser' to Austin - Corpus Christi - Dallas-Fort Worth - Fayetteville - Houston - Little Rock - New Orleans",
+        "assigned Greyhound MC-12 'Americruiser' to Charleston - Charlotte - Hampton Roads - Jacksonville - Orlando - Raleigh-Durham - Richmond - Tampa Bay"
+      ],
+      "operationsReviewComparison": {
+        "botPlan": {
+          "totalPassengersServed": 240620,
+          "totalRevenue": 22615110,
+          "totalOperatingCost": 403314.5780023135,
+          "netRevenue": 22211795.42199769,
+          "stuckCubeCount": 683,
+          "podCount": 5
+        },
+        "reviewedPlan": {
+          "totalPassengersServed": 276868,
+          "totalRevenue": 25823115,
+          "totalOperatingCost": 398222.8684792365,
+          "netRevenue": 25424892.131520763,
+          "stuckCubeCount": 420,
+          "podCount": 5
+        },
+        "delta": {
+          "totalPassengersServed": 36248,
+          "totalRevenue": 3208005,
+          "totalOperatingCost": -5091.709523077006,
+          "netRevenue": 3213096.7095230743,
+          "stuckCubeCount": -263,
+          "podCount": 0
+        }
+      }
+    }
+  ]
+}

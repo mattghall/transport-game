@@ -46,13 +46,27 @@ const INITIAL_OPERATING_CONFIG: OperatingConfig = {
   weeksPerPeriod: 52,
   totalWeeks: 10,
   simulationTicksPerPeriod: 12, // overridden to 4 for all-bot games
+  cityDrawCount: 4,
+  cityTargetKeepCount: 2,
+  cityMinimumKeepCount: 1,
   loadingHours: {
     air: 1,
     train: 0.5,
     bus: 0.25,
   },
-  demandPointsPerCitySize: 30,
+  demandPointsPerCitySize: 45,
   passengersPerDemandPoint: 50,
+  dynamicDemand: {
+    enabled: false,
+    lowServiceThreshold: 0.25,
+    lowServiceMultiplier: 0.95,
+    noServiceThreshold: 0,
+    noServiceMultiplier: 0.9,
+    highServiceThreshold: 0.75,
+    highServiceMultiplier: 1.1,
+    fullServiceThreshold: 1,
+    fullServiceMultiplier: 1.15,
+  },
   connectionBonusPerCitySize: 500_000,
   railConstructionCostPerMile: 120_000,
   railElectrificationCostPerMile: 8_000,
@@ -101,6 +115,7 @@ export type GameSetupPlayer = {
 
 export type CreateGameStateOptions = {
   players?: GameSetupPlayer[]
+  firstPlayerId?: string
   vehicleCards?: VehicleCard[]
   chanceCards?: ChanceCard[]
   chanceCardsEnabled?: boolean
@@ -226,6 +241,15 @@ function getSetupPlayers(players?: GameSetupPlayer[]) {
   throw new Error("createGameState requires at least one setup player.")
 }
 
+function getInitialLeadPlayerIndex(players: GameSetupPlayer[], firstPlayerId?: string) {
+  if (!firstPlayerId) {
+    return 0
+  }
+
+  const requestedIndex = players.findIndex(player => player.id === firstPlayerId)
+  return requestedIndex >= 0 ? requestedIndex : 0
+}
+
 function applyOpeningBusPurchases(
   players: PlayerState[],
   vehicleCards: VehicleCard[],
@@ -279,6 +303,7 @@ export function createGameState(
   const openingSetup = applyOpeningBusPurchases(initialPlayers, vehicleShuffle.cards)
   const players = openingSetup.players
   const cityDeckShuffle = shuffleCityDecks(map, chanceShuffle.randomState)
+  const leadPlayerIndex = getInitialLeadPlayerIndex(getSetupPlayers(options.players), options.firstPlayerId)
 
   const hasHumanPlayers = !options.players || options.players.some(p => !p.isBot)
   const simulationTicksPerPeriod = hasHumanPlayers ? 12 : 4
@@ -297,6 +322,7 @@ export function createGameState(
     activeChanceCardId: activeChanceCard?.id ?? null,
     chanceDeckCardIds: chanceDeck.map(card => card.id),
     chanceDiscardCardIds: [],
+    cityDemandMultipliersByCityId: Object.fromEntries(map.cities.map(city => [city.id, 1])),
     bureaucracyFuelUnitsByRouteId: {},
     bureaucracyVehicleCardIdsByRouteId: {},
     bureaucracyServiceCityIdsByRouteId: {},
@@ -323,8 +349,8 @@ export function createGameState(
     turnTimerExpiresAt: null,
     autoPlayUntilWeek: options.autoPlayUntilWeek ?? 0,
     players,
-    leadPlayerIndex: 0,
-    currentPlayerId: players[0]?.id ?? "p1",
+    leadPlayerIndex,
+    currentPlayerId: players[leadPlayerIndex]?.id ?? players[0]?.id ?? "p1",
     actionLog: [],
   }
 }

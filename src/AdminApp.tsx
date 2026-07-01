@@ -10,13 +10,22 @@ import {
   saveSavedGame,
 } from "./data/gameStorage"
 import {
+  applyAdminDemandSettings,
+  getDefaultBotPresetForSeat,
+  loadAdminDemandSettings,
+  pickAdminDemandSettings,
+  saveAdminDemandSettings,
+  type AdminDemandSettings,
+} from "./data/adminSettings"
+import { BOT_PRESETS, type BotPresetId } from "./bots/presets"
+import {
   createEmptyVehicleCard,
   createInitialUserDecks,
   loadUserDecks,
   normalizeVehicleCardsByPrice,
   saveUserDecks,
 } from "./data/deckData"
-import type { GameState, VehicleCard } from "./engine/types"
+import type { GameState, OperatingConfig, VehicleCard } from "./engine/types"
 import {
   buildLanSessionJoinUrl,
   deleteLanSession,
@@ -35,6 +44,7 @@ import {
   type LanSessionLobby,
   type SessionServerHealth,
 } from "./network/sessionSync"
+import { MAX_SETUP_PLAYERS } from "./gameSetup/defaultPlayers"
 
 const PAGE_STYLE = {
   minHeight: "100%",
@@ -75,6 +85,9 @@ export default function AdminApp() {
   const [game, setGame] = useState<GameState | null>(() => loadSavedGame())
   const [vehicleCards, setVehicleCards] = useState<VehicleCard[]>(() =>
     normalizeVehicleCardsByPrice(loadUserDecks().vehicleCards),
+  )
+  const [adminDemandSettings, setAdminDemandSettings] = useState<AdminDemandSettings>(() =>
+    loadAdminDemandSettings(),
   )
   const [lanLobby, setLanLobby] = useState<LanSessionLobby | null>(null)
   const [moneyAmount, setMoneyAmount] = useState(100000)
@@ -310,6 +323,25 @@ export default function AdminApp() {
     () => game?.players.find(player => player.id === game.currentPlayerId) ?? null,
     [game],
   )
+  const adjustedCityDemandEntries = useMemo(
+    () =>
+      game
+        ? game.cities
+            .map(city => ({
+              cityId: city.id,
+              cityName: city.name,
+              multiplier: game.cityDemandMultipliersByCityId[city.id] ?? 1,
+            }))
+            .filter(entry => Math.abs(entry.multiplier - 1) > 0.001)
+            .sort(
+              (entryA, entryB) =>
+                Math.abs(entryB.multiplier - 1) - Math.abs(entryA.multiplier - 1) ||
+                entryA.cityName.localeCompare(entryB.cityName),
+            )
+            .slice(0, 12)
+        : [],
+    [game],
+  )
   const joinUrl = useMemo(
     () => (
       lanSession
@@ -337,6 +369,9 @@ export default function AdminApp() {
     () => vehicleCards.reduce((highest, card) => Math.max(highest, card.number), 0) + 1,
     [vehicleCards],
   )
+  const editableDemandSettings = game
+    ? pickAdminDemandSettings(game.operatingConfig, adminDemandSettings)
+    : adminDemandSettings
 
   useEffect(() => {
     const nextUserDecks = loadUserDecks()
@@ -352,6 +387,22 @@ export default function AdminApp() {
   function parseNumber(value: string, fallback = 0) {
     const parsed = Number(value)
     return Number.isFinite(parsed) ? parsed : fallback
+  }
+
+  function parsePercentRatio(value: string, fallbackRatio: number) {
+    return Math.max(0, parseNumber(value, fallbackRatio * 100) / 100)
+  }
+
+  function parsePercentMultiplier(value: string, fallbackMultiplier: number) {
+    return Math.max(0, 1 + parseNumber(value, (fallbackMultiplier - 1) * 100) / 100)
+  }
+
+  function formatPercentInput(value: number) {
+    const roundedToTenth = Math.round((value + Number.EPSILON) * 10) / 10
+    const roundedToWhole = Math.round(roundedToTenth)
+    return Math.abs(roundedToTenth - roundedToWhole) < 0.05
+      ? String(roundedToWhole)
+      : roundedToTenth.toFixed(1)
   }
 
   function setNormalizedVehicleCards(
@@ -431,6 +482,56 @@ export default function AdminApp() {
         ),
       },
       `${delta >= 0 ? "Added" : "Removed"} ${Math.abs(delta).toLocaleString()} cash ${delta >= 0 ? "to" : "from"} ${player.name}.`,
+    )
+  }
+
+  function handleUpdateOperatingConfig(
+    updater: (currentConfig: OperatingConfig) => OperatingConfig,
+    message: string,
+  ) {
+    if (!game) {
+      return
+    }
+
+    commitGame(
+      {
+        ...game,
+        operatingConfig: updater(game.operatingConfig),
+      },
+      message,
+    )
+  }
+
+  function updateStoredAdminSettings(
+    updater: (currentSettings: AdminDemandSettings) => AdminDemandSettings,
+    message: string,
+  ) {
+    const nextSettings = updater(adminDemandSettings)
+    setAdminDemandSettings(nextSettings)
+    saveAdminDemandSettings(nextSettings)
+    setStatus(`${message} New games will use these defaults.`)
+    return nextSettings
+  }
+
+  function updateDemandSettings(
+    updater: (currentSettings: AdminDemandSettings) => AdminDemandSettings,
+    message: string,
+  ) {
+    const currentSettings = game
+      ? pickAdminDemandSettings(game.operatingConfig, adminDemandSettings)
+      : editableDemandSettings
+    const nextSettings = updateStoredAdminSettings(
+      () => updater(currentSettings),
+      message,
+    )
+
+    if (!game) {
+      return
+    }
+
+    handleUpdateOperatingConfig(
+      currentConfig => applyAdminDemandSettings(currentConfig, nextSettings),
+      message,
     )
   }
 
@@ -933,6 +1034,489 @@ export default function AdminApp() {
           </div>
         )}
 
+        <div
+          style={{
+            border: "1px solid #d8dfd5",
+            borderRadius: 14,
+            background: "#ffffff",
+            padding: 16,
+            display: "grid",
+            gap: 14,
+          }}
+        >
+          <div style={{ display: "grid", gap: 4 }}>
+            <div style={{ fontSize: 20, fontWeight: 800 }}>New game defaults</div>
+            <div style={{ color: "#56635a", fontSize: 14 }}>
+              These settings are used when you create the next game or LAN lobby.
+            </div>
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+              gap: 12,
+            }}
+          >
+            <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={adminDemandSettings.chanceCardsEnabled}
+                onChange={event =>
+                  updateStoredAdminSettings(
+                    currentSettings => ({
+                      ...currentSettings,
+                      chanceCardsEnabled: event.target.checked,
+                    }),
+                    "Updated default chance card setting.",
+                  )
+                }
+                style={{ width: 18, height: 18, cursor: "pointer" }}
+              />
+              <span>
+                <strong>Chance cards enabled</strong>
+                <div style={{ fontSize: 12, color: "#56635a" }}>
+                  Start new games with random fuel and demand events on or off.
+                </div>
+              </span>
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={adminDemandSettings.dynamicDemand.enabled}
+                onChange={event =>
+                  updateStoredAdminSettings(
+                    currentSettings => ({
+                      ...currentSettings,
+                      dynamicDemand: {
+                        ...currentSettings.dynamicDemand,
+                        enabled: event.target.checked,
+                      },
+                    }),
+                    "Updated default dynamic demand setting.",
+                  )
+                }
+                style={{ width: 18, height: 18, cursor: "pointer" }}
+              />
+              <span>
+                <strong>Dynamic city demand enabled</strong>
+                <div style={{ fontSize: 12, color: "#56635a" }}>
+                  New games start with dynamic demand on or off.
+                </div>
+              </span>
+            </label>
+            <label style={{ display: "grid", gap: 4 }}>
+              <span style={{ fontSize: 12, color: "#56635a", fontWeight: 700 }}>Default turn timer</span>
+              <select
+                value={adminDemandSettings.turnTimerSeconds}
+                onChange={event =>
+                  updateStoredAdminSettings(
+                    currentSettings => ({
+                      ...currentSettings,
+                      turnTimerSeconds: Math.max(0, Number(event.target.value)),
+                    }),
+                    "Updated default turn timer.",
+                  )
+                }
+                style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 14 }}
+              >
+                <option value={0}>No timer</option>
+                <option value={30}>30 seconds</option>
+                <option value={60}>1 minute</option>
+                <option value={90}>90 seconds</option>
+                <option value={120}>2 minutes</option>
+                <option value={180}>3 minutes</option>
+              </select>
+            </label>
+          </div>
+          <div
+            style={{
+              border: "1px solid #d8dfd5",
+              borderRadius: 12,
+              padding: 14,
+              background: "#fbfcfb",
+              display: "grid",
+              gap: 12,
+            }}
+          >
+            <div style={{ display: "grid", gap: 2 }}>
+              <div style={{ fontSize: 16, fontWeight: 800 }}>Default bot preset by seat</div>
+              <div style={{ color: "#56635a", fontSize: 13 }}>
+                When a lobby seat is switched to a bot, it will start with the preset chosen here.
+              </div>
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                gap: 12,
+              }}
+            >
+              {Array.from({ length: MAX_SETUP_PLAYERS }, (_, index) => {
+                const playerId = `p${index + 1}`
+                return (
+                  <label key={playerId} style={{ display: "grid", gap: 4 }}>
+                    <span style={{ fontSize: 12, color: "#56635a", fontWeight: 700 }}>
+                      Seat {index + 1}
+                    </span>
+                    <select
+                      value={getDefaultBotPresetForSeat(adminDemandSettings, playerId)}
+                      onChange={event =>
+                        updateStoredAdminSettings(
+                          currentSettings => ({
+                            ...currentSettings,
+                            defaultBotPresetBySeat: {
+                              ...currentSettings.defaultBotPresetBySeat,
+                              [playerId]: event.target.value as BotPresetId,
+                            },
+                          }),
+                          `Updated default bot preset for seat ${index + 1}.`,
+                        )
+                      }
+                      style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 14 }}
+                    >
+                      {BOT_PRESETS.map(preset => (
+                        <option key={preset.id} value={preset.id}>
+                          {preset.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+
+        <div
+          style={{
+            border: "1px solid #d8dfd5",
+            borderRadius: 14,
+            background: "#ffffff",
+            padding: 16,
+            display: "grid",
+            gap: 14,
+          }}
+        >
+          <div style={{ display: "grid", gap: 4 }}>
+            <div style={{ fontSize: 20, fontWeight: 800 }}>Passenger demand</div>
+            <div style={{ color: "#56635a", fontSize: 14 }}>
+              Tune how many passengers cities generate and how dynamic demand compounds over time.
+              {game
+                ? " Changes apply to the live game immediately."
+                : " These defaults will be used for the next new game you create."}
+            </div>
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+              gap: 12,
+            }}
+          >
+            <label style={{ display: "grid", gap: 4 }}>
+              <span style={{ fontSize: 12, color: "#56635a", fontWeight: 700 }}>Demand points per city size</span>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                value={editableDemandSettings.demandPointsPerCitySize}
+                onChange={event =>
+                  updateDemandSettings(
+                    currentSettings => ({
+                      ...currentSettings,
+                      demandPointsPerCitySize: Math.max(
+                        1,
+                        Math.round(parseNumber(event.target.value, currentSettings.demandPointsPerCitySize)),
+                      ),
+                    }),
+                    "Updated demand points per city size.",
+                  )
+                }
+                style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 14 }}
+              />
+            </label>
+            <label style={{ display: "grid", gap: 4 }}>
+              <span style={{ fontSize: 12, color: "#56635a", fontWeight: 700 }}>Passengers per demand point</span>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                value={editableDemandSettings.passengersPerDemandPoint}
+                onChange={event =>
+                  updateDemandSettings(
+                    currentSettings => ({
+                      ...currentSettings,
+                      passengersPerDemandPoint: Math.max(
+                        1,
+                        Math.round(parseNumber(event.target.value, currentSettings.passengersPerDemandPoint)),
+                      ),
+                    }),
+                    "Updated passengers per demand point.",
+                  )
+                }
+                style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 14 }}
+              />
+            </label>
+          </div>
+          <div
+            style={{
+              border: "1px solid #d8dfd5",
+              borderRadius: 12,
+              padding: 14,
+              background: "#fbfcfb",
+              display: "grid",
+              gap: 12,
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+              <div style={{ display: "grid", gap: 2 }}>
+                <div style={{ fontSize: 16, fontWeight: 800 }}>Dynamic demand</div>
+                <div style={{ color: "#56635a", fontSize: 13 }}>
+                  Demand compounds upward or downward each round from city-level service ratios.
+                </div>
+              </div>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700 }}>
+                <input
+                  type="checkbox"
+                  checked={editableDemandSettings.dynamicDemand.enabled}
+                  onChange={event =>
+                    updateDemandSettings(
+                      currentSettings => ({
+                        ...currentSettings,
+                        dynamicDemand: {
+                          ...currentSettings.dynamicDemand,
+                          enabled: event.target.checked,
+                        },
+                      }),
+                      `${event.target.checked ? "Enabled" : "Disabled"} dynamic demand.`,
+                    )
+                  }
+                />
+                Enabled
+              </label>
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                gap: 12,
+              }}
+            >
+              <label style={{ display: "grid", gap: 4 }}>
+                <span style={{ fontSize: 12, color: "#56635a", fontWeight: 700 }}>Low-service threshold (%)</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={0.1}
+                  value={formatPercentInput(editableDemandSettings.dynamicDemand.lowServiceThreshold * 100)}
+                  onChange={event =>
+                    updateDemandSettings(
+                      currentSettings => ({
+                        ...currentSettings,
+                        dynamicDemand: {
+                          ...currentSettings.dynamicDemand,
+                          lowServiceThreshold: parsePercentRatio(
+                            event.target.value,
+                            currentSettings.dynamicDemand.lowServiceThreshold,
+                          ),
+                        },
+                      }),
+                      "Updated low-service dynamic demand threshold.",
+                    )
+                  }
+                  style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 14 }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 4 }}>
+                <span style={{ fontSize: 12, color: "#56635a", fontWeight: 700 }}>Low-service demand change (%)</span>
+                <input
+                  type="number"
+                  step={0.1}
+                  value={formatPercentInput((editableDemandSettings.dynamicDemand.lowServiceMultiplier - 1) * 100)}
+                  onChange={event =>
+                    updateDemandSettings(
+                      currentSettings => ({
+                        ...currentSettings,
+                        dynamicDemand: {
+                          ...currentSettings.dynamicDemand,
+                          lowServiceMultiplier: parsePercentMultiplier(
+                            event.target.value,
+                            currentSettings.dynamicDemand.lowServiceMultiplier,
+                          ),
+                        },
+                      }),
+                      "Updated low-service dynamic demand change.",
+                    )
+                  }
+                  style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 14 }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 4 }}>
+                <span style={{ fontSize: 12, color: "#56635a", fontWeight: 700 }}>No-service threshold (%)</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={0.1}
+                  value={formatPercentInput(editableDemandSettings.dynamicDemand.noServiceThreshold * 100)}
+                  onChange={event =>
+                    updateDemandSettings(
+                      currentSettings => ({
+                        ...currentSettings,
+                        dynamicDemand: {
+                          ...currentSettings.dynamicDemand,
+                          noServiceThreshold: parsePercentRatio(
+                            event.target.value,
+                            currentSettings.dynamicDemand.noServiceThreshold,
+                          ),
+                        },
+                      }),
+                      "Updated no-service dynamic demand threshold.",
+                    )
+                  }
+                  style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 14 }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 4 }}>
+                <span style={{ fontSize: 12, color: "#56635a", fontWeight: 700 }}>No-service demand change (%)</span>
+                <input
+                  type="number"
+                  step={0.1}
+                  value={formatPercentInput((editableDemandSettings.dynamicDemand.noServiceMultiplier - 1) * 100)}
+                  onChange={event =>
+                    updateDemandSettings(
+                      currentSettings => ({
+                        ...currentSettings,
+                        dynamicDemand: {
+                          ...currentSettings.dynamicDemand,
+                          noServiceMultiplier: parsePercentMultiplier(
+                            event.target.value,
+                            currentSettings.dynamicDemand.noServiceMultiplier,
+                          ),
+                        },
+                      }),
+                      "Updated no-service dynamic demand change.",
+                    )
+                  }
+                  style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 14 }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 4 }}>
+                <span style={{ fontSize: 12, color: "#56635a", fontWeight: 700 }}>High-service threshold (%)</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={0.1}
+                  value={formatPercentInput(editableDemandSettings.dynamicDemand.highServiceThreshold * 100)}
+                  onChange={event =>
+                    updateDemandSettings(
+                      currentSettings => ({
+                        ...currentSettings,
+                        dynamicDemand: {
+                          ...currentSettings.dynamicDemand,
+                          highServiceThreshold: parsePercentRatio(
+                            event.target.value,
+                            currentSettings.dynamicDemand.highServiceThreshold,
+                          ),
+                        },
+                      }),
+                      "Updated high-service dynamic demand threshold.",
+                    )
+                  }
+                  style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 14 }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 4 }}>
+                <span style={{ fontSize: 12, color: "#56635a", fontWeight: 700 }}>High-service demand change (%)</span>
+                <input
+                  type="number"
+                  step={0.1}
+                  value={formatPercentInput((editableDemandSettings.dynamicDemand.highServiceMultiplier - 1) * 100)}
+                  onChange={event =>
+                    updateDemandSettings(
+                      currentSettings => ({
+                        ...currentSettings,
+                        dynamicDemand: {
+                          ...currentSettings.dynamicDemand,
+                          highServiceMultiplier: parsePercentMultiplier(
+                            event.target.value,
+                            currentSettings.dynamicDemand.highServiceMultiplier,
+                          ),
+                        },
+                      }),
+                      "Updated high-service dynamic demand change.",
+                    )
+                  }
+                  style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 14 }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 4 }}>
+                <span style={{ fontSize: 12, color: "#56635a", fontWeight: 700 }}>Full-service threshold (%)</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={0.1}
+                  value={formatPercentInput(editableDemandSettings.dynamicDemand.fullServiceThreshold * 100)}
+                  onChange={event =>
+                    updateDemandSettings(
+                      currentSettings => ({
+                        ...currentSettings,
+                        dynamicDemand: {
+                          ...currentSettings.dynamicDemand,
+                          fullServiceThreshold: parsePercentRatio(
+                            event.target.value,
+                            currentSettings.dynamicDemand.fullServiceThreshold,
+                          ),
+                        },
+                      }),
+                      "Updated full-service dynamic demand threshold.",
+                    )
+                  }
+                  style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 14 }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 4 }}>
+                <span style={{ fontSize: 12, color: "#56635a", fontWeight: 700 }}>Full-service demand change (%)</span>
+                <input
+                  type="number"
+                  step={0.1}
+                  value={formatPercentInput((editableDemandSettings.dynamicDemand.fullServiceMultiplier - 1) * 100)}
+                  onChange={event =>
+                    updateDemandSettings(
+                      currentSettings => ({
+                        ...currentSettings,
+                        dynamicDemand: {
+                          ...currentSettings.dynamicDemand,
+                          fullServiceMultiplier: parsePercentMultiplier(
+                            event.target.value,
+                            currentSettings.dynamicDemand.fullServiceMultiplier,
+                          ),
+                        },
+                      }),
+                      "Updated full-service dynamic demand change.",
+                    )
+                  }
+                  style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #c7d0c4", fontSize: 14 }}
+                />
+              </label>
+            </div>
+            <div style={{ color: "#56635a", fontSize: 13 }}>
+              {game
+                ? `Cities currently carrying a dynamic demand multiplier: ${
+                    adjustedCityDemandEntries.length === 0
+                      ? "none yet"
+                      : adjustedCityDemandEntries
+                          .map(entry => `${entry.cityName} x${entry.multiplier.toFixed(2)}`)
+                          .join(", ")
+                  }`
+                : "Create or connect to a game to see live city multipliers."}
+            </div>
+          </div>
+        </div>
+
         {!lanSession || !game ? (
           <div
             style={{
@@ -1110,17 +1694,33 @@ export default function AdminApp() {
           )}
           <div style={{ display: "grid", gap: 12 }}>
             {(["bus", "train", "air"] as const).map(type => (
-              <div key={type} style={{ display: "grid", gap: 10 }}>
-                <div style={{ fontSize: 16, fontWeight: 700 }}>
-                  {type[0].toUpperCase() + type.slice(1)} cards
-                </div>
-                <div style={{ display: "grid", gap: 10 }}>
+              <details
+                key={type}
+                style={{
+                  border: "1px solid #d8dfd5",
+                  borderRadius: 12,
+                  background: "#fbfcfb",
+                  padding: 12,
+                }}
+              >
+                <summary
+                  style={{
+                    cursor: "pointer",
+                    fontSize: 16,
+                    fontWeight: 700,
+                    listStyle: "auto",
+                  }}
+                >
+                  {type[0].toUpperCase() + type.slice(1)} cards (
+                  {vehicleCards.filter(card => card.type === type).length})
+                </summary>
+                <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
                   {vehicleCards
                     .filter(card => card.type === type)
                     .sort((cardA, cardB) => cardA.purchasePrice - cardB.purchasePrice || cardA.number - cardB.number)
                     .map(card => renderVehicleCard(card))}
                 </div>
-              </div>
+              </details>
             ))}
           </div>
         </div>

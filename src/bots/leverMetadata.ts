@@ -403,6 +403,31 @@ export const SCRIPTED_BOT_LEVER_METADATA: Record<keyof ScriptedBotWeights, Scrip
     minimum: 0,
     enabled: true,
   },
+  podZeroServiceCityReliefBonus: {
+    mutationStep: 4,
+    minimum: 0,
+    enabled: true,
+  },
+  podSmallCityCoverageScore: {
+    mutationStep: 1,
+    minimum: 0,
+    enabled: true,
+  },
+  podGrowthCityServiceBonus: {
+    mutationStep: 2,
+    minimum: 0,
+    enabled: true,
+  },
+  readyOperationsZeroServiceCityPenalty: {
+    mutationStep: 4,
+    minimum: 0,
+    enabled: true,
+  },
+  buyVehicleForUnservedCityBonus: {
+    mutationStep: 4,
+    minimum: 0,
+    enabled: true,
+  },
 }
 
 export const MUTABLE_SCRIPTED_BOT_WEIGHT_KEYS = SCRIPTED_BOT_WEIGHT_KEYS.filter(

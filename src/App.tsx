@@ -17,6 +17,11 @@ import {
   saveSavedGame,
   savePlayerName,
 } from "./data/gameStorage"
+import {
+  applyAdminDemandSettings,
+  getDefaultBotPresetForSeat,
+  loadAdminDemandSettings,
+} from "./data/adminSettings"
 import { usMap } from "./data/maps/usMap"
 import { usOutline } from "./data/maps/usOutline"
 import { latLngToWorld, WORLD_WIDTH, WORLD_HEIGHT } from "./engine/projection"
@@ -39,6 +44,7 @@ import {
   hasPlayerCompletedPurchaseEquipment,
   markBureaucracyReady,
   markOperationsReady,
+  setBureaucracyAirRouteCities,
   setBureaucracyServicePodCities,
   setActiveCityOfferKeptCityIds,
   setBureaucracyRouteVehicleCard,
@@ -107,21 +113,32 @@ type LanSessionConnection = {
 type AppMode = "launcher" | "joining" | "waiting" | "lobby" | "ready"
 type LobbySettingsUpdate = {
   chanceCardsEnabled?: boolean
+  dynamicDemandEnabled?: boolean
   turnTimerSeconds?: number
   autoPlayUntilWeek?: number
   previewPlayerId?: string | null
   previewBotPreset?: BotPresetId | null
+  firstPlayerId?: string | null
 }
 
 function createPlaceholderGame() {
   const initialUserDecks = loadUserDecks()
-
-  return createGameState(usMap, {
+  const adminSettings = loadAdminDemandSettings()
+  const baseGame = createGameState(usMap, {
     players: createDefaultSetupPlayers(),
     vehicleCards: initialUserDecks.vehicleCards,
     chanceCards: initialUserDecks.chanceCards,
+    chanceCardsEnabled: adminSettings.chanceCardsEnabled,
     startingMoney: DEFAULT_STARTING_MONEY,
+    turnTimerSeconds: adminSettings.turnTimerSeconds,
   })
+  return {
+    ...baseGame,
+    operatingConfig: applyAdminDemandSettings(
+      baseGame.operatingConfig,
+      adminSettings,
+    ),
+  }
 }
 
 function isLegacyLobbyApiError(error: unknown) {
@@ -132,7 +149,9 @@ function isLegacyLobbyApiError(error: unknown) {
       error.message.includes("Lobby updates must include clientId and may include playerId, isReady, and playerName.") ||
       error.message.includes("Lobby updates must include clientId and may include playerId, isReady, playerName, and startGame.") ||
       error.message.includes("Lobby updates must include clientId and may include playerId, isReady, playerName, startGame, and setSeatBot.") ||
-      error.message.includes("Lobby updates must include clientId and may include playerId, isReady, playerName, startGame, settings, and setSeatBot.")
+      error.message.includes("Lobby updates must include clientId and may include playerId, isReady, playerName, startGame, settings, and setSeatBot.") ||
+      error.message.includes("Lobby updates must include clientId and may include playerId, isReady, playerName, startGame, settings, setSeatBot, and firstPlayerId.") ||
+      error.message.includes("Lobby updates must include clientId and may include playerId, isReady, playerName, startGame, settings, setSeatBot, firstPlayerId, and dynamicDemandEnabled.")
     )
   )
 }
@@ -225,8 +244,6 @@ function MapBackdrop() {
   )
 }
 
-const DEFAULT_LOBBY_CHANCE_CARDS_ENABLED = true
-const DEFAULT_LOBBY_TURN_TIMER_SECONDS = 60
 const DEFAULT_LOBBY_AUTO_PLAY_UNTIL_WEEK = 0
 
 function getVehicleTypeForMode(mode: GameState["routes"][number]["mode"]) {
@@ -256,6 +273,7 @@ function getAutoAssignableVehicleCardId(
 
   const assignedVehicleCardIds = new Set(
     summary.routePlans
+      .filter(plan => plan.selectedCityIds.length >= 2)
       .map(plan => plan.vehicleCard?.id)
       .filter((cardId): cardId is string => cardId !== undefined),
   )
@@ -306,8 +324,9 @@ export default function App() {
     () => pendingLocalLaunch?.selectedPlayerId ?? null,
   )
   const [lanSeatCount, setLanSeatCount] = useState(4)
-  const [chanceCardsEnabled, setChanceCardsEnabled] = useState(DEFAULT_LOBBY_CHANCE_CARDS_ENABLED)
-  const [turnTimerSeconds, setTurnTimerSeconds] = useState(DEFAULT_LOBBY_TURN_TIMER_SECONDS)
+  const [chanceCardsEnabled, setChanceCardsEnabled] = useState(() => loadAdminDemandSettings().chanceCardsEnabled)
+  const [dynamicDemandEnabled, setDynamicDemandEnabled] = useState(() => loadAdminDemandSettings().dynamicDemand.enabled)
+  const [turnTimerSeconds, setTurnTimerSeconds] = useState(() => loadAdminDemandSettings().turnTimerSeconds)
   const [autoPlayUntilWeek, setAutoPlayUntilWeek] = useState(DEFAULT_LOBBY_AUTO_PLAY_UNTIL_WEEK)
   const [playerName, setPlayerName] = useState("")
   const [isUpdatingLobby, setIsUpdatingLobby] = useState(false)
@@ -424,6 +443,7 @@ export default function App() {
     setLanLobby(snapshot.lobby)
     setGame(nextGame)
     setChanceCardsEnabled(nextGame.chanceCardsEnabled)
+    setDynamicDemandEnabled(nextGame.operatingConfig.dynamicDemand.enabled)
     setTurnTimerSeconds(nextGame.turnTimerSeconds)
     setAutoPlayUntilWeek(nextGame.autoPlayUntilWeek)
     setHistory([])
@@ -621,6 +641,10 @@ export default function App() {
         setLanSession(nextConnection)
         setLanLobby(snapshot.lobby)
         setGame(nextGame)
+        setChanceCardsEnabled(nextGame.chanceCardsEnabled)
+        setDynamicDemandEnabled(nextGame.operatingConfig.dynamicDemand.enabled)
+        setTurnTimerSeconds(nextGame.turnTimerSeconds)
+        setAutoPlayUntilWeek(nextGame.autoPlayUntilWeek)
         setHistory([])
         saveSavedGame(nextGame)
         saveActiveAdminLaunch({
@@ -742,13 +766,14 @@ export default function App() {
       mutate: (baseGame: GameState, actingPlayerId: string) => T | GameMutationFailure,
       action: GameAction,
     ): Promise<T | GameMutationFailure> => {
+      const sourceGame = gameRef.current
       const activeLanSession = lanSessionRef.current
       const actingPlayerId = activeLanSession
         ? selectedPlayerId
-        : getDefaultLocalViewingPlayerId(game) ?? game.currentPlayerId
+        : getDefaultLocalViewingPlayerId(sourceGame) ?? sourceGame.currentPlayerId
 
-      if (activeLanSession && !canPlayerWriteLiveGame(game, actingPlayerId)) {
-        const message = getBlockedLanActionMessage(game, actingPlayerId)
+      if (activeLanSession && !canPlayerWriteLiveGame(sourceGame, actingPlayerId)) {
+        const message = getBlockedLanActionMessage(sourceGame, actingPlayerId)
         setLanStatusTone("error")
         setLanStatusMessage(message)
         return {
@@ -758,10 +783,11 @@ export default function App() {
       }
 
       if (!activeLanSession) {
-        const result = mutate(game, actingPlayerId ?? game.currentPlayerId)
+        const result = mutate(sourceGame, actingPlayerId ?? sourceGame.currentPlayerId)
 
         if (result.ok) {
-          setHistory(current => [...current, game])
+          gameRef.current = result.game
+          setHistory(current => [...current, sourceGame])
           setGame(result.game)
           setSelectedPlayerId(currentSelectedPlayerId =>
             getNextLocalViewingPlayerId(result.game, currentSelectedPlayerId),
@@ -780,13 +806,13 @@ export default function App() {
       }
 
       // Compute result locally for rich UI feedback; state arrives authoritatively via SSE.
-      const result = mutate(game, actingPlayerId)
+      const result = mutate(sourceGame, actingPlayerId)
 
       if (!result.ok) {
         return result
       }
 
-      if (result.game === game) {
+      if (result.game === sourceGame) {
         return result
       }
 
@@ -797,6 +823,7 @@ export default function App() {
           actingPlayerId,
           action,
         )
+        gameRef.current = result.game
         setLanStatusTone("neutral")
         setLanStatusMessage(`Synced ${activeLanSession.sessionName}.`)
       } catch (error) {
@@ -813,7 +840,7 @@ export default function App() {
 
       return result
     },
-    [canPlayerWriteLiveGame, game, getBlockedLanActionMessage, selectedPlayerId],
+    [canPlayerWriteLiveGame, getBlockedLanActionMessage, selectedPlayerId],
   )
   // Local hotseat derives the acting seat from the current overlap state.
   // LAN uses the seat the client claimed in the lobby, even when another player is the turn owner.
@@ -937,19 +964,32 @@ export default function App() {
     try {
       const players = createSetupPlayers(lanSeatCount)
       const initialUserDecks = loadUserDecks()
+      const adminDemandSettings = loadAdminDemandSettings()
       const managedBotPresetWeights = await fetchManagedBotPresetWeightOverrides(players.length)
+      const createdGame = createGameState(usMap, {
+        players,
+        vehicleCards: initialUserDecks.vehicleCards,
+        chanceCards: initialUserDecks.chanceCards,
+        chanceCardsEnabled: adminDemandSettings.chanceCardsEnabled,
+        startingMoney: DEFAULT_STARTING_MONEY,
+        botPresetWeightsById: managedBotPresetWeights,
+        turnTimerSeconds: adminDemandSettings.turnTimerSeconds,
+        autoPlayUntilWeek: DEFAULT_LOBBY_AUTO_PLAY_UNTIL_WEEK,
+      })
+      const baseGame = {
+        ...createdGame,
+        operatingConfig: applyAdminDemandSettings(
+          createdGame.operatingConfig,
+          adminDemandSettings,
+        ),
+      }
       const snapshot = await createLanSession(defaultSessionServerUrl, {
         sessionName: `Transport Game (${players.length} seats)`,
-        game: createGameState(usMap, {
-          players,
-          vehicleCards: initialUserDecks.vehicleCards,
-          chanceCards: initialUserDecks.chanceCards,
-          chanceCardsEnabled: DEFAULT_LOBBY_CHANCE_CARDS_ENABLED,
-          startingMoney: DEFAULT_STARTING_MONEY,
-          botPresetWeightsById: managedBotPresetWeights,
-          turnTimerSeconds: DEFAULT_LOBBY_TURN_TIMER_SECONDS,
-          autoPlayUntilWeek: DEFAULT_LOBBY_AUTO_PLAY_UNTIL_WEEK,
-        }),
+        game: {
+          ...baseGame,
+          chanceCardsEnabled: adminDemandSettings.chanceCardsEnabled,
+          turnTimerSeconds: adminDemandSettings.turnTimerSeconds,
+        },
       })
 
       setLanStatusTone("neutral")
@@ -988,6 +1028,13 @@ export default function App() {
     if (!activeLanSession) return
     const seatNum = playerId.replace(/^p/i, "")
     const defaultBotName = `Bot ${seatNum}`
+    const adminDemandSettings = loadAdminDemandSettings()
+    const currentSeatPreset = game.players.find(player => player.id === playerId)?.botPreset
+    const botPreset = isBot
+      ? currentSeatPreset && BOT_PRESETS.some(preset => preset.id === currentSeatPreset)
+        ? currentSeatPreset
+        : getDefaultBotPresetForSeat(adminDemandSettings, playerId)
+      : null
     try {
       const snapshot = await toggleLanLobbyBotSeat(
         activeLanSession.serverUrl,
@@ -995,7 +1042,7 @@ export default function App() {
         lobbyClientId,
         playerId,
         isBot,
-        isBot ? "bot-avg" : null,
+        botPreset,
         isBot ? defaultBotName : undefined,
       )
       applyLanSnapshot(snapshot, activeLanSession.serverUrl)
@@ -1003,7 +1050,7 @@ export default function App() {
       setLanStatusTone("error")
       setLanStatusMessage(error instanceof Error ? error.message : "Could not update seat.")
     }
-  }, [applyLanSnapshot, lobbyClientId])
+  }, [applyLanSnapshot, game.players, lobbyClientId])
 
   const handleUpdateLobbyBotConfig = useCallback(async (playerId: string, botPreset: BotPresetId, botName: string) => {
     const activeLanSession = lanSessionRef.current
@@ -1369,6 +1416,36 @@ export default function App() {
     [commitGameMutation, resolveActingPlayerId],
   )
 
+  const handleSetBureaucracyAirRouteCities = useCallback(
+    async (routeId: string, cityIds: [string, string]) =>
+      commitGameMutation(
+        baseGame => {
+          const actingPlayerId = resolveActingPlayerId(baseGame)
+          const result = setBureaucracyAirRouteCities(baseGame, routeId, cityIds, actingPlayerId)
+
+          if (!result.ok) {
+            return result
+          }
+
+          const cityLabel = cityIds
+            .map(cityId => baseGame.cities.find(city => city.id === cityId)?.name ?? cityId)
+            .join(" - ")
+
+          return {
+            ...result,
+            game: appendActionLog(
+              baseGame,
+              result.game,
+              `retargeted air route to ${cityLabel}`,
+              actingPlayerId,
+            ),
+          }
+        },
+        { type: "set-air-route-cities", routeId, cityIds },
+      ),
+    [commitGameMutation, resolveActingPlayerId],
+  )
+
   const handleAddBureaucracyServiceSplit = useCallback(
     async (corridorId: string, initialCityIds?: string[]) =>
       commitGameMutation(
@@ -1567,6 +1644,10 @@ export default function App() {
   const claimedLobbyPlayers = lanLobby?.players.filter(player => player.claimedBy) ?? []
   const readyLobbyPlayers = claimedLobbyPlayers.filter(player => player.isReady)
   const canStartLobby = claimedLobbyPlayers.length > 0 && claimedLobbyPlayers.every(player => player.isReady)
+  const configuredFirstPlayer =
+    game.players.find(player => player.id === game.currentPlayerId) ??
+    game.players[0] ??
+    null
   const currentTurnPlayer = game.players.find(player => player.id === game.currentPlayerId) ?? null
   // In phases where players independently ready up, currentPlayerId may not reflect who's actually
   // blocking — find the first player who hasn't completed the current phase.
@@ -2064,6 +2145,9 @@ export default function App() {
               <div style={{ color: "#56635a", fontSize: 14 }}>
                 {lanLobby ? `${readyLobbyPlayers.length} of ${claimedLobbyPlayers.length} filled seats ready.` : ""}
               </div>
+              <div style={{ color: "#56635a", fontSize: 14 }}>
+                {configuredFirstPlayer ? `${configuredFirstPlayer.name} goes first.` : ""}
+              </div>
             </div>
             {lanSession && (
               <div
@@ -2194,6 +2278,25 @@ export default function App() {
                     <strong>Chance cards</strong>
                     <div style={{ fontSize: 12, color: "#56635a" }}>
                       Random fuel and demand events
+                    </div>
+                  </span>
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={dynamicDemandEnabled}
+                    disabled={isUpdatingLobby}
+                    onChange={event => {
+                      const nextValue = event.target.checked
+                      setDynamicDemandEnabled(nextValue)
+                      void handleUpdateLobbySettings({ dynamicDemandEnabled: nextValue })
+                    }}
+                    style={{ width: 18, height: 18, cursor: isUpdatingLobby ? "not-allowed" : "pointer" }}
+                  />
+                  <span>
+                    <strong>Dynamic city demand</strong>
+                    <div style={{ fontSize: 12, color: "#56635a" }}>
+                      Grow or shrink city demand based on how much service each city receives
                     </div>
                   </span>
                 </label>
@@ -2356,11 +2459,38 @@ export default function App() {
                       {isFilled ? player.name : "Waiting"}
                     </div>
                     <div style={{ fontSize: 13, color: accentColor, fontWeight: 700 }}>{statusLabel}</div>
-                    {!isFilled && lanLobby?.status !== "started" && (
+                    {lanLobby?.status !== "started" && (
+                      <label
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6,
+                          fontSize: 13,
+                          color: isFilled ? "#324236" : "#56635a",
+                          cursor: isUpdatingLobby || !isFilled ? "not-allowed" : "pointer",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={game.currentPlayerId === player.id}
+                          disabled={isUpdatingLobby || !isFilled}
+                          onChange={event => {
+                            if (!event.target.checked) {
+                              return
+                            }
+
+                            void handleUpdateLobbySettings({ firstPlayerId: player.id })
+                          }}
+                        />
+                        Goes first
+                      </label>
+                    )}
+                    {lanLobby?.status !== "started" && (!isFilled || isBotSeat) && (
                       <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#56635a", cursor: "pointer" }}>
                         <input
                           type="checkbox"
                           checked={isBotSeat}
+                          disabled={isUpdatingLobby}
                           onChange={event => void handleToggleLobbyBotSeat(player.id, event.target.checked)}
                         />
                         Bot seat
@@ -2494,6 +2624,7 @@ export default function App() {
               onExchangeVehicleCard={handleExchangeVehicleCard}
               onUpgradeRailRoute={handleUpgradeRailRoute}
               onSetBureaucracyRouteVehicleCard={handleSetBureaucracyRouteVehicleCard}
+              onSetBureaucracyAirRouteCities={handleSetBureaucracyAirRouteCities}
               onAddBureaucracyServiceSplit={handleAddBureaucracyServiceSplit}
               onSetBureaucracyServicePodCities={handleSetBureaucracyServicePodCities}
               onDeleteBureaucracyServicePod={handleDeleteBureaucracyServicePod}

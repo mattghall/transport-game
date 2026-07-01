@@ -85,11 +85,14 @@ export async function persistCoachingSession(
   const shouldFallbackDownload = options?.fallbackDownload ?? true
 
   try {
-    await fetch(`/api/training-results/${filename}`, {
+    const response = await fetch(`/api/training-results/${filename}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body,
     })
+    if (!response.ok) {
+      throw new Error(`Could not persist coaching session (${response.status})`)
+    }
   } catch {
     if (!shouldFallbackDownload) {
       return

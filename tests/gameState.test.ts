@@ -38,6 +38,11 @@ describe("Game state initialization", () => {
     assert.equal(game.turnTimerSeconds, 0)
     assert.equal(game.turnTimerExpiresAt, null)
     assert.equal(game.autoPlayUntilWeek, 0)
+    assert.equal(game.operatingConfig.dynamicDemand.enabled, false)
+    assert.equal(game.operatingConfig.dynamicDemand.highServiceThreshold, 0.75)
+    assert.equal(game.operatingConfig.demandPointsPerCitySize, 45)
+    assert.equal(game.operatingConfig.dynamicDemand.fullServiceMultiplier, 1.15)
+    assert.equal(game.cityDemandMultipliersByCityId[game.cities[0]!.id], 1)
   })
 
   it("turn timer is set when configured in lobby", () => {
@@ -91,6 +96,7 @@ describe("Game state initialization", () => {
     const game = makeGame()
     const objectFields: (keyof GameState)[] = [
       "routeMarketCardIdsByMode", "cityDeckCardIdsByRegion",
+      "cityDemandMultipliersByCityId",
       "bureaucracyFuelUnitsByRouteId", "bureaucracyVehicleCardIdsByRouteId",
       "bureaucracyServiceCityIdsByRouteId", "bureaucracyServiceSlotCountsByCorridorId",
       "resourceMarket", "resourceSupply",
@@ -114,6 +120,18 @@ describe("Game state initialization", () => {
     const game = makeGame()
     const playerIds = game.players.map(p => p.id)
     assert.ok(playerIds.includes(game.currentPlayerId), `currentPlayerId ${game.currentPlayerId} not in players`)
+  })
+
+  it("honors a configured first player", () => {
+    const game = makeGame({ firstPlayerId: "p2" })
+    assert.equal(game.currentPlayerId, "p2")
+    assert.equal(game.leadPlayerIndex, 1)
+  })
+
+  it("falls back to seat 1 when the configured first player is missing", () => {
+    const game = makeGame({ firstPlayerId: "p9" })
+    assert.equal(game.currentPlayerId, "p1")
+    assert.equal(game.leadPlayerIndex, 0)
   })
 })
 
@@ -152,6 +170,7 @@ describe("normalizeGameState", () => {
       claimedRoutePlayerIdsThisTurn: undefined,
       claimedRouteCountsByPlayerIdThisTurn: undefined,
       chanceCardsEnabled: undefined,
+      cityDemandMultipliersByCityId: undefined,
     }
     const normalized = normalizeGameState(stripped)
     assert.equal(normalized.turnTimerSeconds, 0)
@@ -162,6 +181,9 @@ describe("normalizeGameState", () => {
     assert.deepEqual(normalized.claimedRoutePlayerIdsThisTurn, [])
     assert.deepEqual(normalized.claimedRouteCountsByPlayerIdThisTurn, {})
     assert.equal(normalized.chanceCardsEnabled, true)
+    assert.equal(normalized.cityDemandMultipliersByCityId[normalized.cities[0]!.id], 1)
+    assert.equal(normalized.operatingConfig.dynamicDemand.enabled, false)
+    assert.equal(normalized.operatingConfig.dynamicDemand.noServiceMultiplier, 0.9)
   })
 
   it("fills in missing vehicleWeeksOwnedByCardId for legacy players", () => {

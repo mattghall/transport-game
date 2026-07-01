@@ -1,7 +1,7 @@
 import { getPlayerById, calculateClaimRouteCost, getVehicleTradeInValue, resolveRouteSelection } from "../engine/actions"
-import { getPayoutMultiplierForDistance } from "../engine/bureaucracy"
+import { getPayoutMultiplierForDistance, type BureaucracyRoutePlan } from "../engine/bureaucracy"
 import { getPlayerOwnedNetworkRoutes } from "../engine/playerNetwork"
-import { CITY_DECK_REGIONS, type City, type CityDeckRegion, type VehicleType } from "../engine/types"
+import { CITY_DECK_REGIONS, type City, type CityDeckRegion, type GameState, type VehicleType } from "../engine/types"
 import { calculateDistanceMiles } from "../engine/trips"
 import { getBotLegalActions, applyBotAction } from "./actions"
 import { getBotGameStage, getOwnedCityPairs, type BotGameStage } from "./strategy"
@@ -101,6 +101,16 @@ export type ScriptedBotWeights = {
   podUnstaffedPodPenalty: number
   // Bonus for expanding/reconfiguring a pod that already has a vehicle assigned.
   podExistingVehicleAssignedBonus: number
+  // Bonus per zero-service city that a pod action converts into a city with some service.
+  podZeroServiceCityReliefBonus: number
+  // Bonus for improving service coverage in smaller cities, weighted by served ratio.
+  podSmallCityCoverageScore: number
+  // Bonus for getting smaller cities across dynamic-demand growth thresholds.
+  podGrowthCityServiceBonus: number
+  // Penalty per city left with zero service when the bot is considering ending operations.
+  readyOperationsZeroServiceCityPenalty: number
+  // Bonus for buying a vehicle type that can relieve zero-service cities on existing networks.
+  buyVehicleForUnservedCityBonus: number
 }
 
 export const DEFAULT_SCRIPTED_BOT_WEIGHTS: ScriptedBotWeights = {
@@ -161,9 +171,9 @@ export const DEFAULT_SCRIPTED_BOT_WEIGHTS: ScriptedBotWeights = {
   drawRegionBigCityScarcityBonus: 5,
   keepCityPopulationScore: 10,
   keepCityNetworkProximityScore: 6,
-  keepCityPairCohesionScore: 0,
+  keepCityPairCohesionScore: 12,
   keepCityRegionMatchScore: 4,
-  keepCityAdjacencyPotentialScore: 5,
+  keepCityAdjacencyPotentialScore: 8,
   claimAdjacentNetworkBonus: 8,
   claimOpponentBlockPenalty: 4,
   claimConnectorWastePenaltyMultiplier: 3.5,
@@ -177,7 +187,39 @@ export const DEFAULT_SCRIPTED_BOT_WEIGHTS: ScriptedBotWeights = {
   podDisconnectedCityReductionBonus: 18,
   podUnstaffedPodPenalty: 90,
   podExistingVehicleAssignedBonus: 40,
+  podZeroServiceCityReliefBonus: 34,
+  podSmallCityCoverageScore: 12,
+  podGrowthCityServiceBonus: 10,
+  readyOperationsZeroServiceCityPenalty: 24,
+  buyVehicleForUnservedCityBonus: 18,
 }
+
+type BotCityServiceSnapshot = {
+  zeroServiceCityCount: number
+  weightedCoverageScore: number
+  growthReadyScore: number
+}
+
+type CorridorPlanningAction = Extract<
+  BotAction,
+  {
+    type:
+      | "create-service-pod"
+      | "remove-pod-city"
+      | "assign-pod-vehicle"
+      | "add-second-vehicle-to-pod"
+      | "delete-service-pod"
+  }
+>
+
+type CorridorPlanState = {
+  bestScore: number
+  stepCount: number
+}
+
+const MAX_BOT_CORRIDOR_PLAN_DEPTH = 4
+const MAX_BOT_CORRIDOR_PLAN_ACTIONS = 6
+const MAX_BOT_CORRIDOR_PLAN_CITY_COUNT = 8
 
 export function mergeScriptedBotWeights(
   overrides: Partial<ScriptedBotWeights> = {},
@@ -234,6 +276,145 @@ function getRegionPreference(region: CityDeckRegion, weights: ScriptedBotWeights
   return weights[REGION_WEIGHT_KEY_BY_REGION[region]]
 }
 
+function hasExistingModePath(
+  routes: Array<Pick<GameState["routes"][number], "cityA" | "cityB">>,
+  startCityId: string,
+  endCityId: string,
+) {
+  if (startCityId === endCityId) {
+    return true
+  }
+
+  const adjacency = new Map<string, string[]>()
+
+  for (const route of routes) {
+    adjacency.set(route.cityA, [...(adjacency.get(route.cityA) ?? []), route.cityB])
+    adjacency.set(route.cityB, [...(adjacency.get(route.cityB) ?? []), route.cityA])
+  }
+
+  const visited = new Set<string>()
+  const queue = [startCityId]
+
+  while (queue.length > 0) {
+    const cityId = queue.shift()
+    if (!cityId || visited.has(cityId)) {
+      continue
+    }
+    if (cityId === endCityId) {
+      return true
+    }
+
+    visited.add(cityId)
+    for (const neighborCityId of adjacency.get(cityId) ?? []) {
+      if (!visited.has(neighborCityId)) {
+        queue.push(neighborCityId)
+      }
+    }
+  }
+
+  return false
+}
+
+function getVehicleTypeForPlanMode(mode: BureaucracyRoutePlan["route"]["mode"]): VehicleType {
+  switch (mode) {
+    case "bus":
+      return "bus"
+    case "rail":
+      return "train"
+    case "air":
+      return "air"
+  }
+}
+
+function buildCityServiceSnapshot(
+  plans: BureaucracyRoutePlan[],
+  game: Pick<GameState, "operatingConfig">,
+): BotCityServiceSnapshot {
+  const statsByCityId = new Map<
+    string,
+    {
+      size: number
+      generatedDemandCubes: number
+      servedDemandCubes: number
+    }
+  >()
+
+  for (const plan of plans) {
+    if (plan.isDisconnected || plan.selectedCityIds.length < 2) {
+      continue
+    }
+
+    for (const cityStatus of plan.simplifiedCityStatuses) {
+      const existing = statsByCityId.get(cityStatus.cityId) ?? {
+        size: cityStatus.size,
+        generatedDemandCubes: 0,
+        servedDemandCubes: 0,
+      }
+
+      statsByCityId.set(cityStatus.cityId, {
+        size: Math.max(existing.size, cityStatus.size),
+        generatedDemandCubes: Math.max(existing.generatedDemandCubes, cityStatus.outboundCubes),
+        servedDemandCubes: existing.servedDemandCubes + cityStatus.filledCubes,
+      })
+    }
+  }
+
+  let zeroServiceCityCount = 0
+  let weightedCoverageScore = 0
+  let growthReadyScore = 0
+
+  for (const stats of statsByCityId.values()) {
+    if (stats.generatedDemandCubes <= 0) {
+      continue
+    }
+
+    const servedRatio = Math.min(
+      1,
+      Math.max(0, stats.servedDemandCubes / Math.max(stats.generatedDemandCubes, 1)),
+    )
+    const cityWeight = Math.max(1, 9 - stats.size)
+
+    if (stats.servedDemandCubes <= 0) {
+      zeroServiceCityCount += 1
+    }
+
+    weightedCoverageScore += servedRatio * cityWeight
+
+    if (game.operatingConfig.dynamicDemand.enabled) {
+      if (servedRatio >= game.operatingConfig.dynamicDemand.fullServiceThreshold) {
+        growthReadyScore += cityWeight * 2
+      } else if (servedRatio >= game.operatingConfig.dynamicDemand.highServiceThreshold) {
+        growthReadyScore += cityWeight
+      }
+    }
+  }
+
+  return {
+    zeroServiceCityCount,
+    weightedCoverageScore,
+    growthReadyScore,
+  }
+}
+
+function getServiceCoverageBonus(
+  currentPlans: BureaucracyRoutePlan[],
+  nextPlans: BureaucracyRoutePlan[],
+  game: Pick<GameState, "operatingConfig">,
+  weights: ScriptedBotWeights,
+) {
+  const currentSnapshot = buildCityServiceSnapshot(currentPlans, game)
+  const nextSnapshot = buildCityServiceSnapshot(nextPlans, game)
+
+  return (
+    (currentSnapshot.zeroServiceCityCount - nextSnapshot.zeroServiceCityCount) *
+      weights.podZeroServiceCityReliefBonus +
+    (nextSnapshot.weightedCoverageScore - currentSnapshot.weightedCoverageScore) *
+      weights.podSmallCityCoverageScore +
+    (nextSnapshot.growthReadyScore - currentSnapshot.growthReadyScore) *
+      weights.podGrowthCityServiceBonus
+  )
+}
+
 function countPotentialClaims(
   game: Parameters<BotController["pickAction"]>[0]["game"],
   playerId: string,
@@ -288,7 +469,22 @@ function getRailConnectorWastePenalty(
     return 0
   }
 
+  const existingRailRoutes = getPlayerOwnedNetworkRoutes(game, playerId).filter(
+    route => route.mode === action.mode,
+  )
+
   const newCityIds = action.cityIds.filter(cityId => !connectedCityIdSet.has(cityId))
+
+  if (
+    newCityIds.length === 0 &&
+    action.cityIds.length === 2 &&
+    hasExistingModePath(existingRailRoutes, action.cityIds[0], action.cityIds[1])
+  ) {
+    return calculateClaimRouteCost(game, {
+      mode: action.mode,
+      cityIds: action.cityIds,
+    }) * 20
+  }
 
   if (newCityIds.length !== 1) {
     return 0
@@ -538,6 +734,12 @@ function scoreBotAction(
       weights.podDisconnectedCityReductionBonus
     unstaffedPodPenalty =
       Math.max(0, nextUnstaffedPodCount - currentUnstaffedPodCount) * weights.podUnstaffedPodPenalty
+    const serviceCoverageBonus = getServiceCoverageBonus(
+      currentCorridorPlans,
+      nextCorridorPlans,
+      game,
+      weights,
+    )
 
     return (
       weights.podSplitBaseScore +
@@ -550,6 +752,7 @@ function scoreBotAction(
       compatibleVehicleBonus +
       passengerGainScore +
       netRevenueGainScore +
+      serviceCoverageBonus +
       disconnectedReductionBonus -
       unstaffedPodPenalty +
       (currentTargetPlan?.vehicleCard ? weights.podExistingVehicleAssignedBonus : 0)
@@ -588,21 +791,61 @@ function scoreBotAction(
       (total, d) => total + d.outboundCubes + d.inboundCubes,
       0,
     )
+    const currentCorridorPlans = summary.routePlans.filter(
+      routePlan => routePlan.corridorId === plan.corridorId,
+    )
+    const nextGame = applyBotAction(game, playerId, action)
+    const nextSummary = getCachedBureaucracySummary(nextGame, playerId)
+    const nextCorridorPlans = nextSummary?.routePlans.filter(
+      routePlan => routePlan.corridorId === plan.corridorId,
+    ) ?? []
+    const serviceCoverageBonus = getServiceCoverageBonus(
+      currentCorridorPlans,
+      nextCorridorPlans,
+      game,
+      weights,
+    )
     // Strong positive: assigning any vehicle unlocks revenue
-    return 100 + podDemand * weights.podDemandScore
+    return 100 + podDemand * weights.podDemandScore + serviceCoverageBonus
   }
 
   if (action.type === "add-second-vehicle-to-pod") {
-    // Score proportional to the existing pod's net revenue — more revenue means more benefit from extra capacity
     const summary = currentSummary ?? getCachedBureaucracySummary(game, playerId)
     if (!summary) return Number.NEGATIVE_INFINITY
     const cityKey = [...action.cityIds].sort().join("|")
-    const existingPod = summary.routePlans.find(
-      p => !p.isDisconnected && p.vehicleCard && [...p.selectedCityIds].sort().join("|") === cityKey,
+    const currentMatchingPods = summary.routePlans.filter(
+      plan => !plan.isDisconnected && plan.vehicleCard && [...plan.selectedCityIds].sort().join("|") === cityKey,
     )
+    const existingPod = currentMatchingPods[0] ?? null
     if (!existingPod || (existingPod.netRevenue ?? 0) <= 0) return Number.NEGATIVE_INFINITY
-    // Score based on how profitable the existing pod is — scale revenue bonus by fleet scale weight
-    return (existingPod.netRevenue / 1_000_000) * weights.buyFleetScaleBonus
+
+    const nextGame = applyBotAction(game, playerId, action)
+    const nextSummary = getCachedBureaucracySummary(nextGame, playerId)
+    const nextMatchingPods = nextSummary?.routePlans.filter(
+      plan => !plan.isDisconnected && plan.vehicleCard && [...plan.selectedCityIds].sort().join("|") === cityKey,
+    ) ?? []
+    const currentPassengers = currentMatchingPods.reduce((sum, plan) => sum + plan.passengersServed, 0)
+    const nextPassengers = nextMatchingPods.reduce((sum, plan) => sum + plan.passengersServed, 0)
+    const currentNetRevenue = currentMatchingPods.reduce((sum, plan) => sum + plan.netRevenue, 0)
+    const nextNetRevenue = nextMatchingPods.reduce((sum, plan) => sum + plan.netRevenue, 0)
+    const passengerGainScore =
+      (Math.max(0, nextPassengers - currentPassengers) / 100) * weights.podPassengerGainScore
+    const netRevenueGainScore = ((nextNetRevenue - currentNetRevenue) / 1_000_000) * weights.podNetRevenueScore
+    const fleetScaleBonus = (existingPod.netRevenue / 1_000_000) * weights.buyFleetScaleBonus
+    const currentCorridorPlans = summary.routePlans.filter(
+      plan => plan.corridorId === existingPod.corridorId,
+    )
+    const nextCorridorPlans = nextSummary?.routePlans.filter(
+      plan => plan.corridorId === existingPod.corridorId,
+    ) ?? []
+    const serviceCoverageBonus = getServiceCoverageBonus(
+      currentCorridorPlans,
+      nextCorridorPlans,
+      game,
+      weights,
+    )
+
+    return fleetScaleBonus + passengerGainScore + netRevenueGainScore + serviceCoverageBonus
   }
 
   if (action.type === "exchange-vehicle") {
@@ -674,8 +917,17 @@ function scoreBotAction(
     // Population sum of chosen pair
     const totalPop = chosenCities.reduce((s, c) => s + (c.population ?? 0), 0)
 
-    // Pair cohesion: removed (pair distance doesn't matter enough to weight)
-    const pairCohesionScore = 0
+    const chosenPairIsAdjacent =
+      chosenCities.length === 2 &&
+      (chosenCities[0]?.adjacentCities?.some(adjacentCity => adjacentCity.id === chosenCities[1]?.id) ?? false)
+    const chosenCitiesAdjacentToOwnedCount = chosenCities.reduce((total, city) => {
+      const isAdjacentToOwned = ownedCities.some(
+        ownedCity => city.adjacentCities?.some(adjacentCity => adjacentCity.id === ownedCity.id) ?? false,
+      )
+      return total + (isAdjacentToOwned ? 1 : 0)
+    }, 0)
+    const pairCohesionScore =
+      (chosenPairIsAdjacent ? 2 : 0) + chosenCitiesAdjacentToOwnedCount * 1.5
 
     // Adjacency potential: unclaimed adjacent routes = future connection opportunity;
     // opponent-claimed adjacent routes = blocked potential (penalize)
@@ -720,7 +972,37 @@ function scoreBotAction(
 
   if (action.type !== "buy-vehicle") {
     if (action.type === "ready-operations") {
-      return getStageWeight(stage, weights, "ReadyOperationsScore")
+      const baseScore = getStageWeight(stage, weights, "ReadyOperationsScore")
+      const summary = currentSummary ?? getCachedBureaucracySummary(game, playerId)
+      const player = getPlayerById(game, playerId)
+
+      if (!summary || !player) {
+        return baseScore
+      }
+
+      const unstaffedPodCount = summary.routePlans.filter(
+        plan => !plan.isDisconnected && plan.selectedCityIds.length >= 2 && !plan.vehicleCard,
+      ).length
+      const connectedCityIds = new Set(
+        summary.routePlans
+          .filter(plan => !plan.isDisconnected)
+          .flatMap(plan => plan.availableCityIds),
+      )
+      const isolatedOwnedCityCount = player.ownedCityCardIds.filter(cityId => !connectedCityIds.has(cityId)).length
+      const disconnectedCityCount = new Set(
+        summary.routePlans
+          .filter(plan => plan.isDisconnected && plan.selectedCityIds.length > 0)
+          .flatMap(plan => plan.selectedCityIds),
+      ).size
+      const playerCityService = buildCityServiceSnapshot(summary.routePlans, game)
+
+      return (
+        baseScore -
+        unstaffedPodCount * weights.podUnstaffedPodPenalty -
+        disconnectedCityCount * weights.podDisconnectedCityReductionBonus * 0.6 -
+        isolatedOwnedCityCount * weights.podDisconnectedCityReductionBonus * 0.4 -
+        playerCityService.zeroServiceCityCount * weights.readyOperationsZeroServiceCityPenalty
+      )
     }
 
     if (action.type === "end-turn") {
@@ -770,6 +1052,12 @@ function scoreBotAction(
       (p.route.mode === "bus" ? "bus" : p.route.mode === "rail" ? "train" : "air") === vehicleTypeForMode,
   ).length ?? 0
   const emptyPodBonus = unservicedPodCount > 0 ? weights.buyVehicleForEmptyPodBonus : 0
+  const matchingModeService = buildCityServiceSnapshot(
+    summary?.routePlans.filter(plan => getVehicleTypeForPlanMode(plan.route.mode) === card.type) ?? [],
+    game,
+  )
+  const unservedCityVehicleBonus =
+    matchingModeService.zeroServiceCityCount * weights.buyVehicleForUnservedCityBonus
 
   if (card.type === "train" && potentialRailClaims === 0 && !hasRailServiceOpportunity) {
     return Number.NEGATIVE_INFINITY
@@ -803,6 +1091,7 @@ function scoreBotAction(
       cityBonus +
       fleetScaleBonus +
       emptyPodBonus +
+      unservedCityVehicleBonus +
       (card.totalPassengerCapacity / 100) * weights.buyVehicleCapacityScore +
       (card.speed / 10) * weights.buyVehicleSpeedScore -
       card.purchasePrice / 1_000_000) * quantity
@@ -812,6 +1101,293 @@ function scoreBotAction(
     firstOfTypeBonus -
     duplicatePenalty
   )
+}
+
+function isCorridorPlanningAction(action: BotAction): action is CorridorPlanningAction {
+  return (
+    action.type === "create-service-pod" ||
+    action.type === "remove-pod-city" ||
+    action.type === "assign-pod-vehicle" ||
+    action.type === "add-second-vehicle-to-pod" ||
+    action.type === "delete-service-pod"
+  )
+}
+
+function getActionKey(action: BotAction) {
+  switch (action.type) {
+    case "claim-route":
+      return `${action.type}:${action.mode}:${action.cityIds.join(",")}`
+    case "create-service-pod":
+      return `${action.type}:${action.corridorId}:${action.routeId}:${action.cityIds.join(",")}`
+    case "remove-pod-city":
+      return `${action.type}:${action.corridorId}:${action.sourceRouteId}:${action.cityId}`
+    case "assign-pod-vehicle":
+      return `${action.type}:${action.routeId}:${action.vehicleCardId}`
+    case "add-second-vehicle-to-pod":
+      return `${action.type}:${action.corridorId}:${action.vehicleCardId}:${action.cityIds.join(",")}`
+    case "delete-service-pod":
+      return `${action.type}:${action.corridorId}:${action.routeId}`
+    case "buy-vehicle":
+      return `${action.type}:${action.cardId}:${action.quantity}`
+    case "draw-city-offer":
+      return `${action.type}:${action.region}`
+    case "keep-city-offer":
+      return `${action.type}:${action.cityIds.join(",")}`
+    case "exchange-vehicle":
+      return `${action.type}:${action.oldCardId}:${action.newCardId}`
+    default:
+      return action.type
+  }
+}
+
+function getVehicleTypeForRouteMode(mode: BureaucracyRoutePlan["route"]["mode"]): VehicleType {
+  return mode === "bus" ? "bus" : mode === "rail" ? "train" : "air"
+}
+
+function getCorridorIdForAction(
+  action: CorridorPlanningAction,
+  summary?: ReturnType<typeof getCachedBureaucracySummary>,
+) {
+  switch (action.type) {
+    case "create-service-pod":
+    case "remove-pod-city":
+    case "add-second-vehicle-to-pod":
+    case "delete-service-pod":
+      return action.corridorId
+    case "assign-pod-vehicle":
+      return summary?.routePlans.find(plan => plan.id === action.routeId)?.corridorId ?? null
+  }
+}
+
+function getCorridorPlans(
+  summary: ReturnType<typeof getCachedBureaucracySummary> | undefined,
+  corridorId: string,
+) {
+  return summary?.routePlans.filter(plan => plan.corridorId === corridorId) ?? []
+}
+
+function scoreCorridorPlans(corridorPlans: BureaucracyRoutePlan[], weights: ScriptedBotWeights) {
+  const activePlans = corridorPlans.filter(plan => !plan.isDisconnected)
+  const staffedPodCount = activePlans.filter(
+    plan => plan.selectedCityIds.length >= 2 && plan.vehicleCard,
+  ).length
+  const unstaffedPodCount = activePlans.filter(
+    plan => plan.selectedCityIds.length >= 2 && !plan.vehicleCard,
+  ).length
+  const disconnectedCityCount = corridorPlans.find(plan => plan.isDisconnected)?.selectedCityIds.length ?? 0
+  const totalPassengers = activePlans.reduce((sum, plan) => sum + plan.passengersServed, 0)
+  const totalNetRevenue = activePlans.reduce((sum, plan) => sum + plan.netRevenue, 0)
+  const movedDemandCubes = activePlans.reduce((sum, plan) => sum + plan.movedCubes, 0)
+  const selectedCityCount = activePlans.reduce((sum, plan) => sum + plan.selectedCityIds.length, 0)
+
+  return (
+    (totalPassengers / 100) * weights.podPassengerGainScore +
+    (totalNetRevenue / 1_000_000) * weights.podNetRevenueScore +
+    staffedPodCount * (weights.podSplitBaseScore * 0.5) +
+    movedDemandCubes * weights.podDemandScore +
+    selectedCityCount * (weights.podCityCountScore * 0.4) -
+    unstaffedPodCount * weights.podUnstaffedPodPenalty -
+    disconnectedCityCount * weights.podDisconnectedCityReductionBonus
+  )
+}
+
+function buildCorridorPlanStateKey(
+  game: GameState,
+  playerId: string,
+  corridorId: string,
+  summary?: ReturnType<typeof getCachedBureaucracySummary>,
+) {
+  const resolvedSummary = summary ?? getCachedBureaucracySummary(game, playerId)
+  const corridorPlans = getCorridorPlans(resolvedSummary, corridorId)
+  const corridorMode = corridorPlans[0]?.route.mode ?? null
+  const player = getPlayerById(game, playerId)
+  const assignedVehicleIds = new Set(
+    resolvedSummary?.routePlans
+      .filter(plan => !plan.isDisconnected && plan.selectedCityIds.length >= 2)
+      .map(plan => plan.vehicleCard?.id ?? null)
+      .filter((cardId): cardId is string => cardId !== null) ?? [],
+  )
+  const compatibleVehicleIds =
+    corridorMode === null || !player
+      ? []
+      : player.ownedVehicleCardIds
+          .filter(cardId => {
+            const card = game.vehicleCatalog.find((vehicleCard) => vehicleCard.id === cardId)
+            return card?.type === getVehicleTypeForRouteMode(corridorMode) && !assignedVehicleIds.has(cardId)
+          })
+          .sort()
+
+  const planSignature = corridorPlans
+    .map(plan => [
+      plan.id,
+      plan.slotIndex,
+      plan.isDisconnected ? "disconnected" : "active",
+      plan.selectedCityIds.join(","),
+      plan.vehicleCard?.id ?? "-",
+      plan.canAddSplitService ? "split" : "fixed",
+    ].join(":"))
+    .sort()
+    .join("|")
+
+  return `${corridorId}::${planSignature}::${compatibleVehicleIds.join(",")}`
+}
+
+function isBetterCorridorPlanState(candidate: CorridorPlanState, current: CorridorPlanState) {
+  return (
+    candidate.bestScore > current.bestScore ||
+    (candidate.bestScore === current.bestScore && candidate.stepCount < current.stepCount)
+  )
+}
+
+function findBestCorridorPlanState(
+  game: GameState,
+  playerId: string,
+  corridorId: string,
+  weights: ScriptedBotWeights,
+  remainingDepth: number,
+  memo: Map<string, CorridorPlanState>,
+): CorridorPlanState {
+  const summary = getCachedBureaucracySummary(game, playerId)
+  const corridorPlans = getCorridorPlans(summary, corridorId)
+  const currentScore = scoreCorridorPlans(corridorPlans, weights)
+  const memoKey = `${remainingDepth}::${buildCorridorPlanStateKey(game, playerId, corridorId, summary)}`
+  const cached = memo.get(memoKey)
+
+  if (cached) {
+    return cached
+  }
+
+  let bestState: CorridorPlanState = {
+    bestScore: currentScore,
+    stepCount: 0,
+  }
+
+  if (remainingDepth <= 0) {
+    memo.set(memoKey, bestState)
+    return bestState
+  }
+
+  const corridorActions = getBotLegalActions(game, playerId).filter(
+    (action): action is CorridorPlanningAction =>
+      isCorridorPlanningAction(action) && getCorridorIdForAction(action, summary) === corridorId,
+  )
+
+  for (const action of corridorActions) {
+    let nextGame: GameState
+
+    try {
+      nextGame = applyBotAction(game, playerId, action)
+    } catch {
+      continue
+    }
+
+    const nextState = findBestCorridorPlanState(
+      nextGame,
+      playerId,
+      corridorId,
+      weights,
+      remainingDepth - 1,
+      memo,
+    )
+    const candidateState: CorridorPlanState = {
+      bestScore: nextState.bestScore,
+      stepCount: nextState.stepCount + 1,
+    }
+
+    if (isBetterCorridorPlanState(candidateState, bestState)) {
+      bestState = candidateState
+    }
+  }
+
+  memo.set(memoKey, bestState)
+  return bestState
+}
+
+function getPlannedOperationsActionScores(
+  game: GameState,
+  playerId: string,
+  weights: ScriptedBotWeights,
+  legalActions: BotAction[],
+  currentSummary?: ReturnType<typeof getCachedBureaucracySummary>,
+) {
+  if (game.currentPhase !== "operations") {
+    return new Map<string, number>()
+  }
+
+  const resolvedSummary = currentSummary ?? getCachedBureaucracySummary(game, playerId)
+  const memo = new Map<string, CorridorPlanState>()
+  const plannedScores = new Map<string, number>()
+  const corridorActionsByCorridor = new Map<string, CorridorPlanningAction[]>()
+
+  for (const action of legalActions) {
+    if (!isCorridorPlanningAction(action)) {
+      continue
+    }
+
+    const corridorId = getCorridorIdForAction(action, resolvedSummary)
+
+    if (!corridorId) {
+      continue
+    }
+
+    const corridorActions = corridorActionsByCorridor.get(corridorId) ?? []
+    corridorActions.push(action)
+    corridorActionsByCorridor.set(corridorId, corridorActions)
+  }
+
+  for (const [corridorId, corridorActions] of corridorActionsByCorridor) {
+    const corridorPlans = getCorridorPlans(resolvedSummary, corridorId)
+    const corridorCityCount = new Set(corridorPlans.flatMap(plan => plan.availableCityIds)).size
+
+    if (
+      corridorActions.length > MAX_BOT_CORRIDOR_PLAN_ACTIONS ||
+      corridorCityCount > MAX_BOT_CORRIDOR_PLAN_CITY_COUNT
+    ) {
+      continue
+    }
+
+    for (const action of corridorActions) {
+      const immediateScore = scoreBotAction(action, game, playerId, weights, resolvedSummary)
+      let nextGame: GameState
+
+      try {
+        nextGame = applyBotAction(game, playerId, action)
+      } catch {
+        continue
+      }
+
+      const nextSummary = getCachedBureaucracySummary(nextGame, playerId)
+      const immediateCorridorScore = scoreCorridorPlans(
+        getCorridorPlans(nextSummary, corridorId),
+        weights,
+      )
+      const bestContinuationState = findBestCorridorPlanState(
+        nextGame,
+        playerId,
+        corridorId,
+        weights,
+        MAX_BOT_CORRIDOR_PLAN_DEPTH - 1,
+        memo,
+      )
+      const continuationBonus = Math.max(0, bestContinuationState.bestScore - immediateCorridorScore)
+
+      plannedScores.set(getActionKey(action), immediateScore + continuationBonus)
+    }
+  }
+
+  return plannedScores
+}
+
+function getBotActionSelectionScore(
+  action: BotAction,
+  game: GameState,
+  playerId: string,
+  weights: ScriptedBotWeights,
+  currentSummary: ReturnType<typeof getCachedBureaucracySummary> | undefined,
+  plannedActionScores: ReadonlyMap<string, number>,
+) {
+  return plannedActionScores.get(getActionKey(action)) ??
+    scoreBotAction(action, game, playerId, weights, currentSummary)
 }
 
 export function createScriptedBot(id: string, weights: Partial<ScriptedBotWeights> = {}): BotController {
@@ -860,9 +1436,23 @@ export function createScriptedBot(id: string, weights: Partial<ScriptedBotWeight
       const hasBuyVehicleActions = prioritizedActions.some(a => a.type === "buy-vehicle")
       const needsSummary = hasPodActions || hasBuyVehicleActions
       const precomputedSummary = needsSummary ? getCachedBureaucracySummary(game, playerId) : undefined
+      const plannedActionScores = getPlannedOperationsActionScores(
+        game,
+        playerId,
+        resolvedWeights,
+        prioritizedActions,
+        precomputedSummary,
+      )
       const bestAction = prioritizedActions.reduce<{ action: BotAction; score: number } | null>(
         (best, action) => {
-          const score = scoreBotAction(action, game, playerId, resolvedWeights, precomputedSummary)
+          const score = getBotActionSelectionScore(
+            action,
+            game,
+            playerId,
+            resolvedWeights,
+            precomputedSummary,
+            plannedActionScores,
+          )
           return best === null || score > best.score ? { action, score } : best
         },
         null,
@@ -1343,13 +1933,32 @@ export function getTopScoredBotCandidates(
   const resolvedWeights = mergeScriptedBotWeights(weights)
   const legalActions = getBotLegalActions(game, playerId)
   const hasPodActions = legalActions.some(
-    a => a.type === "create-service-pod" || a.type === "remove-pod-city",
+    a =>
+      a.type === "create-service-pod" ||
+      a.type === "remove-pod-city" ||
+      a.type === "assign-pod-vehicle" ||
+      a.type === "add-second-vehicle-to-pod" ||
+      a.type === "exchange-vehicle",
   )
   const precomputedSummary = hasPodActions ? getCachedBureaucracySummary(game, playerId) : undefined
+  const plannedActionScores = getPlannedOperationsActionScores(
+    game,
+    playerId,
+    resolvedWeights,
+    legalActions,
+    precomputedSummary,
+  )
 
   return legalActions
     .map(action => {
-      const score = scoreBotAction(action, game, playerId, resolvedWeights, precomputedSummary)
+      const score = getBotActionSelectionScore(
+        action,
+        game,
+        playerId,
+        resolvedWeights,
+        precomputedSummary,
+        plannedActionScores,
+      )
       const breakdown =
         action.type === "claim-route"
           ? getClaimRouteBreakdown(action, game, playerId, resolvedWeights)
@@ -1398,11 +2007,35 @@ export function simulateOperationsPlan(
     const legalActions = getBotLegalActions(currentGame, playerId)
     if (legalActions.length === 0) break
 
-    const hasPodActions = legalActions.some(a => a.type === "create-service-pod" || a.type === "remove-pod-city")
+    const hasPodActions = legalActions.some(
+      a =>
+        a.type === "create-service-pod" ||
+        a.type === "remove-pod-city" ||
+        a.type === "assign-pod-vehicle" ||
+        a.type === "add-second-vehicle-to-pod" ||
+        a.type === "exchange-vehicle",
+    )
     const precomputedSummary = hasPodActions ? getCachedBureaucracySummary(currentGame, playerId) : undefined
+    const plannedActionScores = getPlannedOperationsActionScores(
+      currentGame,
+      playerId,
+      resolvedWeights,
+      legalActions,
+      precomputedSummary,
+    )
 
     const scored = legalActions
-      .map(a => ({ action: a, score: scoreBotAction(a, currentGame, playerId, resolvedWeights, precomputedSummary) }))
+      .map(action => ({
+        action,
+        score: getBotActionSelectionScore(
+          action,
+          currentGame,
+          playerId,
+          resolvedWeights,
+          precomputedSummary,
+          plannedActionScores,
+        ),
+      }))
       .sort((a, b) => b.score - a.score)
     const topAction = scored[0]?.action
     if (!topAction) break

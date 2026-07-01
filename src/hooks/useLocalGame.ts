@@ -113,6 +113,7 @@ function getAutoAssignableVehicleCardId(game: GameState, playerId: string, corri
 
   const assignedVehicleCardIds = new Set(
     summary.routePlans
+      .filter(plan => plan.selectedCityIds.length >= 2)
       .map(plan => plan.vehicleCard?.id)
       .filter((cardId): cardId is string => cardId !== undefined),
   )
@@ -198,11 +199,13 @@ export function useLocalGame({ initialGame, onGameSave }: UseLocalGameOptions): 
     <T extends { ok: true; game: GameState }>(
       mutate: (baseGame: GameState, actingPlayerId: string) => T | { ok: false; error: string },
     ): T | { ok: false; error: string } => {
-      const actingPlayerId = getDefaultLocalViewingPlayerId(game) ?? game.currentPlayerId
-      const result = mutate(game, actingPlayerId)
+      const baseGame = gameRef.current
+      const actingPlayerId = getDefaultLocalViewingPlayerId(baseGame) ?? baseGame.currentPlayerId
+      const result = mutate(baseGame, actingPlayerId)
 
       if (result.ok) {
-        setHistory(current => [...current, game])
+        gameRef.current = result.game
+        setHistory(current => [...current, baseGame])
         setGame(result.game)
         setSelectedPlayerId(currentSelectedPlayerId =>
           getNextLocalViewingPlayerId(result.game, currentSelectedPlayerId),
@@ -212,7 +215,7 @@ export function useLocalGame({ initialGame, onGameSave }: UseLocalGameOptions): 
 
       return result
     },
-    [game, onGameSave],
+    [onGameSave],
   )
 
   const handleClaimRoute = useCallback(

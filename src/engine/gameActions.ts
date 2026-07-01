@@ -17,6 +17,7 @@ export type GameAction =
   | { type: "end-turn" }
   | { type: "advance-turn"; keptCityIds?: string[] }
   | { type: "set-route-vehicle"; routeId: string; vehicleCardId: string | null }
+  | { type: "set-air-route-cities"; routeId: string; cityIds: [string, string] }
   | { type: "set-service-pod-cities"; corridorId: string; routeIds: string[]; cityIds: string[] }
   | { type: "add-service-split"; corridorId: string; initialCityIds?: string[] }
   | { type: "move-service-city"; corridorId: string; cityId: string; routeId: string; sourceRouteId: string | null }
